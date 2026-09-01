@@ -1,10 +1,11 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ArrowUpRight, BriefcaseBusiness, Building2, CalendarClock, CheckCircle2,
-  ChevronRight, CircleUserRound, ContactRound, History, MapPin, Network,
-  Search, Sparkles, Target, UserRoundCheck, UsersRound,
+  ChevronRight, CircleUserRound, Cloud, ContactRound, Database, Download,
+  FileSpreadsheet, History, LoaderCircle, MapPin, Network, Search, Sparkles,
+  Target, Upload, UserRoundCheck, UsersRound,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -33,6 +34,7 @@ type Alumni = {
   confidence: number
   email: string
   phone: string
+  linkedinUrl?: string
   verified: string
   status: OutreachStatus
   note: string
@@ -49,7 +51,12 @@ type Alumni = {
     phone: VerificationState
     location: VerificationState
   }
+  source?: string
+  updatedBy?: string
+  updatedAt?: string
 }
+
+type LatestImport = { filename: string; rowCount: number; importedBy: string; createdAt: string }
 
 const hiringOptions = [
   ["Direct hiring decision-maker", 100], ["Strong hiring influence", 80],
@@ -174,6 +181,33 @@ function StatCard({ icon: Icon, label, value, delta }: { icon: typeof UsersRound
   return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span>{delta}</span></div></article>
 }
 
+function parseCsv(content: string) {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ""
+  let quoted = false
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]
+    const next = content[index + 1]
+    if (character === '"' && quoted && next === '"') { cell += '"'; index += 1; continue }
+    if (character === '"') { quoted = !quoted; continue }
+    if (character === "," && !quoted) { row.push(cell.trim()); cell = ""; continue }
+    if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && next === "\n") index += 1
+      row.push(cell.trim()); cell = ""
+      if (row.some(value => value)) rows.push(row)
+      row = []
+      continue
+    }
+    cell += character
+  }
+  row.push(cell.trim())
+  if (row.some(value => value)) rows.push(row)
+  if (rows.length < 2) throw new Error("The CSV must contain a header row and at least one alumnus.")
+  const headers = rows[0].map(header => header.replace(/^\uFEFF/, "").trim())
+  return rows.slice(1).map(values => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])))
+}
+
 export default function Home() {
   const [alumni, setAlumni] = useState<Alumni[]>(alumniSeed)
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>(companyPrioritySeed)
@@ -183,27 +217,45 @@ export default function Home() {
   const [seniority, setSeniority] = useState("All levels")
   const [selected, setSelected] = useState<Alumni | null>(null)
   const [targetCompany, setTargetCompany] = useState("Microsoft")
+  const [workspaceLoading, setWorkspaceLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+  const [workspaceMessage, setWorkspaceMessage] = useState("")
+  const [latestImport, setLatestImport] = useState<LatestImport | null>(null)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importing, setImporting] = useState(false)
+
+  const loadWorkspace = useCallback(async (seedIfEmpty = false) => {
+    try {
+      setWorkspaceLoading(true)
+      let response = await fetch("/api/workspace", { cache: "no-store" })
+      let data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to load the shared workspace.")
+      if (seedIfEmpty && data.alumni?.length === 0) {
+        const seedResponse = await fetch("/api/workspace", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "import", filename: "Demonstration alumni dataset", records: alumniSeed }),
+        })
+        if (!seedResponse.ok) throw new Error("The shared database was created, but the demonstration dataset could not be loaded.")
+        response = await fetch("/api/workspace", { cache: "no-store" })
+        data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
+        if (!response.ok) throw new Error(data.error || "Unable to reload the shared workspace.")
+      }
+      if (data.alumni?.length) setAlumni(data.alumni)
+      if (data.companyPriorities) setCompanyPriorities(current => ({ ...current, ...data.companyPriorities }))
+      setLatestImport(data.latestImport ?? null)
+      setWorkspaceMessage("")
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to connect to the shared database.")
+    } finally {
+      setWorkspaceLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      try {
-        const savedStatuses = window.localStorage.getItem("placement-network-outreach-statuses") ?? window.localStorage.getItem("iiml-outreach-statuses")
-        const savedAssessments = window.localStorage.getItem("placement-network-assessments")
-        const savedPriorities = window.localStorage.getItem("placement-network-company-priorities")
-        if (savedStatuses || savedAssessments) {
-          const statuses = savedStatuses ? JSON.parse(savedStatuses) as Record<number, OutreachStatus> : {}
-          const assessments = savedAssessments ? JSON.parse(savedAssessments) as Record<number, Alumni["assessment"]> : {}
-          setAlumni(current => current.map(person => ({ ...person, status: statuses[person.id] ?? person.status, assessment: assessments[person.id] ?? person.assessment })))
-        }
-        if (savedPriorities) setCompanyPriorities(current => ({ ...current, ...JSON.parse(savedPriorities) }))
-      } catch {
-        window.localStorage.removeItem("placement-network-outreach-statuses")
-        window.localStorage.removeItem("placement-network-assessments")
-        window.localStorage.removeItem("placement-network-company-priorities")
-      }
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [])
+    const timer = window.setTimeout(() => void loadWorkspace(true), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadWorkspace])
 
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
   const functions = useMemo(() => [...new Set(alumni.map(person => person.function))].sort(), [alumni])
@@ -221,34 +273,79 @@ export default function Home() {
   const activeOutreach = alumni.filter(person => person.status !== "Not contacted").length
   const contactReadyCount = alumni.filter(person => operationalStatus(person) === "Contact-ready").length
 
-  function persistAssessments(next: Alumni[]) {
-    window.localStorage.setItem("placement-network-assessments", JSON.stringify(Object.fromEntries(next.map(person => [person.id, person.assessment]))))
+  function replaceAlumnus(updated: Alumni) {
+    setAlumni(current => current.map(person => person.id === updated.id ? updated : person))
+    setSelected(current => current?.id === updated.id ? updated : current)
+  }
+
+  async function saveAlumnus(id: number, changes: { status?: OutreachStatus; assessment?: Partial<Alumni["assessment"]> }) {
+    setSyncing(true)
+    try {
+      const response = await fetch("/api/workspace", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_alumnus", id, ...changes }) })
+      const data = await response.json() as { alumnus?: Alumni; error?: string }
+      if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the update.")
+      replaceAlumnus(data.alumnus)
+      setWorkspaceMessage("Saved to the shared workspace.")
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save the update.")
+      await loadWorkspace(false)
+    } finally {
+      setSyncing(false)
+    }
   }
 
   function updateStatus(id: number, status: OutreachStatus) {
-    setAlumni(current => {
-      const next = current.map(person => person.id === id ? { ...person, status } : person)
-      window.localStorage.setItem("placement-network-outreach-statuses", JSON.stringify(Object.fromEntries(next.map(person => [person.id, person.status]))))
-      return next
-    })
-    if (selected?.id === id) setSelected({ ...selected, status })
+    void saveAlumnus(id, { status })
   }
 
   function updateAssessment(id: number, field: keyof Alumni["assessment"], value: string) {
-    setAlumni(current => {
-      const next = current.map(person => person.id === id ? { ...person, assessment: { ...person.assessment, [field]: value } } : person)
-      persistAssessments(next)
-      return next
-    })
-    if (selected?.id === id) setSelected({ ...selected, assessment: { ...selected.assessment, [field]: value } })
+    void saveAlumnus(id, { assessment: { [field]: value } })
   }
 
-  function updateCompanyPriority(name: string, priority: string) {
-    setCompanyPriorities(current => {
-      const next = { ...current, [name]: priority }
-      window.localStorage.setItem("placement-network-company-priorities", JSON.stringify(next))
-      return next
-    })
+  async function updateCompanyPriority(name: string, priority: string) {
+    setSyncing(true)
+    try {
+      const response = await fetch("/api/workspace", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_priority", company: name, priority }) })
+      const data = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to save company priority.")
+      setCompanyPriorities(current => ({ ...current, [name]: priority }))
+      setWorkspaceMessage("Company priority saved for all committee members.")
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save company priority.")
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  function downloadTemplate() {
+    const content = [
+      "name,batch,programme,company,title,function,seniority,location,previous_companies,experience_years,email,phone,linkedin_url,confidence,status,note",
+      'Demo Alumnus,2018,PGP,Example Company,"Senior Manager, Talent Acquisition",HR,Senior Manager,Bengaluru,Example Consulting,8,demo@example.com,+910000000000,,70,Not contacted,"Demonstration record only"',
+    ].join("\n")
+    const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }))
+    const link = document.createElement("a")
+    link.href = url
+    link.download = "corporate-network-alumni-template.csv"
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function importAlumni() {
+    if (!importFile) { setWorkspaceMessage("Choose a CSV file first."); return }
+    setImporting(true)
+    try {
+      const records = parseCsv(await importFile.text())
+      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
+      const data = await response.json() as { imported?: number; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
+      setWorkspaceMessage(`${data.imported ?? records.length} alumni records imported into the shared database.`)
+      setImportFile(null)
+      await loadWorkspace(false)
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to import the selected file.")
+    } finally {
+      setImporting(false)
+    }
   }
 
   const functionCounts = targetAlumni.reduce<Record<string, number>>((acc, person) => {
@@ -260,8 +357,8 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand-lockup"><div className="brand-mark">PN</div><div><strong>Placement Network</strong><span>Placement Committee Workspace</span></div></div>
-        <div className="data-state"><span /> Sample data · API-ready</div>
+        <div className="brand-lockup"><div className="brand-mark">CN</div><div><strong>Corporate Network</strong><span>Placement Committee Workspace</span></div></div>
+        <div className={`data-state ${workspaceMessage ? "data-state-warning" : ""}`}><span /> {workspaceLoading ? "Connecting to shared database" : syncing ? "Saving changes" : workspaceMessage || "Shared database · Synced"}</div>
       </header>
 
       <section className="workspace">
@@ -276,14 +373,15 @@ export default function Home() {
             <TabsTrigger value="directory" data-tab="directory">Alumni directory</TabsTrigger>
             <TabsTrigger value="companies">Company intelligence</TabsTrigger>
             <TabsTrigger value="outreach">Outreach</TabsTrigger>
+            <TabsTrigger value="data-import">Data import</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="tab-panel">
             <section className="stats-grid" aria-label="Key metrics">
-              <StatCard icon={UsersRound} label="Alumni mapped" value="1,248" delta="+36 this month" />
-              <StatCard icon={Building2} label="Companies covered" value="186" delta="24 priority firms" />
-              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / 12`} delta="MVP sample" />
-              <StatCard icon={Target} label="Active outreach" value={`${activeOutreach}`} delta="Across 7 companies" />
+              <StatCard icon={UsersRound} label="Alumni mapped" value={`${alumni.length}`} delta="Shared master database" />
+              <StatCard icon={Building2} label="Companies covered" value={`${companies.length}`} delta="Calculated from current records" />
+              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumni.length}`} delta="Based on field verification" />
+              <StatCard icon={Target} label="Active outreach" value={`${activeOutreach}`} delta="Visible to all committee members" />
             </section>
 
             <section className="overview-grid">
@@ -340,9 +438,32 @@ export default function Home() {
 
           <TabsContent value="outreach" className="tab-panel">
             <section className="panel outreach-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved on this device for the MVP.</span></div></div>
+              <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved centrally and shared across committee members.</span></div></div>
               <div className="pipeline-summary">{statusOptions.map(status => <div key={status}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></div>)}</div>
               <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this person</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{[...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score).map(person => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{person.note}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>
+            </section>
+          </TabsContent>
+
+          <TabsContent value="data-import" className="tab-panel">
+            <section className="import-layout">
+              <article className="panel import-panel">
+                <div className="panel-heading"><div><p className="eyebrow">Alumni master data</p><h2>Import alumni records</h2><span>Add or update up to 250 records from a CSV file.</span></div><div className="database-badge"><Database /> Shared database</div></div>
+                <div className="import-body">
+                  <div className="upload-zone">
+                    <FileSpreadsheet />
+                    <div><strong>{importFile ? importFile.name : "Choose an alumni CSV file"}</strong><span>Required: name, batch and company. Existing records are matched by name, batch and company.</span></div>
+                    <input aria-label="Choose alumni CSV file" type="file" accept=".csv,text/csv" onChange={event => setImportFile(event.target.files?.[0] ?? null)} />
+                  </div>
+                  <div className="import-actions"><Button variant="outline" onClick={downloadTemplate}><Download /> Download template</Button><Button onClick={importAlumni} disabled={!importFile || importing}>{importing ? <LoaderCircle className="spin" /> : <Upload />} {importing ? "Importing" : "Import to shared database"}</Button></div>
+                  {workspaceMessage && <div className="workspace-message"><Cloud /> <span>{workspaceMessage}</span></div>}
+                </div>
+              </article>
+
+              <aside className="panel database-panel">
+                <div className="database-hero"><Database /><div><p className="eyebrow">Central data state</p><h2>{alumni.length} alumni records</h2><span>{companies.length} companies in one shared workspace</span></div></div>
+                <div className="database-facts"><div><span>Persistence</span><strong>Across users and devices</strong></div><div><span>Duplicate control</span><strong>Name + batch + company</strong></div><div><span>Maximum batch</span><strong>250 records per import</strong></div><div><span>Current source</span><strong>{latestImport?.filename ?? "Demonstration alumni dataset"}</strong></div></div>
+                <div className="latest-import"><CheckCircle2 /><div><strong>{latestImport ? "Latest import completed" : "Database ready"}</strong><span>{latestImport ? `${latestImport.rowCount} records by ${latestImport.importedBy}` : "No uploaded file has been recorded yet."}</span></div></div>
+              </aside>
             </section>
           </TabsContent>
         </Tabs>
@@ -353,12 +474,12 @@ export default function Home() {
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             <details className="score-breakdown"><summary>Why this Placement Relevance score?</summary><div className="breakdown-list">{selectedBreakdown.items.map(item => <div key={item.label}><span>{item.label}<small>{item.weight}% weight</small></span><strong>{item.score}</strong><em>{(item.score * item.weight / 100).toFixed(1)}</em></div>)}</div><p>Weighted contributions are added and rounded to the nearest whole number.</p></details>
-            <section className="profile-section"><h3>Assess alumnus</h3><p className="section-help">Choose qualitative evidence. Placement Network converts each choice into an auditable score.</p><div className="assessment-grid">
+            <section className="profile-section"><h3>Assess alumnus</h3><p className="section-help">Choose qualitative evidence. Corporate Network converts each choice into an auditable score.</p><div className="assessment-grid">
               <label><span>Hiring influence</span><Select value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>IIML relationship</span><Select value={selected.assessment.iimlRelationship} onValueChange={value => updateAssessment(selected.id, "iimlRelationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>Warm-introduction potential</span><Select value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{responsivenessLabel(selected.status)}</strong><small>Derived from outreach history</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
-            <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selected.experience} years · Previously {selected.previous}</strong></span></div></div></section>
+            <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selected.experience} years · Previously {selected.previous}</strong></span></div></div>{selected.linkedinUrl && <a className="profile-link" href={selected.linkedinUrl} target="_blank" rel="noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
             <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{selected.programme} · {selected.batch}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship}</strong></span></div></div><div className="insight-note"><Sparkles /><p>{selected.note}</p></div></section>
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last verified {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
@@ -368,7 +489,7 @@ export default function Home() {
               <div><span>Phone · {selected.phone}</span><strong className={verificationTone(selected.verification.phone)}>{selected.verification.phone}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
             </div><p className="verified-copy">Operational status uses field-level checks. It is not inferred from Data Confidence alone.</p></section>
-            <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></section>
+            <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>
           </div></>}
         </SheetContent>
       </Sheet>
