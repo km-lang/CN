@@ -217,6 +217,7 @@ export default function Home() {
   const [seniority, setSeniority] = useState("All levels")
   const [selected, setSelected] = useState<Alumni | null>(null)
   const [targetCompany, setTargetCompany] = useState("Microsoft")
+  const [activeTab, setActiveTab] = useState("overview")
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [workspaceMessage, setWorkspaceMessage] = useState("")
@@ -364,13 +365,13 @@ export default function Home() {
       <section className="workspace">
         <div className="page-heading">
           <div><p className="eyebrow">Placement intelligence</p><h1>Turn alumni connections into recruiter conversations.</h1></div>
-          <Button onClick={() => document.querySelector<HTMLButtonElement>('[data-tab="directory"]')?.click()}><Search /> Find an alumnus</Button>
+          <Button onClick={() => setActiveTab("directory")}><Search /> Find an alumnus</Button>
         </div>
 
-        <Tabs defaultValue="overview" className="product-tabs">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="product-tabs">
           <TabsList variant="line" className="main-tabs" aria-label="Platform sections">
             <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="directory" data-tab="directory">Alumni directory</TabsTrigger>
+            <TabsTrigger value="directory">Alumni directory</TabsTrigger>
             <TabsTrigger value="companies">Company intelligence</TabsTrigger>
             <TabsTrigger value="outreach">Outreach</TabsTrigger>
             <TabsTrigger value="data-import">Data import</TabsTrigger>
@@ -386,7 +387,7 @@ export default function Home() {
 
             <section className="overview-grid">
               <article className="panel lead-panel">
-                <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Highest-value alumni leads</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => document.querySelector<HTMLButtonElement>('[data-tab="directory"]')?.click()}>View all <ArrowUpRight /></Button></div>
+                <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Highest-value alumni leads</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => setActiveTab("directory")}>View all <ArrowUpRight /></Button></div>
                 <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <button key={person.id} className="lead-row" onClick={() => setSelected(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
               </article>
 
