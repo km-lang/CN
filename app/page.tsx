@@ -364,7 +364,7 @@ export default function Home() {
 
       <section className="workspace">
         <div className="page-heading">
-          <div><p className="eyebrow">Placement intelligence</p><h1>Turn alumni connections into recruiter conversations.</h1></div>
+          <div><p className="eyebrow">Placement intelligence</p><h1>Connect alumni relationships to corporate opportunities.</h1></div>
           <Button onClick={() => setActiveTab("directory")}><Search /> Find an alumnus</Button>
         </div>
 
