@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  ArrowUpRight, BriefcaseBusiness, Building2, CalendarClock, CheckCircle2,
+  Activity, ArrowUpRight, BriefcaseBusiness, Building2, CalendarClock, CheckCircle2,
   ChevronRight, CircleUserRound, Cloud, ContactRound, Database, Download,
   FileSpreadsheet, History, LoaderCircle, MapPin, Network, Search, Sparkles,
-  Target, Upload, UserRoundCheck, UsersRound,
+  Target, Upload, UserRoundCheck, UsersRound, Zap,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -57,6 +57,21 @@ type Alumni = {
 }
 
 type LatestImport = { filename: string; rowCount: number; importedBy: string; createdAt: string }
+type Provider = "pdl" | "lusha"
+type ProviderUsage = Record<Provider, { used: number; limit: number; remaining: number; configured: boolean }>
+type ProviderHistory = {
+  id: number
+  provider: Provider
+  alumnusName: string
+  operation: string
+  mode: "mock" | "live"
+  status: string
+  creditsUsed: number
+  responseSummary: string
+  errorMessage: string
+  requestedBy: string
+  createdAt: string
+}
 
 const hiringOptions = [
   ["Direct hiring decision-maker", 100], ["Strong hiring influence", 80],
@@ -224,6 +239,13 @@ export default function Home() {
   const [latestImport, setLatestImport] = useState<LatestImport | null>(null)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
+  const [enrichmentMode, setEnrichmentMode] = useState<"mock" | "live">("mock")
+  const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ pdl: { used: 0, limit: 100, remaining: 100, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
+  const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
+  const [creditDrafts, setCreditDrafts] = useState<Record<Provider, string>>({ pdl: "100", lusha: "100" })
+  const [selectedForEnrichment, setSelectedForEnrichment] = useState<number[]>([])
+  const [enriching, setEnriching] = useState(false)
+  const [enrichmentMessage, setEnrichmentMessage] = useState("")
 
   const loadWorkspace = useCallback(async (seedIfEmpty = false) => {
     try {
@@ -242,7 +264,10 @@ export default function Home() {
         data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
         if (!response.ok) throw new Error(data.error || "Unable to reload the shared workspace.")
       }
-      if (data.alumni?.length) setAlumni(data.alumni)
+      if (data.alumni?.length) {
+        setAlumni(data.alumni)
+        setSelected(current => current ? data.alumni?.find(person => person.id === current.id) ?? null : null)
+      }
       if (data.companyPriorities) setCompanyPriorities(current => ({ ...current, ...data.companyPriorities }))
       setLatestImport(data.latestImport ?? null)
       setWorkspaceMessage("")
@@ -257,6 +282,25 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadWorkspace(true), 0)
     return () => window.clearTimeout(timer)
   }, [loadWorkspace])
+
+  const loadEnrichment = useCallback(async () => {
+    try {
+      const response = await fetch("/api/enrichment", { cache: "no-store" })
+      const data = await response.json() as { mode?: "mock" | "live"; usage?: ProviderUsage; history?: ProviderHistory[]; error?: string }
+      if (!response.ok || !data.usage) throw new Error(data.error || "Unable to load provider activity.")
+      setEnrichmentMode(data.mode ?? "mock")
+      setProviderUsage(data.usage)
+      setProviderHistory(data.history ?? [])
+      setCreditDrafts({ pdl: String(data.usage.pdl.limit), lusha: String(data.usage.lusha.limit) })
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to load provider activity.")
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadEnrichment(), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadEnrichment])
 
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
   const functions = useMemo(() => [...new Set(alumni.map(person => person.function))].sort(), [alumni])
@@ -349,6 +393,46 @@ export default function Home() {
     }
   }
 
+  async function runEnrichment(ids: number[], requestedProviders: Provider[], operation: "manual" | "batch") {
+    if (!ids.length) { setEnrichmentMessage("Select at least one alumnus first."); return }
+    setEnriching(true)
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch("/api/enrichment", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ alumniIds: ids.slice(0, 25), providers: requestedProviders, operation }),
+      })
+      const data = await response.json() as { results?: Array<{ status: string }>; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to run enrichment.")
+      const successes = data.results?.filter(result => result.status === "success").length ?? 0
+      setEnrichmentMessage(`${successes} provider result${successes === 1 ? "" : "s"} applied. Full details are in response history.`)
+      await Promise.all([loadWorkspace(false), loadEnrichment()])
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to run enrichment.")
+    } finally {
+      setEnriching(false)
+    }
+  }
+
+  async function saveCreditLimit(provider: Provider) {
+    const monthlyCreditLimit = Number(creditDrafts[provider])
+    if (!Number.isInteger(monthlyCreditLimit) || monthlyCreditLimit < 0) { setEnrichmentMessage("Enter a whole-number credit limit."); return }
+    try {
+      const response = await fetch("/api/enrichment", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, monthlyCreditLimit }) })
+      const data = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to save the credit limit.")
+      setEnrichmentMessage(`${provider.toUpperCase()} monthly application limit saved.`)
+      await loadEnrichment()
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to save the credit limit.")
+    }
+  }
+
+  function toggleEnrichmentSelection(id: number) {
+    setSelectedForEnrichment(current => current.includes(id) ? current.filter(item => item !== id) : current.length < 25 ? [...current, id] : current)
+  }
+
   const functionCounts = targetAlumni.reduce<Record<string, number>>((acc, person) => {
     acc[person.function] = (acc[person.function] ?? 0) + 1
     return acc
@@ -374,6 +458,7 @@ export default function Home() {
             <TabsTrigger value="companies">Company intelligence</TabsTrigger>
             <TabsTrigger value="outreach">Outreach</TabsTrigger>
             <TabsTrigger value="data-import">Data import</TabsTrigger>
+            <TabsTrigger value="enrichment">Enrichment</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="tab-panel">
@@ -466,6 +551,40 @@ export default function Home() {
               </aside>
             </section>
           </TabsContent>
+
+          <TabsContent value="enrichment" className="tab-panel">
+            <section className="enrichment-header">
+              <div><p className="eyebrow">PDL and Lusha</p><h2>Provider enrichment centre</h2><span>Refresh professional profiles, retrieve contact channels and control paid usage from one place.</span></div>
+              <span className={`provider-mode mode-${enrichmentMode}`}>{enrichmentMode === "mock" ? "Demonstration mode" : "Live provider mode"}</span>
+            </section>
+
+            <section className="provider-grid">
+              {(["pdl", "lusha"] as Provider[]).map(provider => {
+                const usage = providerUsage[provider]
+                const percent = usage.limit ? Math.min(100, usage.used / usage.limit * 100) : 100
+                return <article className="panel provider-card" key={provider}>
+                  <div className="provider-title"><span>{provider === "pdl" ? "PDL" : "LU"}</span><div><h3>{provider === "pdl" ? "People Data Labs" : "Lusha"}</h3><small>{provider === "pdl" ? "Profile discovery and employment refresh" : "Email and phone enrichment"}</small></div></div>
+                  <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{enrichmentMode === "mock" ? "Mock provider active" : usage.configured ? "API key configured" : "API key missing"}</span><strong>{usage.remaining} credits remaining</strong></div>
+                  <div className="credit-meter"><i style={{ width: `${percent}%` }} /></div>
+                  <div className="credit-numbers"><span>{usage.used} used this month</span><span>{usage.limit} app limit</span></div>
+                  <div className="credit-limit"><Input type="number" min="0" value={creditDrafts[provider]} onChange={event => setCreditDrafts(current => ({ ...current, [provider]: event.target.value }))} aria-label={`${provider} monthly credit limit`} /><Button variant="outline" onClick={() => void saveCreditLimit(provider)}>Save limit</Button></div>
+                  <p>{provider === "pdl" ? "A successful match is counted as 1 PDL credit." : "Usage estimate: 1 credit per email and 5 per phone. Actual usage is recorded from each result."}</p>
+                </article>
+              })}
+            </section>
+
+            <section className="panel batch-panel">
+              <div className="panel-heading"><div><p className="eyebrow">Batch enrichment</p><h2>Select up to 25 alumni</h2><span>{selectedForEnrichment.length} selected. Requests stop automatically at the monthly application limits.</span></div><div className="batch-actions"><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["pdl"], "batch")}>Refresh profiles</Button><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch")}>Enrich contacts</Button><Button disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["pdl", "lusha"], "batch")}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Run both</Button></div></div>
+              {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
+              <Table><TableHeader><TableRow><TableHead><input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} /></TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email</TableHead><TableHead>Phone</TableHead><TableHead>Last verified</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => <TableRow key={person.id}><TableCell><input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} /></TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.programme} · {person.batch}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.verification.email}</TableCell><TableCell>{person.verification.phone}</TableCell><TableCell>{person.verified}</TableCell></TableRow>)}</TableBody></Table>
+            </section>
+
+            <section className="panel history-panel">
+              <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>Complete enrichment audit trail</h2><span>Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here.</span></div><Button variant="ghost" size="sm" onClick={() => void loadEnrichment()}>Refresh history</Button></div>
+              <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Credits</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistory.map(item => <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span></TableCell><TableCell>{item.creditsUsed}</TableCell><TableCell className="response-cell">{item.errorMessage || item.responseSummary}</TableCell></TableRow>)}</TableBody></Table>
+              {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
+            </section>
+          </TabsContent>
         </Tabs>
       </section>
 
@@ -488,7 +607,7 @@ export default function Home() {
               <div><span>Email · {selected.email}</span><strong className={verificationTone(selected.verification.email)}>{selected.verification.email}</strong></div>
               <div><span>Phone · {selected.phone}</span><strong className={verificationTone(selected.verification.phone)}>{selected.verification.phone}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">Operational status uses field-level checks. It is not inferred from Data Confidence alone.</p></section>
+            </div><p className="verified-copy">Operational status uses field-level checks. It is not inferred from Data Confidence alone.</p><div className="manual-enrichment"><Button variant="outline" disabled={enriching} onClick={() => void runEnrichment([selected.id], ["pdl"], "manual")}>Refresh with PDL</Button><Button disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual")}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Enrich with Lusha</Button></div></section>
             <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>
           </div></>}
         </SheetContent>

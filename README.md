@@ -1,4 +1,52 @@
-# vinext-starter
+# Corporate Network
+
+Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and PDL/Lusha enrichment workflows.
+
+## Enrichment providers
+
+Phase 3 supports two operating modes:
+
+- `mock` is the safe default. It runs deterministic demonstration enrichments, consumes only application-level mock credits, and needs no vendor account.
+- `live` calls People Data Labs and Lusha from server routes. Provider keys never reach the browser.
+
+Copy `.env.example` into your local environment configuration and set:
+
+```text
+ENRICHMENT_MODE=mock
+PDL_API_KEY=
+LUSHA_API_KEY=
+```
+
+Change `ENRICHMENT_MODE` to `live` only after both vendor keys are configured. The application also enforces adjustable monthly credit caps stored in D1. The default caps are 100 credits per provider per month.
+
+The Enrichment tab provides:
+
+- manual PDL profile/employment refresh
+- manual Lusha email/phone enrichment
+- batch enrichment for up to 25 alumni
+- monthly credit-limit controls and usage meters
+- sanitized provider-response history
+
+The live PDL adapter uses the v5 Person Enrichment API. The live Lusha adapter targets the v3 Contacts Search and Enrich endpoint. Provider errors are saved to response history without saving API secrets or raw provider payloads.
+
+## Local setup
+
+1. Install Node.js 22.13 or newer.
+2. Run `npm ci`.
+3. Run `npm run dev` for development.
+4. Run `npm run lint`, `npm run build`, and `npm test` before release.
+5. After any schema change, run `npm run db:generate` and deploy the new migration.
+
+## Source layout
+
+- `app/page.tsx`: main dashboard and enrichment interface
+- `app/api/workspace/route.ts`: alumni import and shared-workspace updates
+- `app/api/enrichment/route.ts`: manual/batch enrichment, limits, usage, and history
+- `lib/enrichment-providers.ts`: mock/live PDL and Lusha adapters
+- `db/schema.ts`: D1 schema
+- `drizzle/`: database migrations
+
+## Starter runtime notes
 
 A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
 

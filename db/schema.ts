@@ -64,3 +64,25 @@ export const activityLog = sqliteTable("activity_log", {
   details: text("details").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const providerSettings = sqliteTable("provider_settings", {
+  provider: text("provider").primaryKey(),
+  monthlyCreditLimit: integer("monthly_credit_limit").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const providerResponseHistory = sqliteTable("provider_response_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  provider: text("provider").notNull(),
+  alumnusId: integer("alumnus_id").references(() => alumni.id),
+  alumnusName: text("alumnus_name").notNull(),
+  operation: text("operation").notNull(),
+  mode: text("mode").notNull(),
+  status: text("status").notNull(),
+  creditsUsed: integer("credits_used").notNull().default(0),
+  requestSummary: text("request_summary").notNull().default(""),
+  responseSummary: text("response_summary").notNull().default(""),
+  errorMessage: text("error_message").notNull().default(""),
+  requestedBy: text("requested_by").notNull().default("Public workspace user"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
