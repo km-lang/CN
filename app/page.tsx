@@ -4,16 +4,23 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Activity, ArrowUpRight, BriefcaseBusiness, Building2, CalendarClock, CheckCircle2,
   ChevronRight, CircleUserRound, Cloud, ContactRound, Database, Download,
-  FileSpreadsheet, History, LoaderCircle, MapPin, Network, Search, Sparkles,
-  Target, Upload, UserRoundCheck, UsersRound, Zap,
+  Eye, FileSpreadsheet, Filter, GitCompare, History, LoaderCircle, MapPin, Network,
+  Plus, Search, Sparkles, Target, Upload, UserRoundCheck, UsersRound, XCircle, Zap,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  FIXED_ALUMNI_SCHOOL,
+  defaultDirectoryFilters,
+  matchesInternalFilters,
+  type DirectoryFilters,
+} from "@/lib/alumni-search"
 
 type OutreachStatus = "Not contacted" | "Contacted" | "Responded" | "Meeting set"
 type VerificationState = "Confirmed" | "Verified" | "Likely" | "Unverified" | "Possibly outdated" | "Mismatch"
@@ -23,9 +30,12 @@ type Alumni = {
   name: string
   initials: string
   batch: number
+  graduationYear?: number
   programme: string
+  education?: string
   company: string
   title: string
+  rawTitle?: string
   function: string
   seniority: string
   location: string
@@ -35,6 +45,15 @@ type Alumni = {
   email: string
   phone: string
   linkedinUrl?: string
+  pdlPersonId?: string
+  discoverySource?: string
+  discoveryDate?: string
+  lastPdlRefresh?: string
+  lastLushaEnrichment?: string
+  emailSource?: string
+  phoneSource?: string
+  emailRetrievedAt?: string
+  phoneRetrievedAt?: string
   verified: string
   status: OutreachStatus
   note: string
@@ -67,11 +86,35 @@ type ProviderHistory = {
   mode: "mock" | "live"
   status: string
   creditsUsed: number
+  resultCount?: number
+  requestSummary?: string
   responseSummary: string
   errorMessage: string
   requestedBy: string
   createdAt: string
 }
+
+type DiscoveryResult = {
+  id: number
+  searchId: number
+  name: string
+  education: string
+  currentCompany: string
+  role: string
+  rawTitle: string
+  function: string
+  seniority: string
+  location: string
+  graduationYear: number
+  linkedinUrl: string
+  providerPersonId: string
+  matchStatus: "New" | "Already in database" | "Possible duplicate" | "Needs review"
+  matchConfidence: number
+  linkedInternalAlumnusId: number | null
+  reviewStatus: string
+}
+
+type DiscoveryCounts = { existing: number; new: number; possibleDuplicate: number; needsReview: number }
 
 const hiringOptions = [
   ["Direct hiring decision-maker", 100], ["Strong hiring influence", 80],
@@ -129,6 +172,8 @@ const alumniSeed: Alumni[] = [
 ]
 
 const statusOptions: OutreachStatus[] = ["Not contacted", "Contacted", "Responded", "Meeting set"]
+const functionFilterOptions = ["HR", "Finance", "Strategy", "Consulting", "Product", "Operations", "Sales", "Marketing", "Technology", "General Management", "Other"]
+const seniorityFilterOptions = ["Director+", "VP+", "CXO", "EVP/SVP", "VP", "Director", "GM", "Senior Manager", "Manager", "Associate/Consultant", "Analyst/Junior"]
 
 function optionScore(options: readonly (readonly [string, number])[], label: string) {
   return options.find(([name]) => name === label)?.[1] ?? 50
@@ -188,8 +233,17 @@ function verificationTone(state: VerificationState) {
   return "verification-neutral"
 }
 
+function educationLabel(person: Alumni) {
+  if (person.programme === "Not confirmed") return `Graduation year ${person.graduationYear || "not confirmed"}`
+  return `${person.programme} · ${person.batch}`
+}
+
 function StatusBadge({ status }: { status: OutreachStatus }) {
   return <span className={`status-badge status-${status.toLowerCase().replaceAll(" ", "-")}`}>{status}</span>
+}
+
+function DiscoveryBadge({ status }: { status: DiscoveryResult["matchStatus"] }) {
+  return <span className={`discovery-badge discovery-${status.toLowerCase().replaceAll(" ", "-")}`}>{status === "New" ? "Externally discovered" : status}</span>
 }
 
 function StatCard({ icon: Icon, label, value, delta }: { icon: typeof UsersRound; label: string; value: string; delta: string }) {
@@ -226,10 +280,8 @@ function parseCsv(content: string) {
 export default function Home() {
   const [alumni, setAlumni] = useState<Alumni[]>(alumniSeed)
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>(companyPrioritySeed)
-  const [query, setQuery] = useState("")
-  const [company, setCompany] = useState("All companies")
-  const [func, setFunc] = useState("All functions")
-  const [seniority, setSeniority] = useState("All levels")
+  const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [selected, setSelected] = useState<Alumni | null>(null)
   const [targetCompany, setTargetCompany] = useState("Microsoft")
   const [activeTab, setActiveTab] = useState("overview")
@@ -246,6 +298,14 @@ export default function Home() {
   const [selectedForEnrichment, setSelectedForEnrichment] = useState<number[]>([])
   const [enriching, setEnriching] = useState(false)
   const [enrichmentMessage, setEnrichmentMessage] = useState("")
+  const [discoveryResults, setDiscoveryResults] = useState<DiscoveryResult[]>([])
+  const [discoveryCounts, setDiscoveryCounts] = useState<DiscoveryCounts>({ existing: 0, new: 0, possibleDuplicate: 0, needsReview: 0 })
+  const [discoveryLimit, setDiscoveryLimit] = useState("25")
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryMessage, setDiscoveryMessage] = useState("")
+  const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
+  const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
+  const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
 
   const loadWorkspace = useCallback(async (seedIfEmpty = false) => {
     try {
@@ -303,15 +363,11 @@ export default function Home() {
   }, [loadEnrichment])
 
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
-  const functions = useMemo(() => [...new Set(alumni.map(person => person.function))].sort(), [alumni])
-  const levels = useMemo(() => [...new Set(alumni.map(person => person.seniority))].sort(), [alumni])
+  const programmes = useMemo(() => [...new Set(alumni.map(person => person.programme))].sort(), [alumni])
   const filtered = useMemo(() => alumni.filter(person => {
-    const text = `${person.name} ${person.company} ${person.title} ${person.location}`.toLowerCase()
-    return text.includes(query.toLowerCase())
-      && (company === "All companies" || person.company === company)
-      && (func === "All functions" || person.function === func)
-      && (seniority === "All levels" || person.seniority === seniority)
-  }).sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score), [alumni, company, companyPriorities, func, query, seniority])
+    const relevance = relevanceBreakdown(person, companyPriorities).score
+    return matchesInternalFilters(person, filters, relevance, operationalStatus(person))
+  }).sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score), [alumni, companyPriorities, filters])
 
   const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score).slice(0, 5)
   const targetAlumni = alumni.filter(person => person.company === targetCompany).sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score)
@@ -364,8 +420,8 @@ export default function Home() {
 
   function downloadTemplate() {
     const content = [
-      "name,batch,programme,company,title,function,seniority,location,previous_companies,experience_years,email,phone,linkedin_url,confidence,status,note",
-      'Demo Alumnus,2018,PGP,Example Company,"Senior Manager, Talent Acquisition",HR,Senior Manager,Bengaluru,Example Consulting,8,demo@example.com,+910000000000,,70,Not contacted,"Demonstration record only"',
+      "name,batch,graduation_year,programme,education,company,title,function,seniority,location,previous_companies,experience_years,email,phone,linkedin_url,confidence,status,note",
+      'Demo Alumnus,2018,2018,PGP,Indian Institute of Management Lucknow,Example Company,"Senior Manager, Talent Acquisition",HR,Senior Manager,Bengaluru,Example Consulting,8,demo@example.com,+910000000000,,70,Not contacted,"Demonstration record only"',
     ].join("\n")
     const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }))
     const link = document.createElement("a")
@@ -393,7 +449,7 @@ export default function Home() {
     }
   }
 
-  async function runEnrichment(ids: number[], requestedProviders: Provider[], operation: "manual" | "batch") {
+  async function runEnrichment(ids: number[], requestedProviders: Provider[], operation: "manual" | "batch", contactChannels?: ("email" | "phone")[]) {
     if (!ids.length) { setEnrichmentMessage("Select at least one alumnus first."); return }
     setEnriching(true)
     setEnrichmentMessage("")
@@ -401,7 +457,7 @@ export default function Home() {
       const response = await fetch("/api/enrichment", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ alumniIds: ids.slice(0, 25), providers: requestedProviders, operation }),
+        body: JSON.stringify({ alumniIds: ids.slice(0, 25), providers: requestedProviders, operation, contactChannels }),
       })
       const data = await response.json() as { results?: Array<{ status: string }>; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to run enrichment.")
@@ -433,11 +489,160 @@ export default function Home() {
     setSelectedForEnrichment(current => current.includes(id) ? current.filter(item => item !== id) : current.length < 25 ? [...current, id] : current)
   }
 
+  function updateFilter<K extends keyof DirectoryFilters>(key: K, value: DirectoryFilters[K]) {
+    setFilters(current => ({ ...current, [key]: value }))
+    setDiscoveryResults([])
+    setSelectedDiscoveryIds([])
+    setDiscoveryMessage("")
+  }
+
+  async function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
+    setDiscovering(true)
+    setDiscoveryMessage("")
+    setDiscoveryResults([])
+    setSelectedDiscoveryIds([])
+    try {
+      const response = await fetch("/api/discovery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
+      })
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; error?: string }
+      if (!response.ok || !data.results || !data.counts) throw new Error(data.error || "Unable to search external professional data.")
+      setDiscoveryResults(data.results)
+      setDiscoveryCounts(data.counts)
+      setDiscoveryMessage(data.results.length
+        ? `${data.results.length} external profiles returned. ${data.creditsUsed ?? 0} PDL credits recorded.`
+        : "No additional external alumni were found for these criteria.")
+      await loadEnrichment()
+    } catch (error) {
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to search external professional data.")
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  function findMoreForCompany(companyName: string) {
+    const next = { ...defaultDirectoryFilters(), company: companyName }
+    setFilters(next)
+    setActiveTab("directory")
+    void discoverMoreAlumni(next)
+  }
+
+  function compareRefreshWithPdl(person: Alumni) {
+    const next = { ...defaultDirectoryFilters(), name: person.name, company: person.company }
+    setFilters(next)
+    setSelected(null)
+    setActiveTab("directory")
+    void discoverMoreAlumni(next)
+  }
+
+  function toggleDiscoverySelection(id: number) {
+    setSelectedDiscoveryIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
+  }
+
+  function openComparison(result: DiscoveryResult) {
+    const person = alumni.find(item => item.id === result.linkedInternalAlumnusId)
+    const candidates = person ? [
+      ["company", person.company, result.currentCompany],
+      ["title", person.title, result.role],
+      ["function", person.function, result.function],
+      ["seniority", person.seniority, result.seniority],
+      ["location", person.location, result.location],
+      ["linkedinUrl", person.linkedinUrl ?? "", result.linkedinUrl],
+      ["graduationYear", String(person.graduationYear || person.batch || ""), String(result.graduationYear || "")],
+      ["pdlPersonId", person.pdlPersonId ?? "", result.providerPersonId],
+    ] : []
+    setSelectedComparisonFields(candidates.filter(([, internal, external]) => Boolean(external) && internal !== external).map(([field]) => field))
+    setComparisonResult(result)
+  }
+
+  async function approveDiscoveryResults(resultIds: number[]) {
+    if (!resultIds.length) return
+    setDiscovering(true)
+    try {
+      const response = await fetch("/api/discovery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "approve", resultIds }),
+      })
+      const data = await response.json() as { addedCount?: number; added?: Array<{ resultId: number; alumnusId: number }>; error?: string }
+      if (!response.ok || !data.added) throw new Error(data.error || "Unable to add the selected alumni.")
+      const addedMap = new Map(data.added.map(item => [item.resultId, item.alumnusId]))
+      setDiscoveryResults(current => current.map(item => addedMap.has(item.id)
+        ? { ...item, linkedInternalAlumnusId: addedMap.get(item.id) ?? null, reviewStatus: "Added to Corporate Network" }
+        : item))
+      setSelectedDiscoveryIds([])
+      setDiscoveryMessage(`${data.addedCount ?? data.added.length} alumn${data.added.length === 1 ? "us" : "i"} added. Contact enrichment is now available.`)
+      await loadWorkspace(false)
+    } catch (error) {
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to add the selected alumni.")
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  async function ignoreDiscoveryResult(resultId: number) {
+    const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "ignore", resultId }) })
+    if (response.ok) setDiscoveryResults(current => current.map(item => item.id === resultId ? { ...item, reviewStatus: "Ignored" } : item))
+  }
+
+  async function applyComparison() {
+    if (!comparisonResult) return
+    setDiscovering(true)
+    try {
+      const response = await fetch("/api/discovery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "apply_updates", resultId: comparisonResult.id, fields: selectedComparisonFields }),
+      })
+      const data = await response.json() as { changedFields?: string[]; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to apply the selected updates.")
+      setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, reviewStatus: data.changedFields?.length ? "Updates applied" : "Compared, no changes" } : item))
+      setDiscoveryMessage(data.changedFields?.length ? `${data.changedFields.length} professional fields updated and recorded in Change History.` : "No professional changes detected. The PDL interaction remains in Provider History.")
+      setComparisonResult(null)
+      setSelectedComparisonFields([])
+      await loadWorkspace(false)
+    } catch (error) {
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to apply the selected updates.")
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  async function keepDiscoveryResultSeparate() {
+    if (!comparisonResult) return
+    setDiscovering(true)
+    try {
+      const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "keep_separate", resultId: comparisonResult.id }) })
+      const data = await response.json() as { alumnusId?: number; error?: string }
+      if (!response.ok || !data.alumnusId) throw new Error(data.error || "Unable to keep this alumnus as a separate record.")
+      setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, linkedInternalAlumnusId: data.alumnusId!, reviewStatus: "Added as separate record" } : item))
+      setComparisonResult(null)
+      setSelectedComparisonFields([])
+      setDiscoveryMessage("The reviewed profile was added as a separate alumnus. Lusha enrichment is now available from the internal profile.")
+      await loadWorkspace(false)
+    } catch (error) {
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to keep this alumnus as a separate record.")
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
   const functionCounts = targetAlumni.reduce<Record<string, number>>((acc, person) => {
     acc[person.function] = (acc[person.function] ?? 0) + 1
     return acc
   }, {})
   const selectedBreakdown = selected ? relevanceBreakdown(selected, companyPriorities) : null
+  const comparisonAlumnus = comparisonResult ? alumni.find(person => person.id === comparisonResult.linkedInternalAlumnusId) ?? null : null
+  const comparisonRows = comparisonResult && comparisonAlumnus ? [
+    { field: "company", label: "Current company", internal: comparisonAlumnus.company, external: comparisonResult.currentCompany },
+    { field: "title", label: "Role", internal: comparisonAlumnus.title, external: comparisonResult.role },
+    { field: "function", label: "Function", internal: comparisonAlumnus.function, external: comparisonResult.function },
+    { field: "seniority", label: "Seniority", internal: comparisonAlumnus.seniority, external: comparisonResult.seniority },
+    { field: "location", label: "Location", internal: comparisonAlumnus.location, external: comparisonResult.location },
+    { field: "graduationYear", label: "Graduation year", internal: String(comparisonAlumnus.graduationYear || comparisonAlumnus.batch || "Not recorded"), external: String(comparisonResult.graduationYear || "Not returned") },
+  ] : []
 
   return (
     <main className="app-shell">
@@ -491,24 +696,75 @@ export default function Home() {
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Discover and prioritise</p><h2>Alumni directory</h2><span>{filtered.length} matching records, ranked by Placement Relevance</span></div></div>
-              <div className="filters">
-                <div className="search-field"><Search /><Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search name, company, role or city" aria-label="Search alumni" /></div>
-                <Select value={company} onValueChange={setCompany}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Select value={func} onValueChange={setFunc}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Select value={seniority} onValueChange={setSeniority}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All levels</SelectItem>{levels.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Button variant="ghost" onClick={() => { setQuery(""); setCompany("All companies"); setFunc("All functions"); setSeniority("All levels") }}>Clear</Button>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in Corporate Network, ranked by Placement Relevance</span></div><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>
+              <div className="filters core-filters">
+                <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
+                <Input list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />
+                <datalist id="company-options">{companies.map(item => <option key={item} value={item} />)}</datalist>
+                <Input value={filters.role} onChange={event => updateFilter("role", event.target.value)} placeholder="Role or designation" aria-label="Filter by role or designation" />
+                <Select value={filters.function} onValueChange={value => updateFilter("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={filters.seniority} onValueChange={value => updateFilter("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All seniority</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Input value={filters.location} onChange={event => updateFilter("location", event.target.value)} placeholder="Location" aria-label="Filter by location" />
+                <Button variant="outline" onClick={() => setShowAdvancedFilters(value => !value)}><Filter /> {showAdvancedFilters ? "Fewer filters" : "More filters"}</Button>
+                <Button variant="ghost" onClick={() => { setFilters(defaultDirectoryFilters()); setDiscoveryResults([]); setDiscoveryMessage(""); setSelectedDiscoveryIds([]) }}>Clear</Button>
               </div>
+              {showAdvancedFilters && <div className="advanced-filters">
+                <Select value={filters.programme} onValueChange={value => updateFilter("programme", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{programmes.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Input type="number" min="1980" max="2100" value={filters.batch} onChange={event => updateFilter("batch", event.target.value)} placeholder="Batch / graduation year" />
+                <Input value={filters.previousCompany} onChange={event => updateFilter("previousCompany", event.target.value)} placeholder="Previous company" />
+                <Select value={String(filters.minRelevance)} onValueChange={value => updateFilter("minRelevance", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any relevance</SelectItem><SelectItem value="60">Relevance 60+</SelectItem><SelectItem value="75">Relevance 75+</SelectItem><SelectItem value="85">Relevance 85+</SelectItem></SelectContent></Select>
+                <Select value={String(filters.minConfidence)} onValueChange={value => updateFilter("minConfidence", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any confidence</SelectItem><SelectItem value="60">Confidence 60+</SelectItem><SelectItem value="75">Confidence 75+</SelectItem><SelectItem value="90">Confidence 90+</SelectItem></SelectContent></Select>
+                <Select value={filters.contactStatus} onValueChange={value => updateFilter("contactStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["All contact states", "Contact-ready", "Partially verified", "Needs verification", "Mismatch"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={filters.outreachStatus} onValueChange={value => updateFilter("outreachStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All outreach states">All outreach states</SelectItem>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={filters.relationship} onValueChange={value => updateFilter("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All relationships">All IIML relationships</SelectItem>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select>
+              </div>}
               <Table>
                 <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead></TableRow></TableHeader>
-                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.programme} · {person.batch}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell></TableRow> })}</TableBody>
+                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell></TableRow> })}</TableBody>
               </Table>
-              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No alumni match these filters</h3><p>Clear a filter or try a broader search.</p></div>}
+              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>Search external professional data while keeping the IIM Lucknow education criterion fixed.</p><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button></div>}
             </section>
+
+            {(discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
+              <div className="discovery-header">
+                <div><p className="eyebrow">External discovery</p><h2>{discoveryResults.length} PDL profiles found</h2><span>Results are reviewed before any record enters Corporate Network.</span></div>
+                <div className="fixed-criterion"><span>Fixed alumni criterion</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div>
+              </div>
+              <div className="discovery-controls">
+                <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
+                <div className="result-limit"><span>Results to retrieve</span><Select value={discoveryLimit} onValueChange={setDiscoveryLimit}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["25", "50", "100"].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => void discoverMoreAlumni()} disabled={discovering}>Run again</Button></div>
+              </div>
+              <div className="credit-notice"><Activity /><span>External discovery may consume PDL credits based on the number of person records returned. Internal search remains free.</span></div>
+              {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
+              {selectedDiscoveryIds.length > 0 && <div className="batch-approval"><span>{selectedDiscoveryIds.length} clearly new profile{selectedDiscoveryIds.length === 1 ? "" : "s"} selected</span><Button onClick={() => void approveDiscoveryResults(selectedDiscoveryIds)} disabled={discovering}><Plus /> Add Selected to Corporate Network</Button></div>}
+              <div className="discovery-table-wrap"><Table>
+                <TableHeader><TableRow><TableHead>Select</TableHead><TableHead>Name and education</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Seniority</TableHead><TableHead>Location</TableHead><TableHead>Database match</TableHead><TableHead>Confidence</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
+                <TableBody>{discoveryResults.map(result => {
+                  const canAdd = result.matchStatus === "New" && result.reviewStatus === "Pending review"
+                  const added = result.reviewStatus === "Added to Corporate Network" && result.linkedInternalAlumnusId
+                  return <TableRow key={result.id}>
+                    <TableCell><input type="checkbox" aria-label={`Select ${result.name}`} disabled={!canAdd} checked={selectedDiscoveryIds.includes(result.id)} onChange={() => toggleDiscoverySelection(result.id)} /></TableCell>
+                    <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>{result.education} · {result.graduationYear || "Year not returned"}</small>{result.linkedinUrl && <a href={result.linkedinUrl} target="_blank" rel="noreferrer">View LinkedIn Profile <ArrowUpRight /></a>}</span></TableCell>
+                    <TableCell><span className="stacked-cell"><strong>{result.currentCompany}</strong><small>{result.role}</small></span></TableCell>
+                    <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
+                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{result.reviewStatus}</small></TableCell>
+                    <TableCell><span className={`score-pill ${scoreTone(result.matchConfidence)}`}>{result.matchConfidence}%</span></TableCell>
+                    <TableCell><div className="row-actions">
+                      {canAdd && <Button size="sm" onClick={() => void approveDiscoveryResults([result.id])}><Plus /> Add</Button>}
+                      {(result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate") && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><GitCompare /> Compare</Button>}
+                      {result.matchStatus === "Needs review" && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><Eye /> Review</Button>}
+                      {added && <><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email", "phone"])}>Get Both</Button></>}
+                      {result.reviewStatus === "Pending review" && <Button size="sm" variant="ghost" onClick={() => void ignoreDiscoveryResult(result.id)}><XCircle /> Ignore</Button>}
+                    </div></TableCell>
+                  </TableRow>
+                })}</TableBody>
+              </Table></div>
+              {!discoveryResults.length && <div className="empty-state"><Search /><h3>No additional external alumni were found</h3><p>Broaden optional filters such as location or seniority. The IIM Lucknow criterion will remain fixed.</p></div>}
+            </section>}
           </TabsContent>
 
           <TabsContent value="companies" className="tab-panel">
-            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div><Select value={targetCompany} onValueChange={setTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></section>
+            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div><div className="company-actions"><Select value={targetCompany} onValueChange={setTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Button onClick={() => findMoreForCompany(targetCompany)} disabled={discovering}><Search /> Find More Alumni</Button></div></section>
             <section className="company-grid">
               <article className="panel company-summary">
                 <div className="company-title"><div className="company-logo">{targetCompany.slice(0, 1)}</div><div><h2>{targetCompany}</h2><span>Target company · Priority inherited by all mapped alumni</span></div></div>
@@ -574,14 +830,14 @@ export default function Home() {
             </section>
 
             <section className="panel batch-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Batch enrichment</p><h2>Select up to 25 alumni</h2><span>{selectedForEnrichment.length} selected. Requests stop automatically at the monthly application limits.</span></div><div className="batch-actions"><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["pdl"], "batch")}>Refresh profiles</Button><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch")}>Enrich contacts</Button><Button disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["pdl", "lusha"], "batch")}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Run both</Button></div></div>
+              <div className="panel-heading"><div><p className="eyebrow">Batch enrichment</p><h2>Select up to 25 approved alumni</h2><span>{selectedForEnrichment.length} selected. Contact retrieval happens only after a deliberate request.</span></div><div className="batch-actions"><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both</Button></div></div>
               {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
-              <Table><TableHeader><TableRow><TableHead><input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} /></TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email</TableHead><TableHead>Phone</TableHead><TableHead>Last verified</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => <TableRow key={person.id}><TableCell><input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} /></TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.programme} · {person.batch}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.verification.email}</TableCell><TableCell>{person.verification.phone}</TableCell><TableCell>{person.verified}</TableCell></TableRow>)}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead><input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} /></TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email</TableHead><TableHead>Phone</TableHead><TableHead>Last verified</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => <TableRow key={person.id}><TableCell><input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} /></TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.verification.email}</TableCell><TableCell>{person.verification.phone}</TableCell><TableCell>{person.verified}</TableCell></TableRow>)}</TableBody></Table>
             </section>
 
             <section className="panel history-panel">
               <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>Complete enrichment audit trail</h2><span>Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here.</span></div><Button variant="ghost" size="sm" onClick={() => void loadEnrichment()}>Refresh history</Button></div>
-              <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Credits</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistory.map(item => <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span></TableCell><TableCell>{item.creditsUsed}</TableCell><TableCell className="response-cell">{item.errorMessage || item.responseSummary}</TableCell></TableRow>)}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Credits</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistory.map(item => <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span>{item.resultCount ? <small className="review-status">{item.resultCount} results</small> : null}</TableCell><TableCell>{item.creditsUsed}</TableCell><TableCell className="response-cell">{item.requestSummary && <small>{item.requestSummary}</small>}{item.errorMessage || item.responseSummary}</TableCell></TableRow>)}</TableBody></Table>
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section>
           </TabsContent>
@@ -599,19 +855,38 @@ export default function Home() {
               <label><span>Warm-introduction potential</span><Select value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{responsivenessLabel(selected.status)}</strong><small>Derived from outreach history</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selected.experience} years · Previously {selected.previous}</strong></span></div></div>{selected.linkedinUrl && <a className="profile-link" href={selected.linkedinUrl} target="_blank" rel="noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
-            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{selected.programme} · {selected.batch}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship}</strong></span></div></div><div className="insight-note"><Sparkles /><p>{selected.note}</p></div></section>
+            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship}</strong></span></div></div><div className="insight-note"><Sparkles /><p>{selected.note}</p></div></section>
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last verified {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
               <div><span>Current company</span><strong className={verificationTone(selected.verification.currentCompany)}>{selected.verification.currentCompany}</strong></div>
               <div><span>Designation</span><strong className={verificationTone(selected.verification.designation)}>{selected.verification.designation}</strong></div>
-              <div><span>Email · {selected.email}</span><strong className={verificationTone(selected.verification.email)}>{selected.verification.email}</strong></div>
-              <div><span>Phone · {selected.phone}</span><strong className={verificationTone(selected.verification.phone)}>{selected.verification.phone}</strong></div>
+              <div><span>Email · {selected.email || "Not enriched"}{selected.emailSource ? ` · Source: ${selected.emailSource}` : ""}{selected.emailRetrievedAt ? ` · Retrieved ${new Date(selected.emailRetrievedAt).toLocaleDateString()}` : ""}</span><strong className={verificationTone(selected.verification.email)}>{selected.verification.email}</strong></div>
+              <div><span>Phone · {selected.phone || "Not enriched"}{selected.phoneSource ? ` · Source: ${selected.phoneSource}` : ""}{selected.phoneRetrievedAt ? ` · Retrieved ${new Date(selected.phoneRetrievedAt).toLocaleDateString()}` : ""}</span><strong className={verificationTone(selected.verification.phone)}>{selected.verification.phone}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">Operational status uses field-level checks. It is not inferred from Data Confidence alone.</p><div className="manual-enrichment"><Button variant="outline" disabled={enriching} onClick={() => void runEnrichment([selected.id], ["pdl"], "manual")}>Refresh with PDL</Button><Button disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual")}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Enrich with Lusha</Button></div></section>
+            </div><p className="verified-copy">Operational status uses field-level checks. It is not inferred from Data Confidence alone.</p><div className="refresh-note"><strong>Last PDL refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful refresh may consume a credit even when no information changes.</span></div><div className="manual-enrichment"><Button variant="outline" disabled={enriching} onClick={() => compareRefreshWithPdl(selected)}>Compare & Refresh with PDL</Button><Button variant="outline" disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email</Button><Button variant="outline" disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both</Button></div></section>
             <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>
           </div></>}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(comparisonResult)} onOpenChange={open => { if (!open) { setComparisonResult(null); setSelectedComparisonFields([]) } }}>
+        <DialogContent className="comparison-dialog">
+          <DialogHeader><DialogTitle>Compare professional profile</DialogTitle><DialogDescription>Review Corporate Network and PDL values. Nothing is overwritten until you approve selected fields.</DialogDescription></DialogHeader>
+          {comparisonResult && <>
+            <div className="comparison-person"><div className="avatar">{comparisonAlumnus?.initials ?? comparisonResult.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</div><div><strong>{comparisonResult.name}</strong><span><DiscoveryBadge status={comparisonResult.matchStatus} /> · {comparisonResult.matchConfidence}% match confidence</span></div></div>
+            {comparisonAlumnus ? <div className="comparison-grid"><div className="comparison-head"><span>Field</span><strong>Internal database</strong><strong>PDL result</strong></div>{comparisonRows.map(row => {
+              const changed = row.internal !== row.external && Boolean(row.external) && row.external !== "Not returned"
+              return <label key={row.field} className={`comparison-row ${changed ? "changed" : "same"}`}><input type="checkbox" disabled={!changed} checked={selectedComparisonFields.includes(row.field)} onChange={() => setSelectedComparisonFields(current => current.includes(row.field) ? current.filter(item => item !== row.field) : [...current, row.field])} /><span>{row.label}<small>{changed ? "Changed" : "Same"}</small></span><strong>{row.internal}</strong><strong>{row.external}</strong></label>
+            })}</div> : <div className="external-review-card"><div><span>Education</span><strong>{comparisonResult.education}</strong></div><div><span>Company</span><strong>{comparisonResult.currentCompany}</strong></div><div><span>Role</span><strong>{comparisonResult.role}</strong></div><div><span>Function and seniority</span><strong>{comparisonResult.function} · {comparisonResult.seniority}</strong></div><div><span>Location</span><strong>{comparisonResult.location}</strong></div><div><span>Graduation year</span><strong>{comparisonResult.graduationYear || "Not returned"}</strong></div></div>}
+          </>}
+          <DialogFooter className="comparison-footer">
+            {comparisonResult?.matchStatus === "Possible duplicate" && <Button variant="outline" onClick={() => void keepDiscoveryResultSeparate()} disabled={discovering}>Keep separate</Button>}
+            {comparisonResult?.matchStatus === "Needs review" && <Button variant="outline" onClick={() => { void ignoreDiscoveryResult(comparisonResult.id); setComparisonResult(null) }}>Ignore profile</Button>}
+            {comparisonAlumnus && <Button variant="ghost" onClick={() => { setSelected(comparisonAlumnus); setComparisonResult(null) }}><Eye /> View existing record</Button>}
+            {comparisonAlumnus ? <Button onClick={() => void applyComparison()} disabled={discovering}>{selectedComparisonFields.length ? "Apply selected updates" : "Confirm no changes"}</Button> : <Button onClick={() => setComparisonResult(null)}>Close review</Button>}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
   )
 }

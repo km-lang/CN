@@ -76,7 +76,7 @@ export async function PATCH(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const payload = await request.json() as { alumniIds?: number[]; providers?: ProviderName[]; operation?: string };
+    const payload = await request.json() as { alumniIds?: number[]; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[] };
     const alumniIds = [...new Set(payload.alumniIds?.filter(Number.isInteger) ?? [])];
     const requestedProviders = [...new Set(payload.providers?.filter(provider => providers.includes(provider)) ?? [])];
     if (!alumniIds.length || alumniIds.length > 25 || !requestedProviders.length) {
@@ -85,18 +85,19 @@ export async function POST(request: Request) {
     const db = getDb();
     const actor = actorFrom(request);
     const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
-    const usage = await usageSnapshot() as Record<ProviderName, { used: number; limit: number; remaining: number }>;
+    const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
     const results = [];
     for (const person of people) {
       for (const provider of requestedProviders) {
-        const estimated = provider === "pdl" ? 1 : 6;
+        const channels = payload.contactChannels?.filter(channel => channel === "email" || channel === "phone") ?? ["email", "phone"];
+        const estimated = provider === "pdl" ? 1 : (channels.includes("email") ? 1 : 0) + (channels.includes("phone") ? 5 : 0);
         if (usage[provider].remaining < estimated) {
           const blocked = { provider, status: "blocked", creditsUsed: 0, alumnusId: person.id, alumnusName: person.name, responseSummary: "Monthly application credit limit reached." };
           results.push(blocked);
           await db.insert(providerResponseHistory).values({ provider, alumnusId: person.id, alumnusName: person.name, operation: payload.operation ?? (alumniIds.length > 1 ? "batch" : "manual"), mode: enrichmentMode(), status: "blocked", creditsUsed: 0, requestSummary: `${person.name} at ${person.company}`, responseSummary: blocked.responseSummary, requestedBy: actor });
           continue;
         }
-        const result = await enrich(provider, { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl });
+        const result = await enrich(provider, { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl, contactChannels: channels });
         if (result.status === "success" && Object.keys(result.changes).length) {
           await db.update(alumni).set({ ...result.changes, updatedBy: actor, updatedAt: new Date().toISOString() }).where(eq(alumni.id, person.id));
           usage[provider].used += result.creditsUsed;
@@ -110,6 +111,7 @@ export async function POST(request: Request) {
           mode: enrichmentMode(),
           status: result.status,
           creditsUsed: result.creditsUsed,
+          resultCount: result.status === "success" ? 1 : 0,
           requestSummary: `${person.name} at ${person.company}`,
           responseSummary: result.responseSummary,
           errorMessage: result.errorMessage ?? "",

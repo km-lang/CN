@@ -9,6 +9,7 @@ export type EnrichmentInput = {
   email: string;
   phone: string;
   linkedinUrl: string;
+  contactChannels?: ("email" | "phone")[];
 };
 
 export type EnrichmentResult = {
@@ -55,6 +56,7 @@ function mockPdl(input: EnrichmentInput): EnrichmentResult {
       currentCompanyVerification: "Verified",
       designationVerification: "Verified",
       locationVerification: "Verified",
+      lastPdlRefresh: new Date().toISOString(),
       verified: "just now",
       source: "PDL demonstration enrichment",
     },
@@ -63,22 +65,28 @@ function mockPdl(input: EnrichmentInput): EnrichmentResult {
 }
 
 function mockLusha(input: EnrichmentInput): EnrichmentResult {
+  const channels = input.contactChannels?.length ? input.contactChannels : ["email", "phone"];
   const slug = input.name.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.|\.$/g, "");
   const email = input.email && !input.email.endsWith("@example.com") ? input.email : `${slug}@demo-contact.invalid`;
   const phone = input.phone && !input.phone.includes("•") ? input.phone : `+91 90000 ${String(10000 + input.id).slice(-5)}`;
+  const emailRequested = channels.includes("email");
+  const phoneRequested = channels.includes("phone");
+  const phoneAvailable = input.id % 5 !== 0;
+  const now = new Date().toISOString();
   return {
     provider: "lusha",
-    status: "success",
-    creditsUsed: 6,
+    status: emailRequested || (phoneRequested && phoneAvailable) ? "success" : "no_match",
+    creditsUsed: (emailRequested ? 1 : 0) + (phoneRequested && phoneAvailable ? 5 : 0),
     changes: {
-      email,
-      phone,
-      emailVerification: "Verified",
-      phoneVerification: "Verified",
+      ...(emailRequested ? { email, emailVerification: "Verified", emailSource: "Lusha", emailRetrievedAt: now } : {}),
+      ...(phoneRequested && phoneAvailable ? { phone, phoneVerification: "Verified", phoneSource: "Lusha", phoneRetrievedAt: now } : {}),
+      lastLushaEnrichment: now,
       verified: "just now",
       source: "Lusha demonstration enrichment",
     },
-    responseSummary: "Demonstration work email and phone returned and marked verified.",
+    responseSummary: phoneRequested && !phoneAvailable
+      ? `${emailRequested ? "Demonstration work email returned. " : ""}No phone was available for this contact.`
+      : `Demonstration ${channels.join(" and ")} returned.`,
   };
 }
 
@@ -120,6 +128,7 @@ async function livePdl(input: EnrichmentInput): Promise<EnrichmentResult> {
     currentCompanyVerification: "Verified",
     designationVerification: "Verified",
     locationVerification: "Verified",
+    lastPdlRefresh: new Date().toISOString(),
     verified: "just now",
     source: "People Data Labs",
   };
@@ -127,10 +136,12 @@ async function livePdl(input: EnrichmentInput): Promise<EnrichmentResult> {
   const title = stringValue(job.title);
   const location = stringValue(data.location_name ?? data.location);
   const linkedinUrl = stringValue(data.linkedin_url);
+  const pdlPersonId = stringValue(data.id ?? body.id);
   if (company) changes.company = company;
   if (title) changes.title = title;
   if (location) changes.location = location;
   if (linkedinUrl) changes.linkedinUrl = linkedinUrl;
+  if (pdlPersonId) changes.pdlPersonId = pdlPersonId;
   return { provider: "pdl", status: "success", creditsUsed, changes, responseSummary: `Profile matched with likelihood ${String(body.likelihood ?? "available")}; employment fields refreshed.` };
 }
 
@@ -138,6 +149,9 @@ async function liveLusha(input: EnrichmentInput): Promise<EnrichmentResult> {
   const key = runtimeEnv().LUSHA_API_KEY;
   if (!key) throw new Error("LUSHA_API_KEY is not configured.");
   const [firstName, ...surname] = input.name.split(/\s+/);
+  const channels = input.contactChannels?.length ? input.contactChannels : ["email", "phone"];
+  const revealEmails = channels.includes("email");
+  const revealPhones = channels.includes("phone");
   const response = await fetch("https://api.lusha.com/v3/contacts/search-and-enrich", {
     method: "POST",
     headers: { "api_key": key, "content-type": "application/json", accept: "application/json" },
@@ -148,8 +162,8 @@ async function liveLusha(input: EnrichmentInput): Promise<EnrichmentResult> {
         companyName: input.company,
         linkedinUrl: input.linkedinUrl || undefined,
       }],
-      revealEmails: true,
-      revealPhones: true,
+      revealEmails,
+      revealPhones,
     }),
   });
   const body = await response.json() as Record<string, unknown>;
@@ -158,9 +172,10 @@ async function liveLusha(input: EnrichmentInput): Promise<EnrichmentResult> {
   const first = (Array.isArray(body.data) ? body.data[0] : body.data ?? body) as Record<string, unknown>;
   const email = firstString(first.email ?? first.emails);
   const phone = firstString(first.phone ?? first.phones ?? first.phoneNumbers);
-  const changes: Record<string, string | number> = { verified: "just now", source: "Lusha" };
-  if (email) { changes.email = email; changes.emailVerification = "Verified"; }
-  if (phone) { changes.phone = phone; changes.phoneVerification = "Verified"; }
+  const now = new Date().toISOString();
+  const changes: Record<string, string | number> = { verified: "just now", source: "Lusha", lastLushaEnrichment: now };
+  if (email && revealEmails) { changes.email = email; changes.emailVerification = "Verified"; changes.emailSource = "Lusha"; changes.emailRetrievedAt = now; }
+  if (phone && revealPhones) { changes.phone = phone; changes.phoneVerification = "Verified"; changes.phoneSource = "Lusha"; changes.phoneRetrievedAt = now; }
   const creditsUsed = (email ? 1 : 0) + (phone ? 5 : 0);
   return { provider: "lusha", status: email || phone ? "success" : "no_match", creditsUsed, changes, responseSummary: email || phone ? `${email ? "Email" : ""}${email && phone ? " and " : ""}${phone ? "phone" : ""} returned.` : "Contact matched without requested details." };
 }

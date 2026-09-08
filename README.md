@@ -1,6 +1,21 @@
 # Corporate Network
 
-Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and PDL/Lusha enrichment workflows.
+Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and an internal-search-to-PDL-to-Lusha discovery workflow.
+
+## Company-first alumni discovery
+
+The Alumni Directory supports optional filters for name, current company, role, function, seniority, location, programme, graduation year, previous company, placement relevance, data confidence, contact state, outreach state, and IIML relationship. Filters combine with AND logic. Searching the internal database does not call an external provider.
+
+The end-to-end discovery flow is:
+
+1. Search the internal Corporate Network database.
+2. Select **Discover More Alumni** to carry the active filters into PDL Person Search.
+3. Keep **Indian Institute of Management Lucknow** as the fixed education criterion.
+4. Review results classified as New, Already in database, Possible duplicate, or Needs review.
+5. Manually approve clearly new records or compare possible matches. No external result is inserted automatically.
+6. After approval, selectively request an email, phone, or both from Lusha.
+
+Company Intelligence reuses the same workflow through **Find More Alumni**. PDL comparisons never overwrite an existing profile silently. Selected updates are recorded in field-change history, while all provider calls are recorded in provider-response history.
 
 ## Enrichment providers
 
@@ -27,7 +42,7 @@ The Enrichment tab provides:
 - monthly credit-limit controls and usage meters
 - sanitized provider-response history
 
-The live PDL adapter uses the v5 Person Enrichment API. The live Lusha adapter targets the v3 Contacts Search and Enrich endpoint. Provider errors are saved to response history without saving API secrets or raw provider payloads.
+The live discovery adapter uses the PDL v5 Person Search API, while existing-profile refresh continues through the PDL enrichment workflow. The live Lusha adapter targets the v3 Search and Enrich endpoint. Provider errors are saved to response history without saving API secrets or raw provider payloads.
 
 ## Local setup
 
@@ -42,9 +57,16 @@ The live PDL adapter uses the v5 Person Enrichment API. The live Lusha adapter t
 - `app/page.tsx`: main dashboard and enrichment interface
 - `app/api/workspace/route.ts`: alumni import and shared-workspace updates
 - `app/api/enrichment/route.ts`: manual/batch enrichment, limits, usage, and history
+- `app/api/discovery/route.ts`: PDL discovery, reconciliation, review, approval, refresh, and history
+- `lib/alumni-search.ts`: shared internal filtering and provider-query translation
+- `lib/pdl-discovery.ts`: mock/live PDL Person Search service
 - `lib/enrichment-providers.ts`: mock/live PDL and Lusha adapters
 - `db/schema.ts`: D1 schema
 - `drizzle/`: database migrations
+
+## Validation
+
+Run `node --test tests/alumni-discovery.test.mjs` to verify the 15 company-first discovery acceptance conditions. Run `npm run lint`, `npx tsc --noEmit`, and `npm run build` before release.
 
 ## Starter runtime notes
 

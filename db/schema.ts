@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const alumni = sqliteTable("alumni", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -7,9 +7,12 @@ export const alumni = sqliteTable("alumni", {
   name: text("name").notNull(),
   initials: text("initials").notNull(),
   batch: integer("batch").notNull(),
+  graduationYear: integer("graduation_year").notNull().default(0),
   programme: text("programme").notNull(),
+  education: text("education").notNull().default("Indian Institute of Management Lucknow"),
   company: text("company").notNull(),
   title: text("title").notNull(),
+  rawTitle: text("raw_title").notNull().default(""),
   function: text("function").notNull(),
   seniority: text("seniority").notNull(),
   location: text("location").notNull(),
@@ -19,6 +22,16 @@ export const alumni = sqliteTable("alumni", {
   email: text("email").notNull().default(""),
   phone: text("phone").notNull().default(""),
   linkedinUrl: text("linkedin_url").notNull().default(""),
+  pdlPersonId: text("pdl_person_id").notNull().default(""),
+  lushaPersonId: text("lusha_person_id").notNull().default(""),
+  discoverySource: text("discovery_source").notNull().default("Manual import"),
+  discoveryDate: text("discovery_date").notNull().default(""),
+  lastPdlRefresh: text("last_pdl_refresh").notNull().default(""),
+  lastLushaEnrichment: text("last_lusha_enrichment").notNull().default(""),
+  emailSource: text("email_source").notNull().default(""),
+  phoneSource: text("phone_source").notNull().default(""),
+  emailRetrievedAt: text("email_retrieved_at").notNull().default(""),
+  phoneRetrievedAt: text("phone_retrieved_at").notNull().default(""),
   verified: text("verified_label").notNull().default("Not yet verified"),
   status: text("outreach_status").notNull().default("Not contacted"),
   note: text("note").notNull().default("No placement context recorded."),
@@ -38,6 +51,8 @@ export const alumni = sqliteTable("alumni", {
 }, (table) => [
   uniqueIndex("idx_alumni_profile_key").on(table.profileKey),
   uniqueIndex("idx_alumni_email").on(table.email).where(sql`${table.email} != ''`),
+  index("idx_alumni_company").on(table.company),
+  index("idx_alumni_pdl_person_id").on(table.pdlPersonId),
 ]);
 
 export const companyPriorities = sqliteTable("company_priorities", {
@@ -76,13 +91,72 @@ export const providerResponseHistory = sqliteTable("provider_response_history", 
   provider: text("provider").notNull(),
   alumnusId: integer("alumnus_id").references(() => alumni.id),
   alumnusName: text("alumnus_name").notNull(),
+  searchId: integer("search_id"),
   operation: text("operation").notNull(),
   mode: text("mode").notNull(),
   status: text("status").notNull(),
   creditsUsed: integer("credits_used").notNull().default(0),
+  resultCount: integer("result_count").notNull().default(0),
   requestSummary: text("request_summary").notNull().default(""),
   responseSummary: text("response_summary").notNull().default(""),
   errorMessage: text("error_message").notNull().default(""),
   requestedBy: text("requested_by").notNull().default("Public workspace user"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const externalDiscoverySearches = sqliteTable("external_discovery_searches", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  provider: text("provider").notNull().default("pdl"),
+  filtersJson: text("filters_json").notNull(),
+  criteriaSummary: text("criteria_summary").notNull(),
+  resultCount: integer("result_count").notNull().default(0),
+  existingCount: integer("existing_count").notNull().default(0),
+  newCount: integer("new_count").notNull().default(0),
+  duplicateCount: integer("duplicate_count").notNull().default(0),
+  creditsUsed: integer("credits_used").notNull().default(0),
+  mode: text("mode").notNull(),
+  initiatedBy: text("initiated_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const externalDiscoveryResults = sqliteTable("external_discovery_results", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  searchId: integer("search_id").notNull().references(() => externalDiscoverySearches.id),
+  provider: text("provider").notNull().default("pdl"),
+  providerResultId: text("provider_result_id").notNull(),
+  name: text("name").notNull(),
+  education: text("education").notNull(),
+  currentCompany: text("current_company").notNull(),
+  role: text("role").notNull(),
+  rawTitle: text("raw_title").notNull().default(""),
+  function: text("function").notNull(),
+  seniority: text("seniority").notNull(),
+  location: text("location").notNull(),
+  graduationYear: integer("graduation_year").notNull().default(0),
+  linkedinUrl: text("linkedin_url").notNull().default(""),
+  providerPersonId: text("provider_person_id").notNull().default(""),
+  matchStatus: text("match_status").notNull(),
+  matchConfidence: integer("match_confidence").notNull().default(50),
+  linkedInternalAlumnusId: integer("linked_internal_alumnus_id").references(() => alumni.id),
+  reviewStatus: text("review_status").notNull().default("Pending review"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  reviewedAt: text("reviewed_at").notNull().default(""),
+  reviewedBy: text("reviewed_by").notNull().default(""),
+}, (table) => [
+  uniqueIndex("idx_external_result_search_provider").on(table.searchId, table.providerResultId),
+  index("idx_external_result_search").on(table.searchId),
+  index("idx_external_result_match_status").on(table.matchStatus),
+]);
+
+export const fieldChangeHistory = sqliteTable("field_change_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  field: text("field").notNull(),
+  oldValue: text("old_value").notNull().default(""),
+  newValue: text("new_value").notNull().default(""),
+  source: text("source").notNull(),
+  providerAction: text("provider_action").notNull().default(""),
+  creditsCharged: integer("credits_charged").notNull().default(0),
+  initiatedBy: text("initiated_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_field_change_alumnus").on(table.alumnusId)]);
