@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  Activity, ArrowUpRight, BriefcaseBusiness, Building2, CalendarClock, CheckCircle2,
-  ChevronRight, CircleUserRound, Cloud, ContactRound, Database, Download,
-  Eye, FileSpreadsheet, Filter, GitCompare, History, LoaderCircle, MapPin, Network,
-  Plus, Search, Sparkles, Target, Upload, UserRoundCheck, UsersRound, XCircle, Zap,
+  Activity, ArrowUpRight, Ban, BellRing, BriefcaseBusiness, Building2, Cake,
+  CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, Cloud, ContactRound,
+  Database, Download, Eye, FileSpreadsheet, Filter, GitCompare, History, LoaderCircle,
+  Mail, MapPin, MessageSquare, Network, Plus, Search, Send, Sparkles, Target, Upload,
+  UserRoundCheck, UsersRound, XCircle, Zap,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -15,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 import {
   FIXED_ALUMNI_SCHOOL,
   defaultDirectoryFilters,
@@ -116,6 +118,46 @@ type DiscoveryResult = {
 
 type DiscoveryCounts = { existing: number; new: number; possibleDuplicate: number; needsReview: number }
 
+type EngagementStatus = "New" | "Viewed" | "Acknowledged" | "Action Planned" | "Action Taken" | "Response Received" | "Follow-up Due" | "Closed" | "Skipped"
+type EngagementActivity = { id: number; action: string; actor: string; details: string; createdAt: string }
+type EngagementAction = { id: number; actionType: string; channel: string; performedBy: string; performedAt: string; subject: string; deliveryStatus: string; notes: string }
+type EngagementEvent = {
+  id: number
+  alumnusId: number
+  eventType: "Birthday" | "Professional Signal" | "Manual Relationship" | string
+  eventSubtype: string
+  eventTitle: string
+  eventDescription: string
+  eventDate: string
+  source: string
+  sourceDetectedDate: string
+  status: EngagementStatus
+  assignedTo: string
+  assignedAt: string
+  actionTakenAt: string
+  actionTakenBy: string
+  actionType: string
+  actionChannel: string
+  deliveryStatus: string
+  responseReceived: boolean
+  responseReceivedAt: string
+  responseType: string
+  followUpRequired: boolean
+  followUpDate: string
+  skipReason: string
+  lastViewedBy: string
+  alumnus: { id: number; name: string; initials: string; company: string; title: string; programme: string; batch: number; email: string; relationship: string; confidence: number; outreachStatus: string } | null
+  birthday: { birthMonthDay: string; source: string; status: string; lastVerifiedAt: string } | null
+  preference: string
+  actions: EngagementAction[]
+  responses: Array<{ id: number; responseType: string; receivedAt: string; recordedBy: string; notes: string; followUpRequired: boolean; followUpDate: string }>
+  views: Array<{ id: number; userId: string; viewedAt: string }>
+  activity: EngagementActivity[]
+}
+type MessageTemplate = { id: number; templateKey: string; name: string; eventType: string; subject: string; body: string }
+type MailPreview = { event: EngagementEvent; templateId: number; recipient: string; subject: string; body: string }
+type BulkPreview = { ready: Array<{ eventId: number; alumnusName: string; templateId: number; recipient: string; subject: string; body: string }>; excluded: Array<{ eventId: number; alumnusName: string; reason: string }> }
+
 const hiringOptions = [
   ["Direct hiring decision-maker", 100], ["Strong hiring influence", 80],
   ["Moderate hiring influence", 60], ["Limited hiring influence", 30],
@@ -197,13 +239,23 @@ function responsivenessLabel(status: OutreachStatus) {
   return responsivenessOptions[3][0]
 }
 
-function relevanceBreakdown(person: Alumni, priorities: Record<string, string>) {
+function derivedResponsiveness(person: Alumni, history: EngagementEvent[] = []) {
+  const relevant = history.filter(event => event.alumnusId === person.id)
+  const responses = relevant.filter(event => event.responseReceived).length
+  const completed = relevant.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed"].includes(event.status)).length
+  if (responses >= 2) return responsivenessOptions[0][0]
+  if (responses === 1) return responsivenessOptions[1][0]
+  if (completed >= 2) return responsivenessOptions[2][0]
+  return responsivenessLabel(person.status)
+}
+
+function relevanceBreakdown(person: Alumni, priorities: Record<string, string>, history: EngagementEvent[] = []) {
   const items = [
     { label: "Hiring influence", score: optionScore(hiringOptions, person.assessment.hiringInfluence), weight: 30 },
     { label: "Seniority", score: optionScore(seniorityOptions, seniorityLabel(person)), weight: 20 },
     { label: "Company priority", score: optionScore(companyPriorityOptions, priorities[person.company]), weight: 20 },
     { label: "IIML relationship", score: optionScore(relationshipOptions, person.assessment.iimlRelationship), weight: 15 },
-    { label: "Past responsiveness", score: optionScore(responsivenessOptions, responsivenessLabel(person.status)), weight: 10 },
+    { label: "Past responsiveness", score: optionScore(responsivenessOptions, derivedResponsiveness(person, history)), weight: 10 },
     { label: "Warm-intro potential", score: optionScore(warmIntroOptions, person.assessment.warmIntroPotential), weight: 5 },
   ]
   const score = Math.round(items.reduce((total, item) => total + item.score * item.weight / 100, 0))
@@ -240,6 +292,15 @@ function educationLabel(person: Alumni) {
 
 function StatusBadge({ status }: { status: OutreachStatus }) {
   return <span className={`status-badge status-${status.toLowerCase().replaceAll(" ", "-")}`}>{status}</span>
+}
+
+function EngagementStatusBadge({ status }: { status: EngagementStatus }) {
+  return <span className={`engagement-status engagement-${status.toLowerCase().replaceAll(" ", "-")}`}>{status}</span>
+}
+
+function displayEventDate(value: string) {
+  if (!value) return "Date not recorded"
+  return new Date(`${value.slice(0, 10)}T12:00:00Z`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
 }
 
 function DiscoveryBadge({ status }: { status: DiscoveryResult["matchStatus"] }) {
@@ -306,6 +367,24 @@ export default function Home() {
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
+  const [engagements, setEngagements] = useState<EngagementEvent[]>([])
+  const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([])
+  const [mailMode, setMailMode] = useState<"mock" | "live">("mock")
+  const [currentDemoUser, setCurrentDemoUser] = useState("PCOMmer 1")
+  const [engagementFilter, setEngagementFilter] = useState("Needs Action")
+  const [birthdayWindow, setBirthdayWindow] = useState("Next 7 Days")
+  const [birthdayCompany, setBirthdayCompany] = useState("All companies")
+  const [birthdayEmailFilter, setBirthdayEmailFilter] = useState("All email states")
+  const [selectedEngagement, setSelectedEngagement] = useState<EngagementEvent | null>(null)
+  const [selectedBirthdayIds, setSelectedBirthdayIds] = useState<number[]>([])
+  const [engagementLoading, setEngagementLoading] = useState(false)
+  const [engagementMessage, setEngagementMessage] = useState("")
+  const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
+  const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
+  const [responseType, setResponseType] = useState("Positive")
+  const [responseNotes, setResponseNotes] = useState("")
+  const [followUpDate, setFollowUpDate] = useState("")
+  const [birthdayCorrection, setBirthdayCorrection] = useState("")
 
   const loadWorkspace = useCallback(async (seedIfEmpty = false) => {
     try {
@@ -362,17 +441,74 @@ export default function Home() {
     return () => window.clearTimeout(timer)
   }, [loadEnrichment])
 
+  const loadEngagements = useCallback(async () => {
+    try {
+      setEngagementLoading(true)
+      const response = await fetch("/api/engagements", { cache: "no-store", headers: { "x-demo-user": currentDemoUser } })
+      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; mode?: "mock" | "live"; error?: string }
+      if (!response.ok || !data.events) throw new Error(data.error || "Unable to load the shared engagement queue.")
+      setEngagements(data.events)
+      setMessageTemplates(data.templates ?? [])
+      setMailMode(data.mode ?? "mock")
+      setSelectedEngagement(current => current ? data.events?.find(event => event.id === current.id) ?? null : null)
+      setEngagementMessage("")
+    } catch (error) {
+      setEngagementMessage(error instanceof Error ? error.message : "Unable to load the shared engagement queue.")
+    } finally {
+      setEngagementLoading(false)
+    }
+  }, [currentDemoUser])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadEngagements(), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadEngagements])
+
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
   const programmes = useMemo(() => [...new Set(alumni.map(person => person.programme))].sort(), [alumni])
   const filtered = useMemo(() => alumni.filter(person => {
-    const relevance = relevanceBreakdown(person, companyPriorities).score
+    const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
     return matchesInternalFilters(person, filters, relevance, operationalStatus(person))
-  }).sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score), [alumni, companyPriorities, filters])
+  }).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score), [alumni, companyPriorities, engagements, filters])
 
-  const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score).slice(0, 5)
-  const targetAlumni = alumni.filter(person => person.company === targetCompany).sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score)
+  const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score).slice(0, 5)
+  const targetAlumni = alumni.filter(person => person.company === targetCompany).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
   const activeOutreach = alumni.filter(person => person.status !== "Not contacted").length
   const contactReadyCount = alumni.filter(person => operationalStatus(person) === "Contact-ready").length
+  const today = new Date().toISOString().slice(0, 10)
+  const tomorrowDate = new Date(); tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1)
+  const tomorrow = tomorrowDate.toISOString().slice(0, 10)
+  const nextWeekDate = new Date(); nextWeekDate.setUTCDate(nextWeekDate.getUTCDate() + 7)
+  const nextWeek = nextWeekDate.toISOString().slice(0, 10)
+  const birthdayEvents = engagements.filter(event => event.eventType === "Birthday")
+  const professionalEvents = engagements.filter(event => event.eventType === "Professional Signal")
+  const birthdaysToday = birthdayEvents.filter(event => event.eventDate === today)
+  const birthdaysNextWeek = birthdayEvents.filter(event => event.eventDate >= today && event.eventDate <= nextWeek)
+  const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
+  const followUpsDue = engagements.filter(event => event.status === "Follow-up Due")
+  const birthdayReady = (event: EngagementEvent) => Boolean(event.alumnus?.email)
+    && ["Confirmed internally", "Manually confirmed", "PDL sourced"].includes(event.birthday?.status ?? "")
+    && !["Do not contact", "Do not send birthday wishes", "Professional engagement only"].includes(event.preference)
+    && !["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status)
+  const visibleEngagements = engagements.filter(event => {
+    if (engagementFilter === "Professional Signals" && event.eventType !== "Professional Signal") return false
+    if (engagementFilter === "Birthdays" && event.eventType !== "Birthday") return false
+    if (engagementFilter === "Assigned to Me" && event.assignedTo !== currentDemoUser) return false
+    if (engagementFilter === "Follow-ups" && event.status !== "Follow-up Due") return false
+    if (engagementFilter === "Completed" && !["Action Taken", "Response Received", "Closed"].includes(event.status)) return false
+    if (engagementFilter === "Skipped" && event.status !== "Skipped") return false
+    if (engagementFilter === "Needs Action" && ["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status)) return false
+    if (event.eventType === "Birthday" && engagementFilter === "Birthdays") {
+      if (birthdayWindow === "Today" && event.eventDate !== today) return false
+      if (birthdayWindow === "Tomorrow" && event.eventDate !== tomorrow) return false
+      if (birthdayWindow === "Next 7 Days" && (event.eventDate < today || event.eventDate > nextWeek)) return false
+      if (birthdayWindow === "This Month" && event.eventDate.slice(0, 7) !== today.slice(0, 7)) return false
+      if (birthdayCompany !== "All companies" && event.alumnus?.company !== birthdayCompany) return false
+      if (birthdayEmailFilter === "Email available" && !event.alumnus?.email) return false
+      if (birthdayEmailFilter === "Email unavailable" && event.alumnus?.email) return false
+    }
+    return true
+  })
 
   function replaceAlumnus(updated: Alumni) {
     setAlumni(current => current.map(person => person.id === updated.id ? updated : person))
@@ -487,6 +623,118 @@ export default function Home() {
 
   function toggleEnrichmentSelection(id: number) {
     setSelectedForEnrichment(current => current.includes(id) ? current.filter(item => item !== id) : current.length < 25 ? [...current, id] : current)
+  }
+
+  async function postEngagement(action: string, eventId?: number, extra: Record<string, unknown> = {}) {
+    setEngagementLoading(true)
+    setEngagementMessage("")
+    try {
+      const response = await fetch("/api/engagements", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        body: JSON.stringify({ action, eventId, ...extra }),
+      })
+      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; error?: string; sent?: { deliveryStatus: string } }
+      if (!response.ok) throw new Error(data.error || "Unable to update the engagement event.")
+      if (data.events) {
+        setEngagements(data.events)
+        setMessageTemplates(data.templates ?? messageTemplates)
+        setSelectedEngagement(current => current ? data.events?.find(event => event.id === current.id) ?? current : null)
+      } else await loadEngagements()
+      return data
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update the engagement event."
+      setEngagementMessage(message)
+      return null
+    } finally {
+      setEngagementLoading(false)
+    }
+  }
+
+  async function openEngagement(event: EngagementEvent) {
+    setSelectedEngagement(event)
+    setBirthdayCorrection(event.birthday?.birthMonthDay ?? "")
+    await postEngagement("view", event.id)
+  }
+
+  async function previewEngagement(event: EngagementEvent) {
+    const template = messageTemplates.find(item => item.eventType === event.eventType)
+    setEngagementLoading(true)
+    try {
+      const response = await fetch("/api/engagements", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        body: JSON.stringify({ action: "preview", eventId: event.id, templateId: template?.id }),
+      })
+      const data = await response.json() as { template?: MessageTemplate; draft?: { recipient: string; subject: string; body: string }; error?: string }
+      if (!response.ok || !data.template || !data.draft) throw new Error(data.error || "Unable to prepare the email draft.")
+      setMailPreview({ event, templateId: data.template.id, ...data.draft })
+      await loadEngagements()
+    } catch (error) {
+      setEngagementMessage(error instanceof Error ? error.message : "Unable to prepare the email draft.")
+    } finally {
+      setEngagementLoading(false)
+    }
+  }
+
+  async function sendMailPreview() {
+    if (!mailPreview) return
+    const result = await postEngagement("send", mailPreview.event.id, { templateId: mailPreview.templateId, subject: mailPreview.subject, body: mailPreview.body })
+    if (result) {
+      setMailPreview(null)
+      setSelectedEngagement(null)
+      setEngagementMessage(mailMode === "mock" ? "Mock email sent. The shared engagement history has been updated." : "Email sent and recorded in the shared engagement history.")
+      await loadWorkspace(false)
+    }
+  }
+
+  function switchMailTemplate(templateId: number) {
+    if (!mailPreview) return
+    const template = messageTemplates.find(item => item.id === templateId)
+    if (!template) return
+    const firstName = mailPreview.event.alumnus?.name.split(/\s+/)[0] ?? "Alumnus"
+    const personalize = (value: string) => value.replaceAll("[First Name]", firstName).replaceAll("[Full Name]", mailPreview.event.alumnus?.name ?? firstName)
+    setMailPreview({ ...mailPreview, templateId, subject: personalize(template.subject), body: personalize(template.body) })
+  }
+
+  function toggleBirthdaySelection(eventId: number) {
+    setSelectedBirthdayIds(current => current.includes(eventId) ? current.filter(id => id !== eventId) : [...current, eventId].slice(0, 25))
+  }
+
+  async function previewSelectedBirthdays() {
+    setEngagementLoading(true)
+    try {
+      const response = await fetch("/api/engagements", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        body: JSON.stringify({ action: "bulk_preview", eventIds: selectedBirthdayIds }),
+      })
+      const data = await response.json() as BulkPreview & { error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to review the selected birthday emails.")
+      setBulkPreview({ ready: data.ready ?? [], excluded: data.excluded ?? [] })
+    } catch (error) {
+      setEngagementMessage(error instanceof Error ? error.message : "Unable to review the selected birthday emails.")
+    } finally {
+      setEngagementLoading(false)
+    }
+  }
+
+  async function sendSelectedBirthdays() {
+    if (!bulkPreview?.ready.length) return
+    const result = await postEngagement("bulk_send", undefined, { eventIds: bulkPreview.ready.map(item => item.eventId) })
+    if (result) {
+      setBulkPreview(null)
+      setSelectedBirthdayIds([])
+      setEngagementMessage(mailMode === "mock" ? "Selected birthday emails were sent in mock mode and recorded." : "Selected birthday emails were sent and recorded.")
+      await loadWorkspace(false)
+    }
+  }
+
+  async function getBirthdayEmail(event: EngagementEvent) {
+    if (!event.alumnus) return
+    await runEnrichment([event.alumnus.id], ["lusha"], "manual", ["email"])
+    await Promise.all([loadWorkspace(false), loadEngagements()])
+    setEngagementMessage("Lusha email enrichment completed. Review the updated contact before sending.")
   }
 
   function updateFilter<K extends keyof DirectoryFilters>(key: K, value: DirectoryFilters[K]) {
@@ -633,7 +881,9 @@ export default function Home() {
     acc[person.function] = (acc[person.function] ?? 0) + 1
     return acc
   }, {})
-  const selectedBreakdown = selected ? relevanceBreakdown(selected, companyPriorities) : null
+  const selectedBreakdown = selected ? relevanceBreakdown(selected, companyPriorities, engagements) : null
+  const selectedEngagementHistory = selected ? engagements.filter(event => event.alumnusId === selected.id) : []
+  const selectedUpcomingEngagements = selectedEngagementHistory.filter(event => !["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status))
   const comparisonAlumnus = comparisonResult ? alumni.find(person => person.id === comparisonResult.linkedInternalAlumnusId) ?? null : null
   const comparisonRows = comparisonResult && comparisonAlumnus ? [
     { field: "company", label: "Current company", internal: comparisonAlumnus.company, external: comparisonResult.currentCompany },
@@ -661,6 +911,7 @@ export default function Home() {
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="directory">Alumni directory</TabsTrigger>
             <TabsTrigger value="companies">Company intelligence</TabsTrigger>
+            <TabsTrigger value="engagement">Engagement</TabsTrigger>
             <TabsTrigger value="outreach">Outreach</TabsTrigger>
             <TabsTrigger value="data-import">Data import</TabsTrigger>
             <TabsTrigger value="enrichment">Enrichment</TabsTrigger>
@@ -677,16 +928,19 @@ export default function Home() {
             <section className="overview-grid">
               <article className="panel lead-panel">
                 <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Highest-value alumni leads</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => setActiveTab("directory")}>View all <ArrowUpRight /></Button></div>
-                <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <button key={person.id} className="lead-row" onClick={() => setSelected(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
+                <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="lead-row" onClick={() => setSelected(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
               </article>
 
               <aside className="panel signal-panel">
-                <div className="signal-orbit"><Sparkles /><span>3</span></div><p className="eyebrow">Professional signals</p><h2>Three timely reasons to reach out</h2>
-                <div className="signal-item"><div><ArrowUpRight /></div><p><strong>Priya Menon</strong> was promoted to Director at Flipkart.</p></div>
-                <div className="signal-item"><div><BriefcaseBusiness /></div><p><strong>Tanvi Gupta</strong> recently moved to Google People Operations.</p></div>
-                <div className="signal-item"><div><UserRoundCheck /></div><p><strong>Rohan Mehta</strong> was promoted within Talent Acquisition.</p></div>
+                <div className="signal-orbit"><Sparkles /><span>{professionalEvents.filter(event => !["Closed", "Skipped"].includes(event.status)).length}</span></div><p className="eyebrow">Professional signals</p><h2>Shared reasons to reach out</h2>
+                {professionalEvents.slice(0, 3).map(event => <button key={event.id} className="signal-item signal-button" onClick={() => { setActiveTab("engagement"); void openEngagement(event) }}><div>{event.eventSubtype === "Promotion" ? <ArrowUpRight /> : <BriefcaseBusiness />}</div><p><strong>{event.alumnus?.name}</strong> {event.eventDescription.replace(`${event.alumnus?.name} `, "")}<small><EngagementStatusBadge status={event.status} />{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></button>)}
+                <Button variant="ghost" size="sm" className="signal-review" onClick={() => { setEngagementFilter("Professional Signals"); setActiveTab("engagement") }}>Review signals <ChevronRight /></Button>
               </aside>
             </section>
+
+            <button className="panel birthday-overview" onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); setActiveTab("engagement") }}>
+              <span className="birthday-overview-icon"><Cake /></span><span><p className="eyebrow">Birthday engagement</p><strong>{birthdaysToday.length} today · {birthdaysNextWeek.length} in the next 7 days</strong><small>{birthdayEvents.filter(birthdayReady).length} ready for review and sending</small></span><ChevronRight />
+            </button>
 
             <section className="panel route-panel">
               <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Direct path to Google India</h2><span>No confirmed intermediary relationship is recorded, so direct outreach remains the default.</span></div><span className="route-score">Direct route</span></div>
@@ -720,7 +974,7 @@ export default function Home() {
               </div>}
               <Table>
                 <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead></TableRow></TableHeader>
-                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell></TableRow> })}</TableBody>
+                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell></TableRow> })}</TableBody>
               </Table>
               {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>Search external professional data while keeping the IIM Lucknow education criterion fixed.</p><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button></div>}
             </section>
@@ -772,8 +1026,60 @@ export default function Home() {
                 <div className="company-kpis"><div><strong>{targetAlumni.length}</strong><span>Alumni mapped</span></div><div><strong>{targetAlumni.filter(p => optionScore(seniorityOptions, seniorityLabel(p)) >= 80).length}</strong><span>Senior leaders</span></div><div><strong>{targetAlumni.filter(p => p.function === "HR").length}</strong><span>HR contacts</span></div><div><strong>{targetAlumni.filter(p => operationalStatus(p) === "Contact-ready").length}</strong><span>Contact-ready</span></div></div>
                 <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(targetAlumni.length, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
               </article>
-              <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <button key={person.id} className="contact-card" onClick={() => setSelected(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
+              <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="contact-card" onClick={() => setSelected(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
               <article className="panel account-history"><div className="panel-heading"><div><p className="eyebrow">Institutional memory</p><h2>Account history</h2></div></div><div className="timeline-item"><span><CalendarClock /></span><div><strong>12 Aug 2026</strong><p>Placement outreach opened for the 2026–27 cycle.</p></div></div><div className="timeline-item"><span><History /></span><div><strong>22 Nov 2025</strong><p>Two recruiter conversations recorded. Product hiring discussed.</p></div></div><div className="timeline-item"><span><CheckCircle2 /></span><div><strong>08 Sep 2024</strong><p>Summer placement participation confirmed through an alumni introduction.</p></div></div></article>
+            </section>
+          </TabsContent>
+
+          <TabsContent value="engagement" className="tab-panel">
+            <section className="engagement-header">
+              <div><p className="eyebrow">Shared relationship actions</p><h2>Engagement queue</h2><span>Views, ownership, emails, responses, and follow-ups are shared across committee members.</span></div>
+              <div className="demo-user"><label>Viewing as</label><Select value={currentDemoUser} onValueChange={setCurrentDemoUser}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PCOMmer 1">PCOMmer 1</SelectItem><SelectItem value="PCOMmer 2">PCOMmer 2</SelectItem></SelectContent></Select><small>Multi-user demonstration</small></div>
+            </section>
+
+            <section className="engagement-stats">
+              <article><BellRing /><span>New professional signals<strong>{professionalEvents.filter(event => event.status === "New").length}</strong></span></article>
+              <article><Cake /><span>Birthdays today<strong>{birthdaysToday.length}</strong></span></article>
+              <article><UserRoundCheck /><span>Assigned to me<strong>{assignedToMe.length}</strong></span></article>
+              <article><CalendarClock /><span>Follow-ups due<strong>{followUpsDue.length}</strong></span></article>
+            </section>
+
+            <section className="panel engagement-panel">
+              <div className="engagement-filterbar">
+                <div className="engagement-filter-tabs">{["Needs Action", "Professional Signals", "Birthdays", "Assigned to Me", "Follow-ups", "Completed", "Skipped"].map(filter => <button key={filter} className={engagementFilter === filter ? "active" : ""} onClick={() => setEngagementFilter(filter)}>{filter}</button>)}</div>
+                <div className={`mail-mode mail-${mailMode}`}><Mail /> {mailMode === "mock" ? "Mock mail" : "Live mail"}</div>
+              </div>
+
+              {engagementFilter === "Birthdays" && <div className="birthday-filters">
+                <Select value={birthdayWindow} onValueChange={setBirthdayWindow}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Today", "Tomorrow", "Next 7 Days", "This Month", "All upcoming"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={birthdayCompany} onValueChange={setBirthdayCompany}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select>
+                <Select value={birthdayEmailFilter} onValueChange={setBirthdayEmailFilter}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All email states">All email states</SelectItem><SelectItem value="Email available">Email available</SelectItem><SelectItem value="Email unavailable">Email unavailable</SelectItem></SelectContent></Select>
+                <div className="birthday-bulk-summary"><span>{selectedBirthdayIds.length} selected</span><Button variant="outline" disabled={!selectedBirthdayIds.length || engagementLoading} onClick={() => void previewSelectedBirthdays()}><Eye /> Preview Selected Emails</Button></div>
+              </div>}
+
+              {engagementMessage && <div className="engagement-message"><Activity /><span>{engagementMessage}</span><button aria-label="Dismiss message" onClick={() => setEngagementMessage("")}><XCircle /></button></div>}
+
+              <div className="engagement-list">{visibleEngagements.map(event => {
+                const person = alumni.find(item => item.id === event.alumnusId)
+                const relevance = person ? relevanceBreakdown(person, companyPriorities, engagements).score : 50
+                const completed = ["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status)
+                const emailMissing = !event.alumnus?.email
+                const canEmail = event.eventType === "Professional Signal" ? Boolean(event.alumnus?.email) && !completed : birthdayReady(event)
+                return <article key={event.id} className={`engagement-card ${completed ? "completed" : ""}`}>
+                  {event.eventType === "Birthday" && <input type="checkbox" aria-label={`Select ${event.alumnus?.name} birthday`} disabled={!birthdayReady(event)} checked={selectedBirthdayIds.includes(event.id)} onChange={() => toggleBirthdaySelection(event.id)} />}
+                  <div className={`event-icon event-${event.eventType.toLowerCase().replaceAll(" ", "-")}`}>{event.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</div>
+                  <div className="event-copy"><div className="event-person"><strong>{event.alumnus?.name ?? "Unknown alumnus"}</strong><span>{event.alumnus?.company} · {event.alumnus?.title}</span></div><h3>{event.eventTitle}</h3><p>{event.eventDescription}</p><div className="event-meta"><span>{displayEventDate(event.eventDate)}</span><span>Source: {event.source}</span>{event.birthday && <span>{event.birthday.status}</span>}{event.eventType === "Birthday" && <span>{birthdayReady(event) ? "Email ready" : emailMissing ? "Email unavailable" : "Review required"}</span>}</div></div>
+                  <div className="event-state"><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span><EngagementStatusBadge status={event.status} />{event.assignedTo && <small>Assigned to <strong>{event.assignedTo}</strong></small>}{event.actionTakenBy && <small>Already engaged by <strong>{event.actionTakenBy}</strong></small>}{event.skipReason && <small>{event.skipReason}</small>}</div>
+                  <div className="event-actions">
+                    {!completed && !event.assignedTo && <Button variant="outline" size="sm" onClick={() => void postEngagement("assign", event.id)}>Take Ownership</Button>}
+                    {!completed && event.assignedTo && event.assignedTo !== currentDemoUser && <Button variant="outline" size="sm" onClick={() => void postEngagement("assign", event.id, { force: true })}>Reassign to Me</Button>}
+                    {!completed && event.eventType === "Birthday" && emailMissing && <Button variant="outline" size="sm" onClick={() => void getBirthdayEmail(event)}>Get Email via Lusha</Button>}
+                    {canEmail && <Button size="sm" onClick={() => void previewEngagement(event)}>{event.eventType === "Birthday" ? <Cake /> : <Mail />} {event.eventType === "Birthday" ? "Preview Wish" : "Send Congratulations"}</Button>}
+                    <Button variant="ghost" size="sm" onClick={() => void openEngagement(event)}>{completed ? "View Engagement" : "Review"}</Button>
+                  </div>
+                </article>
+              })}</div>
+              {!visibleEngagements.length && <div className="empty-state"><CheckCircle2 /><h3>No engagement events in this view</h3><p>Choose another queue filter or refresh the shared workspace.</p></div>}
             </section>
           </TabsContent>
 
@@ -781,7 +1087,7 @@ export default function Home() {
             <section className="panel outreach-panel">
               <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved centrally and shared across committee members.</span></div></div>
               <div className="pipeline-summary">{statusOptions.map(status => <div key={status}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></div>)}</div>
-              <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this person</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{[...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities).score - relevanceBreakdown(a, companyPriorities).score).map(person => { const relevance = relevanceBreakdown(person, companyPriorities).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{person.note}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this person</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{[...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score).map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{person.note}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>
             </section>
           </TabsContent>
 
@@ -853,9 +1159,10 @@ export default function Home() {
               <label><span>Hiring influence</span><Select value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>IIML relationship</span><Select value={selected.assessment.iimlRelationship} onValueChange={value => updateAssessment(selected.id, "iimlRelationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>Warm-introduction potential</span><Select value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
-            </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{responsivenessLabel(selected.status)}</strong><small>Derived from outreach history</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
+            </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selected.experience} years · Previously {selected.previous}</strong></span></div></div>{selected.linkedinUrl && <a className="profile-link" href={selected.linkedinUrl} target="_blank" rel="noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
             <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship}</strong></span></div></div><div className="insight-note"><Sparkles /><p>{selected.note}</p></div></section>
+            <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setSelected(null); setEngagementFilter("Needs Action"); setActiveTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { setSelected(null); setActiveTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {item.creditsUsed} credits</small></p></div>)}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last verified {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
               <div><span>Current company</span><strong className={verificationTone(selected.verification.currentCompany)}>{selected.verification.currentCompany}</strong></div>
@@ -868,6 +1175,52 @@ export default function Home() {
           </div></>}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(selectedEngagement)} onOpenChange={open => { if (!open) setSelectedEngagement(null) }}>
+        <DialogContent className="engagement-dialog">
+          {selectedEngagement && <>
+            <DialogHeader><DialogTitle>{selectedEngagement.eventTitle}</DialogTitle><DialogDescription>{selectedEngagement.alumnus?.name} · {selectedEngagement.alumnus?.company} · {selectedEngagement.eventType}</DialogDescription></DialogHeader>
+            <div className="engagement-dialog-scroll">
+              <section className="event-detail-summary"><div className={`event-icon event-${selectedEngagement.eventType.toLowerCase().replaceAll(" ", "-")}`}>{selectedEngagement.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</div><div><p>{selectedEngagement.eventDescription}</p><span>{displayEventDate(selectedEngagement.eventDate)} · Source: {selectedEngagement.source}</span></div><EngagementStatusBadge status={selectedEngagement.status} /></section>
+              {selectedEngagement.actionTakenBy && <div className="already-engaged"><CheckCircle2 /><div><strong>Action already taken</strong><span>{selectedEngagement.actionType} by {selectedEngagement.actionTakenBy} on {new Date(selectedEngagement.actionTakenAt).toLocaleString()} · {selectedEngagement.deliveryStatus}</span></div></div>}
+              {selectedEngagement.assignedTo && <div className="assignment-note"><UserRoundCheck /><span>Assigned to <strong>{selectedEngagement.assignedTo}</strong>{selectedEngagement.assignedAt ? ` since ${new Date(selectedEngagement.assignedAt).toLocaleString()}` : ""}</span></div>}
+
+              {!['Action Taken', 'Response Received', 'Closed', 'Skipped'].includes(selectedEngagement.status) && <section className="dialog-action-section"><h3>Review and action</h3><div className="dialog-actions">
+                <Button variant="outline" onClick={() => void postEngagement("acknowledge", selectedEngagement.id)}>Acknowledge</Button>
+                <Button variant="outline" onClick={() => void postEngagement("assign", selectedEngagement.id, { force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>{selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser ? "Reassign to Me" : "Take Ownership"}</Button>
+                <Button variant="outline" onClick={() => void postEngagement("plan", selectedEngagement.id, { notes: "Follow-up action planned by the assigned committee member.", force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>Plan Action</Button>
+                {selectedEngagement.alumnus?.email ? <Button onClick={() => void previewEngagement(selectedEngagement)}><Mail /> {selectedEngagement.eventType === "Birthday" ? "Preview Birthday Wish" : "Preview Congratulations"}</Button> : <Button variant="outline" onClick={() => void getBirthdayEmail(selectedEngagement)}>Get Email via Lusha</Button>}
+                <Button variant="outline" onClick={() => void postEngagement("manual_action", selectedEngagement.id, { notes: "Engagement completed outside the platform." })}>Mark Action Taken</Button>
+              </div></section>}
+
+              <section className="dialog-action-section"><h3>Response and follow-up</h3><div className="response-form"><Select value={responseType} onValueChange={setResponseType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Positive", "Neutral", "Negative", "Introduction offered", "Meeting requested", "Other"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Input value={followUpDate} onChange={event => setFollowUpDate(event.target.value)} type="date" aria-label="Follow-up date" /><Textarea value={responseNotes} onChange={event => setResponseNotes(event.target.value)} placeholder="Response or follow-up notes" /><div><Button variant="outline" onClick={() => void postEngagement("response", selectedEngagement.id, { responseType, notes: responseNotes, followUpRequired: Boolean(followUpDate), followUpDate })}>Record Response</Button><Button variant="outline" disabled={!followUpDate} onClick={() => void postEngagement("follow_up", selectedEngagement.id, { followUpDate })}>Add Follow-up</Button></div></div></section>
+
+              {selectedEngagement.eventType === "Birthday" && <section className="dialog-action-section"><h3>Birthday data</h3><div className="birthday-data-row"><div><span>Birthday</span><strong>{selectedEngagement.birthday?.birthMonthDay || "Unknown"}</strong></div><div><span>Source</span><strong>{selectedEngagement.birthday?.source || "Not recorded"}</strong></div><div><span>Status</span><strong>{selectedEngagement.birthday?.status || "Unknown"}</strong></div></div><div className="birthday-correction"><Input value={birthdayCorrection} onChange={event => setBirthdayCorrection(event.target.value)} placeholder="MM-DD" aria-label="Correct birthday as MM-DD" /><Button variant="outline" onClick={() => void postEngagement("correct_birthday", selectedEngagement.id, { birthMonthDay: birthdayCorrection })}>Confirm Correction</Button></div></section>}
+
+              <section className="dialog-action-section"><h3>Event activity</h3><div className="activity-timeline">{selectedEngagement.activity.map(item => <div key={item.id}><span>{new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><p><strong>{item.action.replaceAll("_", " ")}</strong>{item.details}<small>{item.actor} · {new Date(item.createdAt).toLocaleDateString()}</small></p></div>)}{!selectedEngagement.activity.length && <p className="section-help">No activity has been recorded yet.</p>}</div></section>
+
+              {!['Closed', 'Skipped'].includes(selectedEngagement.status) && <section className="danger-actions"><Button variant="outline" onClick={() => void postEngagement("skip", selectedEngagement.id, { reason: "Not relevant" })}><Ban /> Skip</Button>{selectedEngagement.eventType === "Professional Signal" && <Button variant="outline" onClick={() => void postEngagement("incorrect", selectedEngagement.id, { reason: "Provider signal requires correction" })}><XCircle /> Mark Signal Incorrect</Button>}<Button variant="ghost" onClick={() => void postEngagement("close", selectedEngagement.id)}>Close Event</Button></section>}
+            </div>
+          </>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(mailPreview)} onOpenChange={open => { if (!open) setMailPreview(null) }}>
+        <DialogContent className="mail-dialog">
+          {mailPreview && <><DialogHeader><DialogTitle>Review email before sending</DialogTitle><DialogDescription>No message is sent until you approve it. {mailMode === "mock" ? "This demonstration uses the mock mail service." : "This message will use the approved institute mail service."}</DialogDescription></DialogHeader>
+            <div className="mail-form"><label><span>Recipient</span><Input value={mailPreview.recipient} readOnly /></label><label><span>Approved template</span><Select value={String(mailPreview.templateId)} onValueChange={value => switchMailTemplate(Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{messageTemplates.filter(item => item.eventType === mailPreview.event.eventType).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></label><label><span>Subject</span><Input value={mailPreview.subject} onChange={event => setMailPreview({ ...mailPreview, subject: event.target.value })} /></label><label><span>Message</span><Textarea value={mailPreview.body} onChange={event => setMailPreview({ ...mailPreview, body: event.target.value })} rows={9} /></label></div>
+            <DialogFooter><Button variant="outline" onClick={() => setMailPreview(null)}>Cancel</Button><Button disabled={engagementLoading} onClick={() => void sendMailPreview()}>{engagementLoading ? <LoaderCircle className="spin" /> : <Send />} Approve & Send</Button></DialogFooter></>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(bulkPreview)} onOpenChange={open => { if (!open) setBulkPreview(null) }}>
+        <DialogContent className="bulk-dialog">
+          {bulkPreview && <><DialogHeader><DialogTitle>Review selected birthday emails</DialogTitle><DialogDescription>Duplicate, preference, birthday-confidence, and email checks run again before sending.</DialogDescription></DialogHeader>
+            <div className="bulk-review-summary"><span>Selected<strong>{bulkPreview.ready.length + bulkPreview.excluded.length}</strong></span><span>Ready<strong>{bulkPreview.ready.length}</strong></span><span>Excluded<strong>{bulkPreview.excluded.length}</strong></span></div>
+            <div className="bulk-review-list">{bulkPreview.ready.map(item => <div key={item.eventId}><CheckCircle2 /><p><strong>{item.alumnusName}</strong><span>{item.recipient} · {item.subject}</span></p><em>Ready</em></div>)}{bulkPreview.excluded.map(item => <div key={item.eventId} className="excluded"><XCircle /><p><strong>{item.alumnusName}</strong><span>{item.reason}</span></p><em>Excluded</em></div>)}</div>
+            <DialogFooter><Button variant="outline" onClick={() => setBulkPreview(null)}>Back</Button><Button disabled={!bulkPreview.ready.length || engagementLoading} onClick={() => void sendSelectedBirthdays()}><Send /> Approve & Send {bulkPreview.ready.length}</Button></DialogFooter></>}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(comparisonResult)} onOpenChange={open => { if (!open) { setComparisonResult(null); setSelectedComparisonFields([]) } }}>
         <DialogContent className="comparison-dialog">

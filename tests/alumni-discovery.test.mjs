@@ -123,7 +123,7 @@ test("13. no-change refresh is visible and still recorded", () => {
 });
 
 test("14. filtering the internal dataset has no provider call", () => {
-  const filterBlock = pageSource.match(/const filtered = useMemo\([\s\S]*?\[alumni, companyPriorities, filters\]\)/)?.[0] ?? "";
+  const filterBlock = pageSource.match(/const filtered = useMemo\([\s\S]*?\[alumni, companyPriorities, engagements, filters\]\)/)?.[0] ?? "";
   assert.match(filterBlock, /matchesInternalFilters/);
   assert.doesNotMatch(filterBlock, /fetch\(/);
 });

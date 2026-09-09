@@ -2,6 +2,23 @@
 
 Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and an internal-search-to-PDL-to-Lusha discovery workflow.
 
+## Shared engagement workspace
+
+Professional signals and birthdays now use one D1-backed engagement-event framework. Each event records its source, status, owner, views, planned or completed actions, responses, follow-ups, skipped/incorrect reasons, and audit history. Viewing an event does not imply that action was taken, and an atomic action key prevents duplicate sends across committee members.
+
+The **Engagement** tab includes:
+
+- professional-signal and birthday queues with shared statuses
+- PCOMmer 1 / PCOMmer 2 demonstration identities for multi-user testing
+- birthday date-window, company, and email-readiness filters
+- individual and bulk preview/approval before sending
+- communication-preference and birthday-confidence safety checks
+- approved templates with editable preview text
+- mock email delivery with delivery receipts and an interface for a future official mailbox
+- response capture, follow-up dates, ownership, reassignment, correction, skip, close, and audit timelines
+
+Mail is deliberately semi-automatic. Set `MAIL_MODE=mock` for the demonstrable flow. `MAIL_MODE=live` remains blocked until an approved institutional mailbox adapter is connected; API secrets must stay server-side.
+
 ## Company-first alumni discovery
 
 The Alumni Directory supports optional filters for name, current company, role, function, seniority, location, programme, graduation year, previous company, placement relevance, data confidence, contact state, outreach state, and IIML relationship. Filters combine with AND logic. Searching the internal database does not call an external provider.
@@ -28,6 +45,7 @@ Copy `.env.example` into your local environment configuration and set:
 
 ```text
 ENRICHMENT_MODE=mock
+MAIL_MODE=mock
 PDL_API_KEY=
 LUSHA_API_KEY=
 ```
@@ -58,7 +76,9 @@ The live discovery adapter uses the PDL v5 Person Search API, while existing-pro
 - `app/api/workspace/route.ts`: alumni import and shared-workspace updates
 - `app/api/enrichment/route.ts`: manual/batch enrichment, limits, usage, and history
 - `app/api/discovery/route.ts`: PDL discovery, reconciliation, review, approval, refresh, and history
+- `app/api/engagements/route.ts`: engagement queues, ownership, mail workflow, responses, follow-ups, and audits
 - `lib/alumni-search.ts`: shared internal filtering and provider-query translation
+- `lib/mail-service.ts`: mock mail service and future live-mail boundary
 - `lib/pdl-discovery.ts`: mock/live PDL Person Search service
 - `lib/enrichment-providers.ts`: mock/live PDL and Lusha adapters
 - `db/schema.ts`: D1 schema
@@ -66,7 +86,7 @@ The live discovery adapter uses the PDL v5 Person Search API, while existing-pro
 
 ## Validation
 
-Run `node --test tests/alumni-discovery.test.mjs` to verify the 15 company-first discovery acceptance conditions. Run `npm run lint`, `npx tsc --noEmit`, and `npm run build` before release.
+Run `node --test tests/alumni-discovery.test.mjs` to verify the 15 company-first discovery acceptance conditions, and `node --test tests/engagement-workflow.test.mjs` for the 17 engagement acceptance conditions. Run `npx tsc --noEmit` and `npm test` before release.
 
 ## Starter runtime notes
 
