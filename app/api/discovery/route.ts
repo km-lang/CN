@@ -19,15 +19,9 @@ import {
 } from "@/lib/alumni-search";
 import { discoveryMode, searchExternalAlumni } from "@/lib/pdl-discovery";
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status";
+import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const allowedLimits = new Set([25, 50, 100]);
-
-function actorFrom(request: Request) {
-  return request.headers.get("x-demo-user")
-    ?? request.headers.get("oai-authenticated-user-email")
-    ?? request.headers.get("oai-authenticated-user-id")
-    ?? "Public workspace user";
-}
 
 function monthStart() {
   const date = new Date();
@@ -74,18 +68,22 @@ async function pdlRemainingCredits() {
   return Math.max(0, limit - used);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    await authorizeRequest(request, "OPERATE_PCOM");
     const db = getDb();
     const searches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10);
     return Response.json({ mode: discoveryMode(), searches });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load discovery history." }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as {
       action?: string;
       filters?: Partial<DirectoryFilters>;
@@ -96,7 +94,7 @@ export async function POST(request: Request) {
       reason?: string;
     };
     const db = getDb();
-    const actor = actorFrom(request);
+    const actor = context.displayName;
     const now = new Date().toISOString();
 
     if (payload.action === "search") {
@@ -164,6 +162,7 @@ export async function POST(request: Request) {
         requestedBy: actor,
       });
       const storedResults = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id);
+      await writeSecurityAudit(context, { action: "pdl_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.profiles.length, creditsUsed: response.creditsUsed, mode: discoveryMode() } });
       return Response.json({ searchId: search.id, results: storedResults, counts, creditsUsed: response.creditsUsed, totalAvailable: response.totalAvailable, effectiveLimit: limit, filters });
     }
 
@@ -207,6 +206,7 @@ export async function POST(request: Request) {
         added.push({ resultId: result.id, alumnusId: created.id });
         await db.update(externalDiscoveryResults).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.added, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id));
       }
+      await writeSecurityAudit(context, { action: "pdl_results_approved", entityType: "alumni_batch", metadata: { addedCount: added.length, resultIds } });
       return Response.json({ addedCount: added.length, added }, { status: 201 });
     }
 
@@ -239,6 +239,7 @@ export async function POST(request: Request) {
       }
       await db.update(alumni).set(updates).where(eq(alumni.id, person.id));
       await db.update(externalDiscoveryResults).set({ reviewStatus: changedFields.length ? "Updates applied" : "Compared, no changes", reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id));
+      await writeSecurityAudit(context, { action: "professional_profile_update_approved", entityType: "alumnus", entityId: person.id, metadata: { changedFields } });
       return Response.json({ alumnusId: person.id, changedFields });
     }
 
@@ -276,6 +277,7 @@ export async function POST(request: Request) {
         updatedAt: now,
       }).returning();
       await db.update(externalDiscoveryResults).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id));
+      await writeSecurityAudit(context, { action: "possible_duplicate_kept_separate", entityType: "alumnus", entityId: created.id, metadata: { discoveryResultId: result.id } });
       return Response.json({ alumnusId: created.id }, { status: 201 });
     }
 
@@ -283,11 +285,14 @@ export async function POST(request: Request) {
       const allowedReasons = new Set(["Wrong person", "Not IIML alumnus", "Duplicate already handled", "Irrelevant", "Data appears incorrect", "Other"]);
       const reason = allowedReasons.has(String(payload.reason)) ? String(payload.reason) : "Other";
       await db.update(externalDiscoveryResults).set({ reviewStatus: "Ignored", reviewNote: reason, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, payload.resultId!));
+      await writeSecurityAudit(context, { action: "pdl_result_ignored", entityType: "discovery_result", entityId: payload.resultId, metadata: { reason } });
       return Response.json({ ignored: true, reason });
     }
 
     return Response.json({ error: "Unsupported discovery action." }, { status: 400 });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     const message = error instanceof Error ? error.message : "Unable to complete external alumni discovery.";
     const businessMessage = /auth|api key|unauthor/i.test(message)
       ? "PDL authentication failed. Please confirm the live provider configuration."

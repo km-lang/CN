@@ -2,16 +2,10 @@ import { desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
+import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const providers: ProviderName[] = ["pdl", "lusha"];
 const defaultLimits: Record<ProviderName, number> = { pdl: 100, lusha: 100 };
-
-function actorFrom(request: Request) {
-  return request.headers.get("x-demo-user")
-    ?? request.headers.get("oai-authenticated-user-email")
-    ?? request.headers.get("oai-authenticated-user-id")
-    ?? "Public workspace user";
-}
 
 function monthStart() {
   const date = new Date();
@@ -43,21 +37,25 @@ async function usageSnapshot() {
   }));
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const context = await authorizeRequest(request, "VIEW_PROVIDER_STATUS");
     const db = getDb();
     const [usage, history] = await Promise.all([
       usageSnapshot(),
       db.select().from(providerResponseHistory).orderBy(desc(providerResponseHistory.createdAt), desc(providerResponseHistory.id)).limit(100),
     ]);
-    return Response.json({ mode: enrichmentMode(), usage, history });
+    return Response.json({ mode: enrichmentMode(), usage, history: context.role === "DEVELOPER" ? [] : history, historyRestricted: context.role === "DEVELOPER" });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load enrichment activity." }, { status: 500 });
   }
 }
 
 export async function PATCH(request: Request) {
   try {
+    const context = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS");
     const payload = await request.json() as { provider?: ProviderName; monthlyCreditLimit?: number };
     if (!providers.includes(payload.provider as ProviderName) || !Number.isInteger(payload.monthlyCreditLimit) || Number(payload.monthlyCreditLimit) < 0 || Number(payload.monthlyCreditLimit) > 100000) {
       return Response.json({ error: "Choose a provider and a valid monthly credit limit." }, { status: 400 });
@@ -69,17 +67,21 @@ export async function PATCH(request: Request) {
       target: providerSettings.provider,
       set: { monthlyCreditLimit, updatedAt: new Date().toISOString() },
     });
+    await writeSecurityAudit(context, { action: "provider_limit_changed", entityType: "provider", entityId: provider, metadata: { monthlyCreditLimit } });
     return Response.json({ usage: await usageSnapshot() });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to save the credit limit." }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as { action?: string; alumniIds?: number[]; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[]; reviewId?: number; fields?: string[] };
     const db = getDb();
-    const actor = actorFrom(request);
+    const actor = context.displayName;
 
     if (payload.action === "apply_refresh" && Number.isInteger(payload.reviewId)) {
       const [review] = await db.select().from(providerRefreshReviews).where(eq(providerRefreshReviews.id, payload.reviewId!)).limit(1);
@@ -100,6 +102,7 @@ export async function POST(request: Request) {
       await db.update(alumni).set(updates).where(eq(alumni.id, person.id));
       const now = new Date().toISOString();
       await db.update(providerRefreshReviews).set({ status: applied.length ? "Applied" : "Reviewed, no updates selected", reviewedBy: actor, reviewedAt: now }).where(eq(providerRefreshReviews.id, review.id));
+      await writeSecurityAudit(context, { action: "professional_profile_update_approved", entityType: "alumnus", entityId: person.id, metadata: { appliedFields: applied } });
       return Response.json({ applied, alumnusId: person.id });
     }
 
@@ -146,6 +149,7 @@ export async function POST(request: Request) {
         }
         results.push({ alumnusId: person.id, alumnusName: person.name, status: result.status, reviewStatus, reviewId: review.id, creditsUsed: result.creditsUsed, responseSummary: result.responseSummary, fields });
       }
+      await writeSecurityAudit(context, { action: "pdl_profile_refresh", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, mode: enrichmentMode() } });
       return Response.json({ processed: people.length, results, usage: await usageSnapshot() });
     }
 
@@ -195,8 +199,11 @@ export async function POST(request: Request) {
         results.push({ ...result, alumnusId: person.id, alumnusName: person.name });
       }
     }
+    await writeSecurityAudit(context, { action: "lusha_contact_enrichment", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, channels: payload.contactChannels ?? ["email", "phone"], mode: enrichmentMode() } });
     return Response.json({ processed: people.length, results, usage: await usageSnapshot() });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to run enrichment." }, { status: 500 });
   }
 }

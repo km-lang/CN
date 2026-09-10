@@ -25,6 +25,7 @@ type RuntimeEnv = {
   PDL_API_KEY?: string;
   LUSHA_API_KEY?: string;
   ENRICHMENT_MODE?: string;
+  PROVIDER_LIVE_ENABLED?: string;
 };
 
 function runtimeEnv() {
@@ -33,7 +34,7 @@ function runtimeEnv() {
 
 export function enrichmentMode(): "mock" | "live" {
   const configured = runtimeEnv().ENRICHMENT_MODE?.toLowerCase();
-  return configured === "live" ? "live" : "mock";
+  return configured === "live" && runtimeEnv().PROVIDER_LIVE_ENABLED?.toLowerCase() === "true" ? "live" : "mock";
 }
 
 export function providerConfigured(provider: ProviderName) {

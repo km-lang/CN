@@ -28,10 +28,11 @@ export type DiscoveryResponse = {
   responseSummary: string;
 };
 
-type RuntimeEnv = { PDL_API_KEY?: string; ENRICHMENT_MODE?: string };
+type RuntimeEnv = { PDL_API_KEY?: string; ENRICHMENT_MODE?: string; PROVIDER_LIVE_ENABLED?: string };
 
 function mode() {
-  return (process.env as RuntimeEnv).ENRICHMENT_MODE?.toLowerCase() === "live" ? "live" : "mock";
+  const values = process.env as RuntimeEnv;
+  return values.ENRICHMENT_MODE?.toLowerCase() === "live" && values.PROVIDER_LIVE_ENABLED?.toLowerCase() === "true" ? "live" : "mock";
 }
 
 function titleFor(filters: DirectoryFilters, index: number) {

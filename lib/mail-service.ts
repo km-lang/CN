@@ -13,10 +13,11 @@ export type MailSendResult = {
   mode: "mock" | "live";
 };
 
-type MailRuntimeEnv = { MAIL_MODE?: string };
+type MailRuntimeEnv = { MAIL_MODE?: string; MAIL_LIVE_ENABLED?: string };
 
 export function mailMode(): "mock" | "live" {
-  return (process.env as MailRuntimeEnv).MAIL_MODE?.toLowerCase() === "live" ? "live" : "mock";
+  const values = process.env as MailRuntimeEnv;
+  return values.MAIL_MODE?.toLowerCase() === "live" && values.MAIL_LIVE_ENABLED?.toLowerCase() === "true" ? "live" : "mock";
 }
 
 export function createMailDraft(

@@ -1,6 +1,8 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { activityLog, alumni, companyPriorities, importRuns } from "@/db/schema";
+import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, importRuns } from "@/db/schema";
+import type { ApplicationRole } from "@/lib/access-types";
+import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
 
 const allowedStatuses = new Set(["Not contacted", "Contacted", "Responded", "Meeting set"]);
 const allowedVerification = new Set(["Confirmed", "Verified", "Likely", "Unverified", "Possibly outdated", "Mismatch"]);
@@ -15,13 +17,6 @@ function text(value: unknown, fallback = "") {
 function number(value: unknown, fallback = 0) {
   const result = Number(value);
   return Number.isFinite(result) ? Math.round(result) : fallback;
-}
-
-function actorFrom(request: Request) {
-  return request.headers.get("x-demo-user")
-    ?? request.headers.get("oai-authenticated-user-email")
-    ?? request.headers.get("oai-authenticated-user-id")
-    ?? "Signed-in committee member";
 }
 
 function normalized(value: unknown) {
@@ -106,7 +101,9 @@ function profileKey(record: ImportedRecord) {
   return [record.name, record.batch, record.company].map(value => text(value).toLowerCase()).join("|");
 }
 
-function toApiAlumnus(row: typeof alumni.$inferSelect) {
+function toApiAlumnus(row: typeof alumni.$inferSelect, role: ApplicationRole, privacy?: typeof alumniPrivacyControls.$inferSelect, lifecycle?: typeof alumniDataLifecycle.$inferSelect) {
+  const contactsAllowed = hasPermission(role, "VIEW_CONTACTS");
+  const operationalDetailsAllowed = role !== "DEVELOPER";
   return {
     id: row.id,
     name: row.name,
@@ -124,8 +121,8 @@ function toApiAlumnus(row: typeof alumni.$inferSelect) {
     previous: row.previous,
     experience: row.experience,
     confidence: row.confidence,
-    email: row.email,
-    phone: row.phone,
+    email: contactsAllowed ? row.email : maskEmail(row.email),
+    phone: contactsAllowed ? row.phone : maskPhone(row.phone),
     linkedinUrl: row.linkedinUrl,
     pdlPersonId: row.pdlPersonId,
     lushaPersonId: row.lushaPersonId,
@@ -139,11 +136,11 @@ function toApiAlumnus(row: typeof alumni.$inferSelect) {
     phoneRetrievedAt: row.phoneRetrievedAt,
     verified: row.verified,
     status: row.status,
-    note: row.note,
+    note: operationalDetailsAllowed ? row.note : "Restricted for Developer role",
     assessment: {
-      hiringInfluence: row.hiringInfluence,
-      iimlRelationship: row.iimlRelationship,
-      warmIntroPotential: row.warmIntroPotential,
+      hiringInfluence: operationalDetailsAllowed ? row.hiringInfluence : "Restricted",
+      iimlRelationship: operationalDetailsAllowed ? row.iimlRelationship : "Restricted",
+      warmIntroPotential: operationalDetailsAllowed ? row.warmIntroPotential : "Restricted",
     },
     verification: {
       profileMatch: row.profileMatch,
@@ -156,6 +153,16 @@ function toApiAlumnus(row: typeof alumni.$inferSelect) {
     source: row.source,
     updatedBy: row.updatedBy,
     updatedAt: row.updatedAt,
+    privacy: privacy ? {
+      generalContactStatus: privacy.generalContactStatus,
+      professionalEngagementStatus: privacy.professionalEngagementStatus,
+      birthdayEngagementStatus: privacy.birthdayEngagementStatus,
+      consentSource: privacy.consentSource,
+      notes: operationalDetailsAllowed ? privacy.notes : "",
+      updatedAt: privacy.updatedAt,
+      updatedBy: privacy.updatedBy,
+    } : { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" },
+    lifecycle: lifecycle?.status ?? "Active",
   };
 }
 
@@ -227,29 +234,38 @@ function normaliseRecord(record: ImportedRecord, filename: string, actor: string
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const context = await authorizeRequest(request, "VIEW_ALUMNI");
     const db = getDb();
-    const [alumniRows, priorityRows, latestImports] = await Promise.all([
+    const [alumniRows, priorityRows, latestImports, privacyRows, lifecycleRows] = await Promise.all([
       db.select().from(alumni).orderBy(alumni.name),
       db.select().from(companyPriorities).orderBy(companyPriorities.company),
       db.select().from(importRuns).orderBy(desc(importRuns.createdAt), desc(importRuns.id)).limit(1),
+      db.select().from(alumniPrivacyControls),
+      db.select().from(alumniDataLifecycle),
     ]);
+    const privacyByAlumnus = new Map(privacyRows.map(row => [row.alumnusId, row]));
+    const lifecycleByAlumnus = new Map(lifecycleRows.map(row => [row.alumnusId, row]));
     return Response.json({
-      alumni: alumniRows.map(toApiAlumnus),
+      alumni: alumniRows.map(row => toApiAlumnus(row, context.role, privacyByAlumnus.get(row.id), lifecycleByAlumnus.get(row.id))),
       companyPriorities: Object.fromEntries(priorityRows.map(row => [row.company, row.priority])),
       latestImport: latestImports[0] ?? null,
+      access: { role: context.role, contactsMasked: !hasPermission(context.role, "VIEW_CONTACTS") },
     });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load the shared workspace." }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as { action?: string; filename?: string; records?: ImportedRecord[]; record?: ImportedRecord; continueAsNew?: boolean };
     const db = getDb();
-    const actor = actorFrom(request);
+    const actor = context.displayName;
 
     if (payload.action === "manual_check" || payload.action === "manual_add") {
       if (!payload.record || typeof payload.record !== "object") return Response.json({ error: "Enter the alumnus details first." }, { status: 400 });
@@ -263,7 +279,8 @@ export async function POST(request: Request) {
       const record = normaliseManualRecord(payload.record, actor, Boolean(payload.continueAsNew));
       const [created] = await db.insert(alumni).values(record).returning();
       await db.insert(activityLog).values({ action: "manual_add", entityType: "alumnus", entityId: String(created.id), actor, details: `Manual entry created for ${created.name}; no provider call was made.` });
-      return Response.json({ alumnus: toApiAlumnus(created), providerCreditsUsed: 0 }, { status: 201 });
+      await writeSecurityAudit(context, { action: "alumnus_manual_created", entityType: "alumnus", entityId: created.id, metadata: { source: "Manual entry" } });
+      return Response.json({ alumnus: toApiAlumnus(created, context.role), providerCreditsUsed: 0 }, { status: 201 });
     }
 
     if (payload.action !== "import" || !Array.isArray(payload.records)) return Response.json({ error: "A valid alumni import is required." }, { status: 400 });
@@ -280,8 +297,11 @@ export async function POST(request: Request) {
     }
     await db.insert(importRuns).values({ filename, rowCount: records.length, importedBy: actor });
     await db.insert(activityLog).values({ action: "import", entityType: "alumni", entityId: filename, actor, details: `${records.length} records imported` });
+    await writeSecurityAudit(context, { action: "alumni_imported", entityType: "import", entityId: filename, metadata: { recordCount: records.length } });
     return Response.json({ imported: records.length, filename }, { status: 201 });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to import alumni records." }, { status: 400 });
   }
 }
@@ -295,12 +315,14 @@ export async function PATCH(request: Request) {
       assessment?: { hiringInfluence?: string; iimlRelationship?: string; warmIntroPotential?: string };
       company?: string;
       priority?: string;
+      privacy?: { generalContactStatus?: string; professionalEngagementStatus?: string; birthdayEngagementStatus?: string; consentSource?: string; notes?: string };
     };
     const db = getDb();
-    const actor = actorFrom(request);
     const now = new Date().toISOString();
 
     if (payload.action === "update_alumnus" && Number.isInteger(payload.id)) {
+      const context = await authorizeRequest(request, "OPERATE_PCOM");
+      const actor = context.displayName;
       const updates: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: now };
       if (payload.status && allowedStatuses.has(payload.status)) updates.status = payload.status;
       if (payload.assessment) {
@@ -311,10 +333,13 @@ export async function PATCH(request: Request) {
       const [updated] = await db.update(alumni).set(updates).where(eq(alumni.id, payload.id!)).returning();
       if (!updated) return Response.json({ error: "Alumnus not found." }, { status: 404 });
       await db.insert(activityLog).values({ action: "update", entityType: "alumnus", entityId: String(payload.id), actor, details: payload.status ? `Outreach set to ${payload.status}` : "Assessment updated" });
-      return Response.json({ alumnus: toApiAlumnus(updated) });
+      await writeSecurityAudit(context, { action: payload.assessment ? "relationship_assessment_changed" : "alumnus_updated", entityType: "alumnus", entityId: payload.id, metadata: { outreachStatus: payload.status, assessmentFields: payload.assessment ? Object.keys(payload.assessment) : [] } });
+      return Response.json({ alumnus: toApiAlumnus(updated, context.role) });
     }
 
     if (payload.action === "update_priority" && text(payload.company) && text(payload.priority)) {
+      const context = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS");
+      const actor = context.displayName;
       const company = text(payload.company);
       const priority = text(payload.priority);
       await db.insert(companyPriorities).values({ company, priority, updatedBy: actor, updatedAt: now }).onConflictDoUpdate({
@@ -322,11 +347,35 @@ export async function PATCH(request: Request) {
         set: { priority, updatedBy: actor, updatedAt: now },
       });
       await db.insert(activityLog).values({ action: "update", entityType: "company", entityId: company, actor, details: `Priority set to ${priority}` });
+      await writeSecurityAudit(context, { action: "company_priority_changed", entityType: "company", entityId: company, metadata: { priority } });
       return Response.json({ company, priority });
+    }
+
+    if (payload.action === "update_privacy" && Number.isInteger(payload.id) && payload.privacy) {
+      const context = await authorizeRequest(request, "MANAGE_PRIVACY");
+      const actor = context.displayName;
+      const allowedContact = new Set(["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No professional engagement", "No birthday engagement", "Do not contact", "Unknown"]);
+      const allowedConsent = new Set(["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"]);
+      const value = (candidate: unknown, allowed: Set<string>, fallback = "Unknown") => allowed.has(text(candidate)) ? text(candidate) : fallback;
+      const record = {
+        alumnusId: payload.id!,
+        generalContactStatus: value(payload.privacy.generalContactStatus, allowedContact),
+        professionalEngagementStatus: value(payload.privacy.professionalEngagementStatus, allowedContact),
+        birthdayEngagementStatus: value(payload.privacy.birthdayEngagementStatus, allowedContact),
+        consentSource: value(payload.privacy.consentSource, allowedConsent),
+        notes: text(payload.privacy.notes).slice(0, 1000),
+        updatedBy: actor,
+        updatedAt: now,
+      };
+      const [updated] = await db.insert(alumniPrivacyControls).values(record).onConflictDoUpdate({ target: alumniPrivacyControls.alumnusId, set: record }).returning();
+      await writeSecurityAudit(context, { action: record.generalContactStatus === "Do not contact" ? "do_not_contact_changed" : "privacy_preference_changed", entityType: "alumnus", entityId: payload.id, metadata: { generalContactStatus: record.generalContactStatus, professionalEngagementStatus: record.professionalEngagementStatus, birthdayEngagementStatus: record.birthdayEngagementStatus, consentSource: record.consentSource } });
+      return Response.json({ privacy: updated });
     }
 
     return Response.json({ error: "Unsupported workspace update." }, { status: 400 });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to save the update." }, { status: 500 });
   }
 }

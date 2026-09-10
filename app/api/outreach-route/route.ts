@@ -3,13 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { activityLog, alumni, alumniRelationships, engagementEvents } from "@/db/schema";
 import { appConfig } from "@/lib/app-config";
-
-function actorFrom(request: Request) {
-  return request.headers.get("x-demo-user")
-    ?? request.headers.get("oai-authenticated-user-email")
-    ?? request.headers.get("oai-authenticated-user-id")
-    ?? "Public workspace user";
-}
+import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 async function ensureDemoRelationship() {
   const db = getDb();
@@ -37,13 +31,14 @@ function responsive(status: string) {
 
 export async function POST(request: Request) {
   try {
+    const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as { targetAlumnusId?: number };
     if (!Number.isInteger(payload.targetAlumnusId)) {
       return Response.json({ error: "Select a target alumnus before requesting a route." }, { status: 400 });
     }
     await ensureDemoRelationship();
     const db = getDb();
-    const actor = actorFrom(request);
+    const actor = context.displayName;
     const targetId = Number(payload.targetAlumnusId);
     const [target] = await db.select().from(alumni).where(eq(alumni.id, targetId)).limit(1);
     if (!target) return Response.json({ error: `The selected alumnus is not in ${appConfig.name}.` }, { status: 404 });
@@ -94,6 +89,7 @@ export async function POST(request: Request) {
       actor,
       details: `${routeType}${intermediary ? ` via ${intermediary.name}` : ""}: ${rationale}`,
     });
+    await writeSecurityAudit(context, { action: "outreach_route_recommended", entityType: "alumnus", entityId: target.id, metadata: { routeType, intermediaryId: intermediary?.id ?? null } });
     return Response.json({
       routeType,
       rationale,
@@ -103,6 +99,8 @@ export async function POST(request: Request) {
       factors: { usableContact, reliableProfile, directAttempts, directResponses, confirmedIntermediary: Boolean(credible) },
     });
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to recommend an outreach route." }, { status: 500 });
   }
 }

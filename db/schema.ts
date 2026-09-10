@@ -325,3 +325,68 @@ export const fieldChangeHistory = sqliteTable("field_change_history", {
   initiatedBy: text("initiated_by").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_field_change_alumnus").on(table.alumnusId)]);
+
+export const applicationUsers = sqliteTable("application_users", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  externalIdentity: text("external_identity").notNull().default(""),
+  displayName: text("display_name").notNull(),
+  email: text("email").notNull(),
+  role: text("role").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastLoginAt: text("last_login_at").notNull().default(""),
+}, (table) => [
+  uniqueIndex("idx_application_users_email").on(table.email),
+  uniqueIndex("idx_application_users_external_identity").on(table.externalIdentity).where(sql`${table.externalIdentity} != ''`),
+  index("idx_application_users_role_enabled").on(table.role, table.enabled),
+]);
+
+export const securityAuditEvents = sqliteTable("security_audit_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  actorUserId: integer("actor_user_id").references(() => applicationUsers.id),
+  actorIdentity: text("actor_identity").notNull().default("System"),
+  actorName: text("actor_name").notNull().default("System"),
+  actorRole: text("actor_role").notNull().default("SYSTEM"),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id").notNull().default(""),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  result: text("result").notNull().default("success"),
+  source: text("source").notNull().default("application"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_security_audit_actor").on(table.actorUserId),
+  index("idx_security_audit_entity").on(table.entityType, table.entityId),
+  index("idx_security_audit_created_at").on(table.createdAt),
+]);
+
+export const alumniPrivacyControls = sqliteTable("alumni_privacy_controls", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  generalContactStatus: text("general_contact_status").notNull().default("Unknown"),
+  professionalEngagementStatus: text("professional_engagement_status").notNull().default("Unknown"),
+  birthdayEngagementStatus: text("birthday_engagement_status").notNull().default("Unknown"),
+  consentSource: text("consent_source").notNull().default("Unknown"),
+  notes: text("notes").notNull().default(""),
+  updatedBy: text("updated_by").notNull().default("System"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_alumni_privacy_alumnus").on(table.alumnusId),
+  index("idx_alumni_privacy_general_status").on(table.generalContactStatus),
+]);
+
+export const alumniDataLifecycle = sqliteTable("alumni_data_lifecycle", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  status: text("status").notNull().default("Active"),
+  deletionRequestedAt: text("deletion_requested_at").notNull().default(""),
+  archivedAt: text("archived_at").notNull().default(""),
+  anonymizedAt: text("anonymized_at").notNull().default(""),
+  notes: text("notes").notNull().default(""),
+  updatedBy: text("updated_by").notNull().default("System"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_alumni_lifecycle_alumnus").on(table.alumnusId),
+  index("idx_alumni_lifecycle_status").on(table.status),
+]);

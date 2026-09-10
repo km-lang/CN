@@ -32,6 +32,40 @@ Changing `APP_BASE_PATH` requires a new deployment build because route prefixes 
 
 Institutional sender identity is separate from the product brand. `MAIL_SENDER_DISPLAY_NAME` defaults to `Placement Committee, IIM Lucknow`. `MAIL_OAUTH_CALLBACK_URL` is reserved for a future official-mailbox adapter and should contain the full callback URL registered with the mail provider. The existing `app/chatgpt-auth.ts` callback is dispatch-owned ChatGPT sign-in infrastructure, not the institutional mailbox callback.
 
+## Production security and access control
+
+Corporate Network uses dispatch-owned **Sign in with ChatGPT** for authentication. The hosting layer owns the secure OAuth session, cookies, callback, and authenticated identity headers. The application never stores a password. After authentication, every page request and sensitive API request resolves that identity against the central D1 `application_users` table. Access is denied by default.
+
+The application roles are:
+
+- **ADMIN**: normal PCOM workflows plus user/role management, provider application limits, company priorities, audit history, privacy controls, and data lifecycle administration.
+- **PCOM**: alumni search, discovery, assessment, enrichment, outreach, engagement, privacy preferences, and authorized contact details. PCOM cannot manage roles or provider limits.
+- **DEVELOPER**: read-only application/provider diagnostics. Contact details are masked in the server response, and PCOM notes, relationship assessments, outreach content, provider actions, and settings are restricted.
+
+Frontend controls reflect these permissions, but they are not the security boundary. `lib/security.ts` authenticates each protected request and the route handlers enforce server-side permissions. A disabled user is rejected on the next request while historical actor names remain in audit records.
+
+The first Admin is created by setting the server-only `BOOTSTRAP_ADMIN_EMAILS` allowlist to the verified ChatGPT account email and signing in once. The bootstrap creates an Admin row and audit event. Clear the allowlist after successful bootstrap if desired. Future users and Admins are added from the Admin-only **Administration** tab.
+
+Security-related server configuration:
+
+```text
+BOOTSTRAP_ADMIN_EMAILS=first.admin@example.edu
+ENRICHMENT_MODE=mock
+PROVIDER_LIVE_ENABLED=false
+MAIL_MODE=mock
+MAIL_LIVE_ENABLED=false
+PDL_API_KEY=
+LUSHA_API_KEY=
+```
+
+Live provider access requires both `ENRICHMENT_MODE=live` and `PROVIDER_LIVE_ENABLED=true` on the server. Live institutional mail similarly requires both `MAIL_MODE=live` and `MAIL_LIVE_ENABLED=true`. Browser controls cannot activate either mode.
+
+Migration `drizzle/0005_security_access_controls.sql` adds `application_users`, `security_audit_events`, `alumni_privacy_controls`, and `alumni_data_lifecycle` without altering or dropping the original 19 tables. Privacy preferences treat `Unknown` as unknown, not affirmative consent. A general `Do not contact` blocks birthday and professional sends in the server route. Data lifecycle changes are Admin-only; anonymization requires typing `ANONYMIZE <record-id>` and retains non-identifying audit history.
+
+### Pre-migration D1 recovery point
+
+The version-11 D1 logical backup was captured on 10 September 2026 before migration generation: 19 tables, 89 rows, with no truncated values. The backup JSON SHA-256 is `08bbb74223d57fb5aacd5480a7e0df73132163d281b84d46c51f77e90c141013`; the fresh-database restore SQL SHA-256 is `839f4425ddd7de5f3b1b4ea79e47eb5534e349c1afd7cc17c91c7d60ffd81c17`. Restore into a fresh D1 database after applying migrations 0000–0004, validate table/row counts, and then switch the `DB` binding. The restore script does not delete or overwrite records. The current Sites database tooling does not expose a direct SQL-import or binding-switch operation, so an emergency hosted restore requires approved infrastructure access or Sites support.
+
 ## Shared engagement workspace
 
 Professional signals and birthdays now use one D1-backed engagement-event framework. Each event records its source, status, owner, views, planned or completed actions, responses, follow-ups, skipped/incorrect reasons, and audit history. Viewing an event does not imply that action was taken, and an atomic action key prevents duplicate sends across committee members.
@@ -39,7 +73,7 @@ Professional signals and birthdays now use one D1-backed engagement-event framew
 The **Engagement** tab includes:
 
 - professional-signal and birthday queues with shared statuses
-- PCOMmer 1 / PCOMmer 2 demonstration identities for multi-user testing
+- authenticated-user attribution for multi-user ownership and activity history
 - birthday date-window, company, and email-readiness filters
 - individual and bulk preview/approval before sending
 - communication-preference and birthday-confidence safety checks
@@ -90,7 +124,7 @@ PDL_API_KEY=
 LUSHA_API_KEY=
 ```
 
-Change `ENRICHMENT_MODE` to `live` only after both vendor keys are configured. The application also enforces adjustable monthly credit caps stored in D1. The default caps are 100 credits per provider per month.
+Change `ENRICHMENT_MODE` to `live` only after both vendor keys are configured and the separate server-only `PROVIDER_LIVE_ENABLED=true` safety gate is approved. The application also enforces adjustable monthly credit caps stored in D1. The default caps are 100 credits per provider per month.
 
 The Enrichment tab provides:
 
@@ -128,7 +162,7 @@ The live discovery adapter uses the PDL v5 Person Search API, while existing-pro
 
 ## Validation
 
-Run `node --test tests/alumni-discovery.test.mjs` to verify the 15 company-first discovery conditions, `node --test tests/workflow-acceptance.test.mjs` for the 18 route, discovery, manual-entry, refresh, and contact-provenance conditions, and `node --test tests/engagement-workflow.test.mjs` for the 17 engagement conditions. Run `npx tsc --noEmit` and `npm test` before release.
+Run `node --test tests/alumni-discovery.test.mjs` for discovery and configuration, `node --test tests/workflow-acceptance.test.mjs` for workflow acceptance, `node --test tests/engagement-workflow.test.mjs` for engagement safety, and `node --test tests/security-access.test.mjs` for the role matrix, contact masking, route protection, DNC, audit, migration, secrets, and security headers. Run `npx tsc --noEmit`, `npm run lint`, and `npm test` before release.
 
 ## Starter runtime notes
 

@@ -3,6 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   alumni,
+  alumniPrivacyControls,
   birthdayData,
   communicationPreferences,
   engagementActions,
@@ -14,16 +15,10 @@ import {
   messageTemplates,
 } from "@/db/schema";
 import { createMailDraft, mailMode, sendMail } from "@/lib/mail-service";
+import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
 
 const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Skipped"]);
 const actionableBirthdayStates = new Set(["Confirmed internally", "Manually confirmed", "PDL sourced"]);
-
-function actorFrom(request: Request) {
-  return request.headers.get("x-demo-user")
-    ?? request.headers.get("oai-authenticated-user-email")
-    ?? request.headers.get("oai-authenticated-user-id")
-    ?? "PCOMmer 1";
-}
 
 function isoDate(date: Date) {
   return date.toISOString().slice(0, 10);
@@ -40,8 +35,9 @@ function monthDay(date: Date) {
   return date.toISOString().slice(5, 10);
 }
 
-async function audit(eventId: number, actor: string, action: string, details = "") {
-  await getDb().insert(engagementAuditLog).values({ eventId, actor, action, details });
+async function audit(eventId: number, context: SecurityContext, action: string, details = "") {
+  await getDb().insert(engagementAuditLog).values({ eventId, actor: context.displayName, action, details });
+  await writeSecurityAudit(context, { action: `engagement_${action}`, entityType: "engagement_event", entityId: eventId, metadata: { details } });
 }
 
 async function ensureDemoEngagements() {
@@ -221,7 +217,7 @@ async function ensureDemoEngagements() {
 
 async function loadWorkspace() {
   const db = getDb();
-  const [events, people, birthdays, preferences, templates, actions, responses, views, audits] = await Promise.all([
+  const [events, people, birthdays, preferences, templates, actions, responses, views, audits, privacyControls] = await Promise.all([
     db.select().from(engagementEvents).orderBy(desc(engagementEvents.eventDate), desc(engagementEvents.id)),
     db.select().from(alumni),
     db.select().from(birthdayData),
@@ -231,10 +227,12 @@ async function loadWorkspace() {
     db.select().from(engagementResponses).orderBy(desc(engagementResponses.receivedAt), desc(engagementResponses.id)),
     db.select().from(eventViews).orderBy(desc(eventViews.viewedAt), desc(eventViews.id)),
     db.select().from(engagementAuditLog).orderBy(desc(engagementAuditLog.createdAt), desc(engagementAuditLog.id)),
+    db.select().from(alumniPrivacyControls),
   ]);
   const peopleById = new Map(people.map(person => [person.id, person]));
   const birthdayByAlumnus = new Map(birthdays.map(item => [item.alumnusId, item]));
   const preferenceByAlumnus = new Map(preferences.filter(item => item.engagementType === "Birthday").map(item => [item.alumnusId, item]));
+  const privacyByAlumnus = new Map(privacyControls.map(item => [item.alumnusId, item]));
   return {
     mode: mailMode(),
     templates,
@@ -255,8 +253,13 @@ async function loadWorkspace() {
           confidence: person.confidence,
           outreachStatus: person.status,
         } : null,
-        birthday: birthdayByAlumnus.get(event.alumnusId) ?? null,
-        preference: preferenceByAlumnus.get(event.alumnusId)?.status ?? "Unknown",
+        birthday: birthdayByAlumnus.has(event.alumnusId) ? {
+          birthMonthDay: birthdayByAlumnus.get(event.alumnusId)!.birthMonthDay,
+          source: birthdayByAlumnus.get(event.alumnusId)!.source,
+          status: birthdayByAlumnus.get(event.alumnusId)!.status,
+          lastVerifiedAt: birthdayByAlumnus.get(event.alumnusId)!.lastVerifiedAt,
+        } : null,
+        preference: engagementPreference(event.eventType, privacyByAlumnus.get(event.alumnusId), preferenceByAlumnus.get(event.alumnusId)?.status),
         actions: actions.filter(item => item.eventId === event.id),
         responses: responses.filter(item => item.eventId === event.id),
         views: views.filter(item => item.eventId === event.id),
@@ -264,6 +267,13 @@ async function loadWorkspace() {
       };
     }),
   };
+}
+
+function engagementPreference(eventType: string, privacy: typeof alumniPrivacyControls.$inferSelect | undefined, legacy = "Unknown") {
+  if (privacy?.generalContactStatus === "Do not contact") return "Do not contact";
+  if (eventType === "Birthday" && ["Do not contact", "No birthday engagement", "Professional engagement only"].includes(privacy?.birthdayEngagementStatus ?? "")) return privacy!.birthdayEngagementStatus;
+  if (eventType === "Professional Signal" && ["Do not contact", "No professional engagement"].includes(privacy?.professionalEngagementStatus ?? "")) return privacy!.professionalEngagementStatus;
+  return legacy;
 }
 
 async function getEvent(eventId: number) {
@@ -296,6 +306,14 @@ async function validateSendEligibility(eventId: number, actor?: string) {
     throw new Error(`This engagement is currently assigned to ${event.assignedTo}. Reassign it before taking action.`);
   }
   if (!person.email) throw new Error("Email unavailable. Retrieve an email through Lusha before sending.");
+  const [privacy] = await db.select().from(alumniPrivacyControls).where(eq(alumniPrivacyControls.alumnusId, person.id)).limit(1);
+  const preferences = await db.select().from(communicationPreferences).where(eq(communicationPreferences.alumnusId, person.id));
+  if (privacy?.generalContactStatus === "Do not contact" || preferences.some(preference => preference.status === "Do not contact")) {
+    throw new Error("Engagement blocked because this alumnus is marked Do not contact.");
+  }
+  if (event.eventType === "Professional Signal" && ["Do not contact", "No professional engagement"].includes(privacy?.professionalEngagementStatus ?? "")) {
+    throw new Error("Professional engagement is not permitted for this alumnus.");
+  }
   if (event.eventType === "Birthday") {
     const [birthday] = await db.select().from(birthdayData).where(eq(birthdayData.alumnusId, person.id)).limit(1);
     const [preference] = await db.select().from(communicationPreferences).where(and(
@@ -303,14 +321,18 @@ async function validateSendEligibility(eventId: number, actor?: string) {
       eq(communicationPreferences.engagementType, "Birthday"),
     )).limit(1);
     if (!birthday || !actionableBirthdayStates.has(birthday.status)) throw new Error("This birthday is not sufficiently confirmed for sending.");
+    if (["Do not contact", "No birthday engagement", "Professional engagement only"].includes(privacy?.birthdayEngagementStatus ?? "")) {
+      throw new Error(`Birthday email excluded because the privacy preference is “${privacy?.birthdayEngagementStatus}”.`);
+    }
     if (preference && ["Do not contact", "Do not send birthday wishes", "Professional engagement only"].includes(preference.status)) {
       throw new Error(`Birthday email excluded because the contact preference is “${preference.status}”.`);
     }
   }
 }
 
-async function sendOne(eventId: number, actor: string, templateId?: number, subject?: string, body?: string) {
+async function sendOne(eventId: number, context: SecurityContext, templateId?: number, subject?: string, body?: string) {
   const db = getDb();
+  const actor = context.displayName;
   await validateSendEligibility(eventId, actor);
   const { event, person, template, draft } = await buildDraft(eventId, templateId);
   const prepared = { ...draft, subject: subject?.trim() || draft.subject, body: body?.trim() || draft.body };
@@ -351,7 +373,7 @@ async function sendOne(eventId: number, actor: string, templateId?: number, subj
       lastUpdatedAt: now,
     }).where(eq(engagementEvents.id, event.id));
     if (person.status === "Not contacted") await db.update(alumni).set({ status: "Contacted", updatedBy: actor, updatedAt: now }).where(eq(alumni.id, person.id));
-    await audit(event.id, actor, "email_sent", `${event.eventType === "Birthday" ? "Birthday" : "Congratulations"} email sent through ${result.mode} mail service.`);
+    await audit(event.id, context, "email_sent", `${event.eventType === "Birthday" ? "Birthday" : "Congratulations"} email sent through ${result.mode} mail service.`);
     return { eventId: event.id, messageId: result.messageId, deliveryStatus: result.deliveryStatus };
   } catch (error) {
     await db.update(engagementActions).set({ actionKey: `failed:${event.id}:${Date.now()}`, deliveryStatus: "Failed", notes: error instanceof Error ? error.message : "Mail send failed" }).where(eq(engagementActions.id, reserved.id));
@@ -359,17 +381,21 @@ async function sendOne(eventId: number, actor: string, templateId?: number, subj
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    await authorizeRequest(request, "OPERATE_PCOM");
     await ensureDemoEngagements();
     return Response.json(await loadWorkspace());
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load the shared engagement workspace." }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as {
       action?: string;
       eventId?: number;
@@ -385,7 +411,7 @@ export async function POST(request: Request) {
       followUpDate?: string;
       birthMonthDay?: string;
     };
-    const actor = actorFrom(request);
+    const actor = context.displayName;
     const db = getDb();
     const now = new Date().toISOString();
     const eventId = Number(payload.eventId);
@@ -412,7 +438,7 @@ export async function POST(request: Request) {
       const sent = [];
       const excluded = [];
       for (const id of ids) {
-        try { sent.push(await sendOne(id, actor, payload.templateId)); }
+        try { sent.push(await sendOne(id, context, payload.templateId)); }
         catch (error) { excluded.push({ eventId: id, reason: error instanceof Error ? error.message : "Unable to send" }); }
       }
       return Response.json({ sent, excluded, mode: mailMode() });
@@ -430,52 +456,52 @@ export async function POST(request: Request) {
         lastUpdatedBy: actor,
         lastUpdatedAt: now,
       }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, "viewed", "Event opened. No engagement action was taken.");
+      await audit(eventId, context, "viewed", "Event opened. No engagement action was taken.");
     } else if (payload.action === "acknowledge") {
       if (!terminalStatuses.has(event.status)) await db.update(engagementEvents).set({ status: "Acknowledged", acknowledgedAt: now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, "acknowledged", "Signal reviewed and acknowledged.");
+      await audit(eventId, context, "acknowledged", "Signal reviewed and acknowledged.");
     } else if (payload.action === "assign") {
       if (event.assignedTo && event.assignedTo !== actor && !payload.force) {
         return Response.json({ error: `This engagement is currently assigned to ${event.assignedTo}.` }, { status: 409 });
       }
       await db.update(engagementEvents).set({ assignedTo: actor, assignedAt: now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, event.assignedTo ? "reassigned" : "assigned", event.assignedTo ? `Reassigned from ${event.assignedTo}.` : "Ownership taken.");
+      await audit(eventId, context, event.assignedTo ? "reassigned" : "assigned", event.assignedTo ? `Reassigned from ${event.assignedTo}.` : "Ownership taken.");
     } else if (payload.action === "plan") {
       if (terminalStatuses.has(event.status)) return Response.json({ error: "This event has already been completed." }, { status: 409 });
       if (event.assignedTo && event.assignedTo !== actor && !payload.force) {
         return Response.json({ error: `This engagement is currently assigned to ${event.assignedTo}.` }, { status: 409 });
       }
       await db.update(engagementEvents).set({ status: "Action Planned", actionPlannedAt: now, assignedTo: actor, assignedAt: event.assignedAt || now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, "action_planned", payload.notes ?? "Engagement action planned.");
+      await audit(eventId, context, "action_planned", payload.notes ?? "Engagement action planned.");
     } else if (payload.action === "preview") {
       const item = await buildDraft(eventId, payload.templateId);
-      await audit(eventId, actor, "draft_generated", `Draft prepared with ${item.template.name}.`);
+      await audit(eventId, context, "draft_generated", `Draft prepared with ${item.template.name}.`);
       return Response.json({ template: item.template, draft: item.draft });
     } else if (payload.action === "send") {
-      const sent = await sendOne(eventId, actor, payload.templateId, payload.subject, payload.body);
+      const sent = await sendOne(eventId, context, payload.templateId, payload.subject, payload.body);
       return Response.json({ sent, mode: mailMode() });
     } else if (payload.action === "manual_action") {
       if (terminalStatuses.has(event.status)) return Response.json({ error: "This event has already been completed." }, { status: 409 });
       const [created] = await db.insert(engagementActions).values({ actionKey: `manual:${eventId}:${Date.now()}`, eventId, alumnusId: event.alumnusId, actionType: "Manual Action", channel: "Manual", performedBy: actor, deliveryStatus: "Completed", notes: payload.notes ?? "Action completed outside the platform." }).returning();
       await db.update(engagementEvents).set({ status: "Action Taken", actionTakenAt: now, actionTakenBy: actor, actionType: "Manual Action", actionChannel: "Manual", deliveryStatus: "Completed", lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, "manual_action", payload.notes ?? "Action marked complete.");
+      await audit(eventId, context, "manual_action", payload.notes ?? "Action marked complete.");
       return Response.json({ action: created });
     } else if (payload.action === "skip" || payload.action === "incorrect") {
       const reason = payload.action === "incorrect" ? `Incorrect signal${payload.reason ? `: ${payload.reason}` : ""}` : payload.reason || "Not relevant";
       await db.update(engagementEvents).set({ status: "Skipped", skippedAt: now, skipReason: reason, closedAt: now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, payload.action === "incorrect" ? "signal_marked_incorrect" : "skipped", reason);
+      await audit(eventId, context, payload.action === "incorrect" ? "signal_marked_incorrect" : "skipped", reason);
     } else if (payload.action === "response") {
       const followUpRequired = Boolean(payload.followUpRequired);
       await db.insert(engagementResponses).values({ eventId, responseType: payload.responseType || "Other", receivedAt: now, recordedBy: actor, notes: payload.notes ?? "", followUpRequired, followUpDate: payload.followUpDate ?? "" });
       await db.update(engagementEvents).set({ status: followUpRequired ? "Follow-up Due" : "Response Received", responseReceived: true, responseReceivedAt: now, responseType: payload.responseType || "Other", responseNotes: payload.notes ?? "", followUpRequired, followUpDate: payload.followUpDate ?? "", lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, "response_recorded", `${payload.responseType || "Other"}${followUpRequired ? `; follow-up ${payload.followUpDate || "required"}` : ""}.`);
+      await audit(eventId, context, "response_recorded", `${payload.responseType || "Other"}${followUpRequired ? `; follow-up ${payload.followUpDate || "required"}` : ""}.`);
     } else if (payload.action === "follow_up") {
       if (!payload.followUpDate) return Response.json({ error: "Choose a follow-up date." }, { status: 400 });
       await db.update(engagementEvents).set({ status: "Follow-up Due", followUpRequired: true, followUpDate: payload.followUpDate, assignedTo: event.assignedTo || actor, assignedAt: event.assignedAt || now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, "follow_up_added", `Follow-up due ${payload.followUpDate}.`);
+      await audit(eventId, context, "follow_up_added", `Follow-up due ${payload.followUpDate}.`);
     } else if (payload.action === "close") {
       await db.update(engagementEvents).set({ status: "Closed", closedAt: now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
-      await audit(eventId, actor, "closed", payload.notes ?? "No further action required.");
+      await audit(eventId, context, "closed", payload.notes ?? "No further action required.");
     } else if (payload.action === "correct_birthday") {
       if (!/^\d{2}-\d{2}$/.test(payload.birthMonthDay ?? "")) return Response.json({ error: "Enter the birthday as MM-DD." }, { status: 400 });
       const [birthday] = await db.select().from(birthdayData).where(eq(birthdayData.alumnusId, event.alumnusId)).limit(1);
@@ -484,13 +510,15 @@ export async function POST(request: Request) {
       const eventYear = new Date(event.eventDate).getUTCFullYear();
       await db.update(engagementEvents).set({ eventDate: `${eventYear}-${payload.birthMonthDay}`, source: "Manual confirmation", lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
       await db.insert(fieldChangeHistory).values({ alumnusId: event.alumnusId, field: "birthday", oldValue: birthday.birthMonthDay, newValue: payload.birthMonthDay!, source: "Manual confirmation", providerAction: "Birthday correction", initiatedBy: actor });
-      await audit(eventId, actor, "birthday_corrected", `${birthday.birthMonthDay} → ${payload.birthMonthDay}.`);
+      await audit(eventId, context, "birthday_corrected", `${birthday.birthMonthDay} → ${payload.birthMonthDay}.`);
     } else {
       return Response.json({ error: "Unsupported engagement action." }, { status: 400 });
     }
 
     return Response.json(await loadWorkspace());
   } catch (error) {
+    const denied = accessErrorResponse(error);
+    if (denied) return denied;
     const message = error instanceof Error ? error.message : "Unable to update the engagement event.";
     const status = /Already engaged|assigned to|already completed/i.test(message) ? 409 : 400;
     return Response.json({ error: message }, { status });

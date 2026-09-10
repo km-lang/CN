@@ -36,6 +36,13 @@
       "when": 1789022685093,
       "tag": "0004_plain_the_enforcers",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1789050461778,
+      "tag": "0005_security_access_controls",
+      "breakpoints": true
     }
   ]
 }

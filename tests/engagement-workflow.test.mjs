@@ -91,7 +91,7 @@ test("11. incorrect professional signals are skipped, not deleted", () => {
 
 test("12. skipped events retain their source and an audit record", () => {
   assert.match(route, /skipReason: reason/);
-  assert.match(route, /await audit\(eventId, actor/);
+  assert.match(route, /await audit\(eventId, context/);
   assert.doesNotMatch(route, /delete\(engagementEvents\)/);
 });
 
@@ -119,10 +119,10 @@ test("16. responsiveness derives from recorded engagement outcomes", () => {
   assert.match(page, /Derived from shared engagement history/);
 });
 
-test("17. multi-user state is identified server-side and persisted in D1 tables", () => {
-  assert.match(route, /x-demo-user/);
-  assert.match(page, /PCOMmer 1/);
-  assert.match(page, /PCOMmer 2/);
+test("17. multi-user state uses the authenticated server identity and persists in D1 tables", () => {
+  assert.match(route, /authorizeRequest\(request, "OPERATE_PCOM"\)/);
+  assert.match(route, /context\.displayName/);
+  assert.doesNotMatch(route + page, /x-demo-user/);
   assert.match(schema, /engagementEvents = sqliteTable/);
   assert.doesNotMatch(page, /localStorage/);
 });

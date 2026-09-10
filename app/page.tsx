@@ -17,6 +17,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { AdminPanel } from "@/app/admin-panel"
+import { useAccessSession } from "@/app/access-provider"
 import {
   FIXED_ALUMNI_SCHOOL,
   defaultDirectoryFilters,
@@ -91,6 +93,16 @@ type Alumni = {
   source?: string
   updatedBy?: string
   updatedAt?: string
+  privacy?: {
+    generalContactStatus: string
+    professionalEngagementStatus: string
+    birthdayEngagementStatus: string
+    consentSource: string
+    notes: string
+    updatedAt: string
+    updatedBy: string
+  }
+  lifecycle?: string
 }
 
 type LatestImport = { filename: string; rowCount: number; importedBy: string; createdAt: string }
@@ -384,6 +396,8 @@ function parseCsv(content: string) {
 }
 
 export default function Home() {
+  const session = useAccessSession()
+  const currentDemoUser = session.displayName
   const [alumni, setAlumni] = useState<Alumni[]>(alumniSeed)
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>(companyPrioritySeed)
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
@@ -419,7 +433,6 @@ export default function Home() {
   const [engagements, setEngagements] = useState<EngagementEvent[]>([])
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([])
   const [mailMode, setMailMode] = useState<"mock" | "live">("mock")
-  const [currentDemoUser, setCurrentDemoUser] = useState("PCOMmer 1")
   const [engagementFilter, setEngagementFilter] = useState("Needs Action")
   const [birthdayWindow, setBirthdayWindow] = useState("Next 7 Days")
   const [birthdayCompany, setBirthdayCompany] = useState("All companies")
@@ -481,9 +494,9 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadWorkspace(true), 0)
+    const timer = window.setTimeout(() => void loadWorkspace(session.canOperate), 0)
     return () => window.clearTimeout(timer)
-  }, [loadWorkspace])
+  }, [loadWorkspace, session.canOperate])
 
   const loadEnrichment = useCallback(async () => {
     try {
@@ -505,9 +518,10 @@ export default function Home() {
   }, [loadEnrichment])
 
   const loadEngagements = useCallback(async () => {
+    if (!session.canOperate) return
     try {
       setEngagementLoading(true)
-      const response = await fetch(API_ROUTES.engagements, { cache: "no-store", headers: { "x-demo-user": currentDemoUser } })
+      const response = await fetch(API_ROUTES.engagements, { cache: "no-store" })
       const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; mode?: "mock" | "live"; error?: string }
       if (!response.ok || !data.events) throw new Error(data.error || "Unable to load the shared engagement queue.")
       setEngagements(data.events)
@@ -520,12 +534,13 @@ export default function Home() {
     } finally {
       setEngagementLoading(false)
     }
-  }, [currentDemoUser])
+  }, [session.canOperate])
 
   useEffect(() => {
+    if (!session.canOperate) return
     const timer = window.setTimeout(() => void loadEngagements(), 0)
     return () => window.clearTimeout(timer)
-  }, [loadEngagements])
+  }, [loadEngagements, session.canOperate])
 
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
   const programmes = useMemo(() => [...new Set(alumni.map(person => person.programme))].sort(), [alumni])
@@ -629,6 +644,23 @@ export default function Home() {
     }
   }
 
+  async function updatePrivacy(person: Alumni, changes: Partial<NonNullable<Alumni["privacy"]>>) {
+    setSyncing(true)
+    try {
+      const privacy = { ...(person.privacy ?? { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" }), ...changes }
+      const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_privacy", id: person.id, privacy }) })
+      const data = await response.json() as { privacy?: NonNullable<Alumni["privacy"]>; error?: string }
+      if (!response.ok || !data.privacy) throw new Error(data.error || "Unable to save privacy preferences.")
+      const updated = { ...person, privacy: data.privacy }
+      replaceAlumnus(updated)
+      setWorkspaceMessage("Privacy preference saved and audited.")
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save privacy preferences.")
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   function downloadTemplate() {
     const content = [
       "name,batch,graduation_year,programme,education,company,title,function,seniority,location,previous_companies,experience_years,email,phone,linkedin_url,confidence,status,note",
@@ -647,7 +679,7 @@ export default function Home() {
     setImporting(true)
     try {
       const records = parseCsv(await importFile.text())
-      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
       const data = await response.json() as { imported?: number; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
       setWorkspaceMessage(`${data.imported ?? records.length} alumni records imported into the shared database.`)
@@ -667,7 +699,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.enrichment, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ alumniIds: ids.slice(0, 25), providers: requestedProviders, operation, contactChannels }),
       })
       const data = await response.json() as { results?: Array<{ status: string }>; error?: string }
@@ -706,7 +738,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, eventId, ...extra }),
       })
       const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; error?: string; sent?: { deliveryStatus: string } }
@@ -738,7 +770,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "preview", eventId: event.id, templateId: template?.id }),
       })
       const data = await response.json() as { template?: MessageTemplate; draft?: { recipient: string; subject: string; body: string }; error?: string }
@@ -781,7 +813,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "bulk_preview", eventIds: selectedBirthdayIds }),
       })
       const data = await response.json() as BulkPreview & { error?: string }
@@ -828,7 +860,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.discovery, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
       })
       const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; error?: string; blocked?: boolean }
@@ -892,7 +924,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.discovery, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "approve", resultIds }),
       })
       const data = await response.json() as { addedCount?: number; added?: Array<{ resultId: number; alumnusId: number }>; error?: string }
@@ -912,7 +944,7 @@ export default function Home() {
   }
 
   async function ignoreDiscoveryResult(resultId: number, reason = ignoreReason) {
-    const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "ignore", resultId, reason }) })
+    const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "ignore", resultId, reason }) })
     if (response.ok) {
       setDiscoveryResults(current => current.map(item => item.id === resultId ? { ...item, reviewStatus: "Ignored", reviewNote: reason } : item))
       setIgnoreResult(null)
@@ -926,7 +958,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.discovery, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "apply_updates", resultId: comparisonResult.id, fields: selectedComparisonFields }),
       })
       const data = await response.json() as { changedFields?: string[]; error?: string }
@@ -947,7 +979,7 @@ export default function Home() {
     if (!comparisonResult) return
     setDiscovering(true)
     try {
-      const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "keep_separate", resultId: comparisonResult.id }) })
+      const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "keep_separate", resultId: comparisonResult.id }) })
       const data = await response.json() as { alumnusId?: number; error?: string }
       if (!response.ok || !data.alumnusId) throw new Error(data.error || "Unable to keep this alumnus as a separate record.")
       setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, linkedInternalAlumnusId: data.alumnusId!, reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate } : item))
@@ -967,7 +999,7 @@ export default function Home() {
     setRouteLoading(true)
     setRouteMessage("")
     try {
-      const response = await fetch(API_ROUTES.outreachRoute, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ targetAlumnusId: targetId }) })
+      const response = await fetch(API_ROUTES.outreachRoute, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ targetAlumnusId: targetId }) })
       const data = await response.json() as RouteRecommendation & { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to recommend an outreach route.")
       setRouteRecommendation(data)
@@ -988,7 +1020,7 @@ export default function Home() {
   async function saveManualAlumnus(continueAsNew: boolean) {
     setManualLoading(true)
     try {
-      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_add", record: manualForm, continueAsNew }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "manual_add", record: manualForm, continueAsNew }) })
       const data = await response.json() as { alumnus?: Alumni; matches?: ManualMatch[]; error?: string }
       if (!response.ok || !data.alumnus) {
         if (data.matches?.length) setManualMatches(data.matches)
@@ -1009,7 +1041,7 @@ export default function Home() {
     setManualLoading(true)
     setManualMessage("")
     try {
-      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_check", record: manualForm }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "manual_check", record: manualForm }) })
       const data = await response.json() as { matches?: ManualMatch[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to check for duplicates.")
       if (data.matches?.length) {
@@ -1028,7 +1060,7 @@ export default function Home() {
     setEnriching(true)
     setEnrichmentMessage("")
     try {
-      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "refresh_profiles", alumniIds: selectedForEnrichment }) })
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "refresh_profiles", alumniIds: selectedForEnrichment }) })
       const data = await response.json() as { results?: RefreshResult[]; error?: string }
       if (!response.ok || !data.results) throw new Error(data.error || "Unable to refresh the selected profiles.")
       setRefreshResults(data.results)
@@ -1047,7 +1079,7 @@ export default function Home() {
     if (!result.reviewId) return
     setEnriching(true)
     try {
-      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "apply_refresh", reviewId: result.reviewId, fields: refreshSelections[result.reviewId] ?? [] }) })
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "apply_refresh", reviewId: result.reviewId, fields: refreshSelections[result.reviewId] ?? [] }) })
       const data = await response.json() as { applied?: string[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to apply the selected profile updates.")
       setRefreshResults(current => current.map(item => item.reviewId === result.reviewId ? { ...item, reviewStatus: data.applied?.length ? "Applied" : "Reviewed, no updates selected" } : item))
@@ -1081,7 +1113,7 @@ export default function Home() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-lockup"><div className="brand-mark">{appConfig.shortName}</div><div><strong>{appConfig.name}</strong><span>{appConfig.subtitle}</span></div></div>
-        <div className={`data-state ${workspaceMessage ? "data-state-warning" : ""}`}><span /> {workspaceLoading ? "Connecting to shared database" : syncing ? "Saving changes" : workspaceMessage || "Shared database · Synced"}</div>
+        <div className="topbar-actions"><div className={`data-state ${workspaceMessage ? "data-state-warning" : ""}`}><span /> {workspaceLoading ? "Connecting to shared database" : syncing ? "Saving changes" : workspaceMessage || "Shared database · Synced"}</div><div className="signed-in-user"><strong>{session.displayName}</strong><span>{session.role}</span></div><a className="sign-out-link" href={session.signOutPath} target="_top">Sign out</a></div>
       </header>
 
       <section className="workspace">
@@ -1094,10 +1126,11 @@ export default function Home() {
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="directory">Alumni directory</TabsTrigger>
             <TabsTrigger value="companies">Company intelligence</TabsTrigger>
-            <TabsTrigger value="engagement">Engagement</TabsTrigger>
-            <TabsTrigger value="outreach">Outreach</TabsTrigger>
-            <TabsTrigger value="data-import">Data import</TabsTrigger>
+            {session.canOperate && <TabsTrigger value="engagement">Engagement</TabsTrigger>}
+            {session.canOperate && <TabsTrigger value="outreach">Outreach</TabsTrigger>}
+            {session.canOperate && <TabsTrigger value="data-import">Data import</TabsTrigger>}
             <TabsTrigger value="enrichment">Enrichment</TabsTrigger>
+            {session.canAdminister && <TabsTrigger value="admin">Administration</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="overview" className="tab-panel">
@@ -1114,27 +1147,27 @@ export default function Home() {
                 <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="lead-row" onClick={() => setSelected(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
               </article>
 
-              <aside className="panel signal-panel">
+              {session.canOperate && <aside className="panel signal-panel">
                 <div className="signal-orbit"><Sparkles /><span>{professionalEvents.filter(event => !["Closed", "Skipped"].includes(event.status)).length}</span></div><p className="eyebrow">Professional signals</p><h2>Shared reasons to reach out</h2>
                 {professionalEvents.slice(0, 3).map(event => <button key={event.id} className="signal-item signal-button" onClick={() => { setActiveTab("engagement"); void openEngagement(event) }}><div>{event.eventSubtype === "Promotion" ? <ArrowUpRight /> : <BriefcaseBusiness />}</div><p><strong>{event.alumnus?.name}</strong> {event.eventDescription.replace(`${event.alumnus?.name} `, "")}<small><EngagementStatusBadge status={event.status} />{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></button>)}
                 <Button variant="ghost" size="sm" className="signal-review" onClick={() => { setEngagementFilter("Professional Signals"); setActiveTab("engagement") }}>Review signals <ChevronRight /></Button>
-              </aside>
+              </aside>}
             </section>
 
-            <button className="panel birthday-overview" onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); setActiveTab("engagement") }}>
+            {session.canOperate && <button className="panel birthday-overview" onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); setActiveTab("engagement") }}>
               <span className="birthday-overview-icon"><Cake /></span><span><p className="eyebrow">Birthday engagement</p><strong>{birthdaysToday.length} today · {birthdaysNextWeek.length} in the next 7 days</strong><small>{birthdayEvents.filter(birthdayReady).length} ready for review and sending</small></span><ChevronRight />
-            </button>
+            </button>}
 
-            <section className="panel route-panel route-planner">
+            {session.canOperate && <section className="panel route-panel route-planner">
               <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div><span className="route-score">Target-specific</span></div>
               <div className="route-controls"><label><span>Target company</span><Select value={targetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><label><span>Search mapped alumni</span><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Type a name or role" /></label><label><span>Who do you want to reach?</span><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select a target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select></label><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
               {routeMessage && <p className="route-message">{routeMessage}</p>}
-            </section>
+            </section>}
           </TabsContent>
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button>}</div>
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
                 <Input list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />
@@ -1160,7 +1193,7 @@ export default function Home() {
                 <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                 <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
               </Table>
-              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>Search external professional data while keeping the IIM Lucknow education criterion fixed.</p><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button></div>}
+              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Search external professional data while keeping the IIM Lucknow education criterion fixed." : "No authorized records match the selected filters."}</p>{session.canOperate && <Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button>}</div>}
             </section>
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
@@ -1205,16 +1238,16 @@ export default function Home() {
           </TabsContent>
 
           <TabsContent value="companies" className="tab-panel">
-            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div><div className="company-actions"><Select value={targetCompany} onValueChange={changeTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Button onClick={() => findMoreForCompany(targetCompany)} disabled={discovering}><Search /> Find More Alumni</Button></div></section>
+            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div><div className="company-actions"><Select value={targetCompany} onValueChange={changeTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>{session.canOperate && <Button onClick={() => findMoreForCompany(targetCompany)} disabled={discovering}><Search /> Find More Alumni</Button>}</div></section>
             <section className="company-grid">
               <article className="panel company-summary">
                 <div className="company-title"><div className="company-logo">{targetCompany.slice(0, 1)}</div><div><h2>{targetCompany}</h2><span>Target company · Priority inherited by all mapped alumni</span></div></div>
-                <div className="company-priority"><label>Company priority</label><Select value={companyPriorities[targetCompany]} onValueChange={value => updateCompanyPriority(targetCompany, value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{companyPriorityOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select><small>Set once here. The score automatically updates for every alumnus at {targetCompany}.</small></div>
+                <div className="company-priority"><label>Company priority</label><Select value={companyPriorities[targetCompany]} disabled={!session.canAdminister} onValueChange={value => updateCompanyPriority(targetCompany, value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{companyPriorityOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select><small>{session.canAdminister ? `Set once here. The score automatically updates for every alumnus at ${targetCompany}.` : "Only an Admin can change company priority."}</small></div>
                 <div className="company-kpis"><div><strong>{targetAlumni.length}</strong><span>Alumni mapped</span></div><div><strong>{targetAlumni.filter(p => optionScore(seniorityOptions, seniorityLabel(p)) >= 80).length}</strong><span>Senior leaders</span></div><div><strong>{targetAlumni.filter(p => p.function === "HR").length}</strong><span>HR contacts</span></div><div><strong>{targetAlumni.filter(p => operationalStatus(p) === "Contact-ready").length}</strong><span>Contact-ready</span></div></div>
                 <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(targetAlumni.length, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
               </article>
               <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="contact-card" onClick={() => setSelected(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
-              <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Route for a specific alumnus</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Search by name or role" aria-label="Search target alumni" /><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {targetCompany} before requesting a route.</small>}</article>
+              {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Route for a specific alumnus</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Search by name or role" aria-label="Search target alumni" /><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {targetCompany} before requesting a route.</small>}</article>}
               <article className="panel account-history"><div className="panel-heading"><div><p className="eyebrow">Institutional memory</p><h2>Account history</h2></div></div><div className="timeline-item"><span><CalendarClock /></span><div><strong>12 Aug 2026</strong><p>Placement outreach opened for the 2026–27 cycle.</p></div></div><div className="timeline-item"><span><History /></span><div><strong>22 Nov 2025</strong><p>Two recruiter conversations recorded. Product hiring discussed.</p></div></div><div className="timeline-item"><span><CheckCircle2 /></span><div><strong>08 Sep 2024</strong><p>Summer placement participation confirmed through an alumni introduction.</p></div></div></article>
             </section>
           </TabsContent>
@@ -1222,7 +1255,7 @@ export default function Home() {
           <TabsContent value="engagement" className="tab-panel">
             <section className="engagement-header">
               <div><p className="eyebrow">Shared relationship actions</p><h2>Engagement queue</h2><span>Views, ownership, emails, responses, and follow-ups are shared across committee members.</span></div>
-              <div className="demo-user"><label>Viewing as</label><Select value={currentDemoUser} onValueChange={setCurrentDemoUser}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PCOMmer 1">PCOMmer 1</SelectItem><SelectItem value="PCOMmer 2">PCOMmer 2</SelectItem></SelectContent></Select><small>Multi-user demonstration</small></div>
+              <div className="demo-user"><label>Signed-in owner</label><strong>{session.displayName}</strong><small>Actions use your authenticated identity</small></div>
             </section>
 
             <section className="engagement-stats">
@@ -1319,24 +1352,26 @@ export default function Home() {
                   <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{enrichmentMode === "mock" ? "Mock provider active" : usage.configured ? "API key configured" : "API key missing"}</span><strong>{usage.remaining} credits remaining</strong></div>
                   <div className="credit-meter"><i style={{ width: `${percent}%` }} /></div>
                   <div className="credit-numbers"><span>{usage.used} used this month</span><span>{usage.limit} app limit</span></div>
-                  <div className="credit-limit"><Input type="number" min="0" value={creditDrafts[provider]} onChange={event => setCreditDrafts(current => ({ ...current, [provider]: event.target.value }))} aria-label={`${provider} monthly credit limit`} /><Button variant="outline" onClick={() => void saveCreditLimit(provider)}>Save limit</Button></div>
+                  <div className="credit-limit"><Input type="number" min="0" value={creditDrafts[provider]} disabled={!session.canAdminister} onChange={event => setCreditDrafts(current => ({ ...current, [provider]: event.target.value }))} aria-label={`${provider} monthly credit limit`} />{session.canAdminister && <Button variant="outline" onClick={() => void saveCreditLimit(provider)}>Save limit</Button>}</div>
+                  {!session.canAdminister && <small className="role-restriction">Only an Admin can change application credit limits.</small>}
                   <p>{provider === "pdl" ? "A successful match is counted as 1 PDL credit." : "Usage estimate: 1 credit per email and 5 per phone. Actual usage is recorded from each result."}</p>
                 </article>
               })}
             </section>
 
             <section className="panel batch-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>Select up to 25 approved alumni</h2><span>{selectedForEnrichment.length} selected. PDL refreshes profiles; Lusha retrieves contact details. No action runs without selection and confirmation.</span></div><div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button><Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaEmailReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve emails through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaPhoneReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve phones through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaBothReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve email and phone through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div></div>
+              <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. PDL refreshes profiles; Lusha retrieves contact details. No action runs without selection and confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button><Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaEmailReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve emails through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaPhoneReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve phones through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaBothReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve email and phone through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</div>
               {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
-              <Table><TableHeader><TableRow><TableHead><input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} /></TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell><input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} /></TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} />}</TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
             </section>
 
             <section className="panel history-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>Complete enrichment audit trail</h2><span>Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here.</span></div><Button variant="ghost" size="sm" onClick={() => void loadEnrichment()}>Refresh history</Button></div>
+              <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canOperate && <Button variant="ghost" size="sm" onClick={() => void loadEnrichment()}>Refresh history</Button>}</div>
               <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Credits</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistory.map(item => <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span>{item.resultCount ? <small className="review-status">{item.resultCount} results</small> : null}</TableCell><TableCell>{item.creditsUsed}</TableCell><TableCell className="response-cell">{item.requestSummary && <small>{item.requestSummary}</small>}{item.errorMessage || item.responseSummary}</TableCell></TableRow>)}</TableBody></Table>
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section>
           </TabsContent>
+          {session.canAdminister && <TabsContent value="admin" className="tab-panel"><AdminPanel alumni={alumni} /></TabsContent>}
         </Tabs>
       </section>
 
@@ -1344,15 +1379,17 @@ export default function Home() {
         <SheetContent className="profile-sheet sm:max-w-xl">
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
+            {selected.privacy?.generalContactStatus === "Do not contact" && <div className="do-not-contact-banner"><Ban /><div><strong>Do not contact</strong><span>All birthday, professional and outreach sends are blocked server-side for this alumnus.</span></div></div>}
             <details className="score-breakdown"><summary>Why this Placement Relevance score?</summary><div className="breakdown-list">{selectedBreakdown.items.map(item => <div key={item.label}><span>{item.label}<small>{item.weight}% weight</small></span><strong>{item.score}</strong><em>{(item.score * item.weight / 100).toFixed(1)}</em></div>)}</div><p>Weighted contributions are added and rounded to the nearest whole number.</p></details>
             <section className="profile-section"><h3>Assess alumnus</h3><p className="section-help">Choose qualitative evidence. {appConfig.name} converts each choice into an auditable score.</p><div className="assessment-grid">
-              <label><span>Hiring influence</span><Select value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
-              <label><span>IIML relationship</span><Select value={selected.assessment.iimlRelationship} onValueChange={value => updateAssessment(selected.id, "iimlRelationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
-              <label><span>Warm-introduction potential</span><Select value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
+              <label><span>Hiring influence</span><Select disabled={!session.canOperate} value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
+              <label><span>IIML relationship</span><Select disabled={!session.canOperate} value={selected.assessment.iimlRelationship} onValueChange={value => updateAssessment(selected.id, "iimlRelationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
+              <label><span>Warm-introduction potential</span><Select disabled={!session.canOperate} value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selected.experience} years · Previously {selected.previous}</strong></span></div></div>{selected.linkedinUrl && <a className="profile-link" href={selected.linkedinUrl} target="_blank" rel="noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
-            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship}</strong></span></div></div><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; setSelected(null); void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></section>
-            <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setSelected(null); setEngagementFilter("Needs Action"); setActiveTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { setSelected(null); setActiveTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {item.creditsUsed} credits</small></p></div>)}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>
+            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; setSelected(null); void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
+            {session.canOperate && <section className="profile-section privacy-section"><h3>Privacy and contact preferences</h3><p className="section-help">Unknown is not affirmative consent. Send eligibility is checked again on the server.</p><div className="assessment-grid"><label><span>General contact</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional engagement</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday engagement</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Consent/source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Privacy note</span><Textarea value={selected.privacy?.notes || ""} onChange={event => replaceAlumnus({ ...selected, privacy: { ...(selected.privacy ?? { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" }), notes: event.target.value } })} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></section>}
+            {session.canOperate && <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setSelected(null); setEngagementFilter("Needs Action"); setActiveTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { setSelected(null); setActiveTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {item.creditsUsed} credits</small></p></div>)}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>}
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last data check: {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
               <div><span>Current company</span><strong className={verificationTone(selected.verification.currentCompany)}>{selected.verification.currentCompany}</strong></div>
@@ -1360,8 +1397,8 @@ export default function Home() {
               <div><span>Email · {selected.email || "Not enriched"}</span><strong className={verificationTone(selected.verification.email)}>{contactDataLabel(selected, "email").status} · {contactDataLabel(selected, "email").detail}</strong></div>
               <div><span>Phone · {selected.phone || "Not enriched"}</span><strong className={verificationTone(selected.verification.phone)}>{contactDataLabel(selected, "phone").status} · {contactDataLabel(selected, "phone").detail}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">“Lusha sourced” means the provider returned the contact. It does not mean independent deliverability or ownership verification.</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful PDL return may consume a credit even when no information changes.</span></div><div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.pdl.remaining < 1 || (enrichmentMode === "live" && !providerUsage.pdl.configured)} onClick={() => compareRefreshWithPdl(selected)}>Refresh Profile via PDL</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 5 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button disabled={enriching || providerUsage.lusha.remaining < 6 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div></section>
-            <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>
+            </div><p className="verified-copy">{session.canViewContacts ? "“Lusha sourced” means the provider returned the contact. It does not mean independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful PDL return may consume a credit even when no information changes.</span></div>{session.canOperate && <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.pdl.remaining < 1 || (enrichmentMode === "live" && !providerUsage.pdl.configured)} onClick={() => compareRefreshWithPdl(selected)}>Refresh Profile via PDL</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 5 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button disabled={enriching || providerUsage.lusha.remaining < 6 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</section>
+            {session.canOperate && <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>}
           </div></>}
         </SheetContent>
       </Sheet>
