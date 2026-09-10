@@ -18,9 +18,82 @@ function number(value: unknown, fallback = 0) {
 }
 
 function actorFrom(request: Request) {
-  return request.headers.get("oai-authenticated-user-email")
+  return request.headers.get("x-demo-user")
+    ?? request.headers.get("oai-authenticated-user-email")
     ?? request.headers.get("oai-authenticated-user-id")
     ?? "Signed-in committee member";
+}
+
+function normalized(value: unknown) {
+  return text(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function possibleManualMatches(record: ImportedRecord, people: (typeof alumni.$inferSelect)[]) {
+  const name = normalized(record.name);
+  const email = normalized(record.email);
+  const linkedin = normalized(record.linkedinUrl ?? record.linkedin_url);
+  const company = normalized(record.company);
+  const batch = number(record.batch ?? record.graduationYear ?? record.graduation_year);
+  return people.filter(person => {
+    if (email && normalized(person.email) === email) return true;
+    if (linkedin && normalized(person.linkedinUrl) === linkedin) return true;
+    if (name !== normalized(person.name)) return false;
+    return (batch > 0 && (person.batch === batch || person.graduationYear === batch))
+      || (company && normalized(person.company) === company)
+      || (!batch && !company);
+  }).slice(0, 5).map(person => ({ id: person.id, name: person.name, programme: person.programme, batch: person.batch, company: person.company, title: person.title }));
+}
+
+function normaliseManualRecord(record: ImportedRecord, actor: string, continueAsNew: boolean) {
+  const name = text(record.name);
+  const company = text(record.company, "Not recorded");
+  const batch = number(record.batch ?? record.graduationYear ?? record.graduation_year);
+  const email = text(record.email).toLowerCase();
+  const linkedinUrl = text(record.linkedinUrl ?? record.linkedin_url);
+  if (!name) throw new Error("Name is required.");
+  if (!email && !linkedinUrl && !(company !== "Not recorded" && batch >= 1980 && batch <= 2100)) {
+    throw new Error("Add an email, professional-profile URL, or both company and graduation year to reduce duplicates.");
+  }
+  const now = new Date().toISOString();
+  const baseKey = email ? `manual-email:${normalized(email)}` : linkedinUrl ? `manual-profile:${normalized(linkedinUrl)}` : `manual:${normalized(name)}|${batch}|${normalized(company)}`;
+  return {
+    profileKey: continueAsNew ? `${baseKey}|confirmed-${Date.now()}` : baseKey,
+    name,
+    initials: initials(name),
+    batch: batch >= 1980 && batch <= 2100 ? batch : 0,
+    graduationYear: batch >= 1980 && batch <= 2100 ? batch : 0,
+    programme: text(record.programme, "Not recorded"),
+    education: "Indian Institute of Management Lucknow",
+    company,
+    title: text(record.title, "Role not recorded"),
+    rawTitle: text(record.title),
+    function: text(record.function, "Other"),
+    seniority: text(record.seniority, "Not assessed"),
+    location: text(record.location, "Not recorded"),
+    confidence: 50,
+    email,
+    phone: text(record.phone),
+    linkedinUrl,
+    discoverySource: "Manual entry",
+    discoveryDate: now,
+    emailSource: email ? "Manual entry" : "",
+    phoneSource: text(record.phone) ? "Manual entry" : "",
+    emailRetrievedAt: email ? now : "",
+    phoneRetrievedAt: text(record.phone) ? now : "",
+    verified: "Manually supplied · not provider verified",
+    status: allowedStatuses.has(text(record.status)) ? text(record.status) : "Not contacted",
+    note: text(record.note, "Manually added. Placement context has not yet been assessed."),
+    iimlRelationship: text(record.iimlRelationship ?? record.relationship, "Unknown / Not assessed"),
+    profileMatch: "Unverified",
+    currentCompanyVerification: "Unverified",
+    designationVerification: "Unverified",
+    emailVerification: email ? "Unverified" : "Unverified",
+    phoneVerification: text(record.phone) ? "Unverified" : "Unverified",
+    locationVerification: "Unverified",
+    source: "Manual entry",
+    updatedBy: actor,
+    updatedAt: now,
+  };
 }
 
 function initials(name: string) {
@@ -174,15 +247,29 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const payload = await request.json() as { action?: string; filename?: string; records?: ImportedRecord[] };
-    if (payload.action !== "import" || !Array.isArray(payload.records)) {
-      return Response.json({ error: "A valid alumni import is required." }, { status: 400 });
+    const payload = await request.json() as { action?: string; filename?: string; records?: ImportedRecord[]; record?: ImportedRecord; continueAsNew?: boolean };
+    const db = getDb();
+    const actor = actorFrom(request);
+
+    if (payload.action === "manual_check" || payload.action === "manual_add") {
+      if (!payload.record || typeof payload.record !== "object") return Response.json({ error: "Enter the alumnus details first." }, { status: 400 });
+      normaliseManualRecord(payload.record, actor, Boolean(payload.continueAsNew));
+      const people = await db.select().from(alumni);
+      const matches = possibleManualMatches(payload.record, people);
+      if (payload.action === "manual_check") return Response.json({ matches });
+      if (matches.length && !payload.continueAsNew) {
+        return Response.json({ error: "A possible existing alumnus needs review before saving.", requiresConfirmation: true, matches }, { status: 409 });
+      }
+      const record = normaliseManualRecord(payload.record, actor, Boolean(payload.continueAsNew));
+      const [created] = await db.insert(alumni).values(record).returning();
+      await db.insert(activityLog).values({ action: "manual_add", entityType: "alumnus", entityId: String(created.id), actor, details: `Manual entry created for ${created.name}; no provider call was made.` });
+      return Response.json({ alumnus: toApiAlumnus(created), providerCreditsUsed: 0 }, { status: 201 });
     }
+
+    if (payload.action !== "import" || !Array.isArray(payload.records)) return Response.json({ error: "A valid alumni import is required." }, { status: 400 });
     if (payload.records.length < 1 || payload.records.length > 250) {
       return Response.json({ error: "Import between 1 and 250 records at a time." }, { status: 400 });
     }
-    const db = getDb();
-    const actor = actorFrom(request);
     const filename = text(payload.filename, "Manual import");
     const records = payload.records.map(record => normaliseRecord(record, filename, actor));
     for (const record of records) {

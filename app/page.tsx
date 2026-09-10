@@ -114,6 +114,7 @@ type DiscoveryResult = {
   matchConfidence: number
   linkedInternalAlumnusId: number | null
   reviewStatus: string
+  reviewNote?: string
 }
 
 type DiscoveryCounts = { existing: number; new: number; possibleDuplicate: number; needsReview: number }
@@ -157,6 +158,18 @@ type EngagementEvent = {
 type MessageTemplate = { id: number; templateKey: string; name: string; eventType: string; subject: string; body: string }
 type MailPreview = { event: EngagementEvent; templateId: number; recipient: string; subject: string; body: string }
 type BulkPreview = { ready: Array<{ eventId: number; alumnusName: string; templateId: number; recipient: string; subject: string; body: string }>; excluded: Array<{ eventId: number; alumnusName: string; reason: string }> }
+type RouteRecommendation = {
+  routeType: "Direct" | "Warm" | "No eligible route"
+  rationale: string
+  target: { id: number; name: string; initials: string; company: string; title: string }
+  intermediary: { id: number; name: string; initials: string; company: string; title: string } | null
+  evidence: string
+  factors: { usableContact: boolean; reliableProfile: boolean; directAttempts: number; directResponses: number; confirmedIntermediary: boolean }
+}
+type ManualForm = { name: string; programme: string; batch: string; company: string; title: string; function: string; seniority: string; location: string; linkedinUrl: string; email: string; phone: string; relationship: string; note: string; status: OutreachStatus }
+type ManualMatch = { id: number; name: string; programme: string; batch: number; company: string; title: string }
+type RefreshField = { field: string; label: string; oldValue: string; newValue: string }
+type RefreshResult = { alumnusId: number; alumnusName: string; status: string; reviewStatus: string; reviewId?: number; creditsUsed: number; responseSummary: string; fields: RefreshField[] }
 
 const hiringOptions = [
   ["Direct hiring decision-maker", 100], ["Strong hiring influence", 80],
@@ -307,6 +320,17 @@ function DiscoveryBadge({ status }: { status: DiscoveryResult["matchStatus"] }) 
   return <span className={`discovery-badge discovery-${status.toLowerCase().replaceAll(" ", "-")}`}>{status === "New" ? "Externally discovered" : status}</span>
 }
 
+function contactDataLabel(person: Alumni, channel: "email" | "phone") {
+  const value = person[channel]
+  if (!value) return { status: "Not enriched", detail: "No contact data stored" }
+  const source = channel === "email" ? person.emailSource : person.phoneSource
+  const retrievedAt = channel === "email" ? person.emailRetrievedAt : person.phoneRetrievedAt
+  const verification = person.verification[channel]
+  const status = source === "Lusha" ? "Lusha sourced" : source === "Manual entry" ? "Manually supplied" : verification === "Verified" ? "Verified · source not recorded" : "Needs verification"
+  const detail = retrievedAt ? new Date(retrievedAt).toLocaleDateString() : "Date not recorded"
+  return { status, detail }
+}
+
 function StatCard({ icon: Icon, label, value, delta }: { icon: typeof UsersRound; label: string; value: string; delta: string }) {
   return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span>{delta}</span></div></article>
 }
@@ -344,7 +368,7 @@ export default function Home() {
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [selected, setSelected] = useState<Alumni | null>(null)
-  const [targetCompany, setTargetCompany] = useState("Microsoft")
+  const [targetCompany, setTargetCompany] = useState("Google")
   const [activeTab, setActiveTab] = useState("overview")
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -364,9 +388,13 @@ export default function Home() {
   const [discoveryLimit, setDiscoveryLimit] = useState("25")
   const [discovering, setDiscovering] = useState(false)
   const [discoveryMessage, setDiscoveryMessage] = useState("")
+  const [discoveryState, setDiscoveryState] = useState<"idle" | "results" | "empty" | "blocked">("idle")
+  const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DirectoryFilters | null>(null)
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
+  const [ignoreResult, setIgnoreResult] = useState<DiscoveryResult | null>(null)
+  const [ignoreReason, setIgnoreReason] = useState("Wrong person")
   const [engagements, setEngagements] = useState<EngagementEvent[]>([])
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([])
   const [mailMode, setMailMode] = useState<"mock" | "live">("mock")
@@ -385,6 +413,20 @@ export default function Home() {
   const [responseNotes, setResponseNotes] = useState("")
   const [followUpDate, setFollowUpDate] = useState("")
   const [birthdayCorrection, setBirthdayCorrection] = useState("")
+  const [targetSearch, setTargetSearch] = useState("")
+  const [targetAlumnusId, setTargetAlumnusId] = useState<number | null>(null)
+  const [routeRecommendation, setRouteRecommendation] = useState<RouteRecommendation | null>(null)
+  const [routeLoading, setRouteLoading] = useState(false)
+  const [routeMessage, setRouteMessage] = useState("")
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualForm, setManualForm] = useState<ManualForm>({ name: "", programme: "PGP", batch: "", company: "", title: "", function: "Other", seniority: "Not assessed", location: "", linkedinUrl: "", email: "", phone: "", relationship: "Unknown / Not assessed", note: "", status: "Not contacted" })
+  const [manualMatches, setManualMatches] = useState<ManualMatch[]>([])
+  const [manualSaved, setManualSaved] = useState<Alumni | null>(null)
+  const [manualLoading, setManualLoading] = useState(false)
+  const [manualMessage, setManualMessage] = useState("")
+  const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false)
+  const [refreshResults, setRefreshResults] = useState<RefreshResult[]>([])
+  const [refreshSelections, setRefreshSelections] = useState<Record<number, string[]>>({})
 
   const loadWorkspace = useCallback(async (seedIfEmpty = false) => {
     try {
@@ -473,6 +515,7 @@ export default function Home() {
 
   const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score).slice(0, 5)
   const targetAlumni = alumni.filter(person => person.company === targetCompany).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
+  const targetOptions = targetAlumni.filter(person => !targetSearch || `${person.name} ${person.title}`.toLowerCase().includes(targetSearch.toLowerCase()))
   const activeOutreach = alumni.filter(person => person.status !== "Not contacted").length
   const contactReadyCount = alumni.filter(person => operationalStatus(person) === "Contact-ready").length
   const today = new Date().toISOString().slice(0, 10)
@@ -486,6 +529,10 @@ export default function Home() {
   const birthdaysNextWeek = birthdayEvents.filter(event => event.eventDate >= today && event.eventDate <= nextWeek)
   const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
   const followUpsDue = engagements.filter(event => event.status === "Follow-up Due")
+  const pdlSelectionReady = selectedForEnrichment.length > 0 && providerUsage.pdl.remaining >= selectedForEnrichment.length && (enrichmentMode === "mock" || providerUsage.pdl.configured)
+  const lushaEmailReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length && (enrichmentMode === "mock" || providerUsage.lusha.configured)
+  const lushaPhoneReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 5 && (enrichmentMode === "mock" || providerUsage.lusha.configured)
+  const lushaBothReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 6 && (enrichmentMode === "mock" || providerUsage.lusha.configured)
   const birthdayReady = (event: EngagementEvent) => Boolean(event.alumnus?.email)
     && ["Confirmed internally", "Manually confirmed", "PDL sourced"].includes(event.birthday?.status ?? "")
     && !["Do not contact", "Do not send birthday wishes", "Professional engagement only"].includes(event.preference)
@@ -509,6 +556,13 @@ export default function Home() {
     }
     return true
   })
+
+  function changeTargetCompany(company: string) {
+    setTargetCompany(company)
+    setTargetAlumnusId(null)
+    setRouteRecommendation(null)
+    setRouteMessage("")
+  }
 
   function replaceAlumnus(updated: Alumni) {
     setAlumni(current => current.map(person => person.id === updated.id ? updated : person))
@@ -572,7 +626,7 @@ export default function Home() {
     setImporting(true)
     try {
       const records = parseCsv(await importFile.text())
-      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
+      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
       const data = await response.json() as { imported?: number; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
       setWorkspaceMessage(`${data.imported ?? records.length} alumni records imported into the shared database.`)
@@ -592,7 +646,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/enrichment", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ alumniIds: ids.slice(0, 25), providers: requestedProviders, operation, contactChannels }),
       })
       const data = await response.json() as { results?: Array<{ status: string }>; error?: string }
@@ -742,23 +796,31 @@ export default function Home() {
     setDiscoveryResults([])
     setSelectedDiscoveryIds([])
     setDiscoveryMessage("")
+    setDiscoveryState("idle")
+    setLastDiscoveryFilters(null)
   }
 
   async function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
     setDiscovering(true)
     setDiscoveryMessage("")
-    setDiscoveryResults([])
-    setSelectedDiscoveryIds([])
+    setLastDiscoveryFilters(searchFilters)
     try {
       const response = await fetch("/api/discovery", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
       })
-      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; error?: string }
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; error?: string; blocked?: boolean }
+      if (data.blocked) {
+        setDiscoveryState("blocked")
+        setDiscoveryMessage(data.error || "External search could not be run because the PDL application limit has been reached.")
+        return
+      }
       if (!response.ok || !data.results || !data.counts) throw new Error(data.error || "Unable to search external professional data.")
       setDiscoveryResults(data.results)
       setDiscoveryCounts(data.counts)
+      setSelectedDiscoveryIds([])
+      setDiscoveryState(data.results.length ? "results" : "empty")
       setDiscoveryMessage(data.results.length
         ? `${data.results.length} external profiles returned. ${data.creditsUsed ?? 0} PDL credits recorded.`
         : "No additional external alumni were found for these criteria.")
@@ -778,11 +840,9 @@ export default function Home() {
   }
 
   function compareRefreshWithPdl(person: Alumni) {
-    const next = { ...defaultDirectoryFilters(), name: person.name, company: person.company }
-    setFilters(next)
+    setSelectedForEnrichment([person.id])
     setSelected(null)
-    setActiveTab("directory")
-    void discoverMoreAlumni(next)
+    setRefreshConfirmOpen(true)
   }
 
   function toggleDiscoverySelection(id: number) {
@@ -811,7 +871,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/discovery", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "approve", resultIds }),
       })
       const data = await response.json() as { addedCount?: number; added?: Array<{ resultId: number; alumnusId: number }>; error?: string }
@@ -830,9 +890,13 @@ export default function Home() {
     }
   }
 
-  async function ignoreDiscoveryResult(resultId: number) {
-    const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "ignore", resultId }) })
-    if (response.ok) setDiscoveryResults(current => current.map(item => item.id === resultId ? { ...item, reviewStatus: "Ignored" } : item))
+  async function ignoreDiscoveryResult(resultId: number, reason = ignoreReason) {
+    const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "ignore", resultId, reason }) })
+    if (response.ok) {
+      setDiscoveryResults(current => current.map(item => item.id === resultId ? { ...item, reviewStatus: "Ignored", reviewNote: reason } : item))
+      setIgnoreResult(null)
+      setDiscoveryMessage(`External result ignored: ${reason}. The decision is saved for other committee members.`)
+    }
   }
 
   async function applyComparison() {
@@ -841,7 +905,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/discovery", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "apply_updates", resultId: comparisonResult.id, fields: selectedComparisonFields }),
       })
       const data = await response.json() as { changedFields?: string[]; error?: string }
@@ -862,7 +926,7 @@ export default function Home() {
     if (!comparisonResult) return
     setDiscovering(true)
     try {
-      const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "keep_separate", resultId: comparisonResult.id }) })
+      const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "keep_separate", resultId: comparisonResult.id }) })
       const data = await response.json() as { alumnusId?: number; error?: string }
       if (!response.ok || !data.alumnusId) throw new Error(data.error || "Unable to keep this alumnus as a separate record.")
       setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, linkedInternalAlumnusId: data.alumnusId!, reviewStatus: "Added as separate record" } : item))
@@ -874,6 +938,104 @@ export default function Home() {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to keep this alumnus as a separate record.")
     } finally {
       setDiscovering(false)
+    }
+  }
+
+  async function recommendRoute(targetId = targetAlumnusId) {
+    if (!targetId) { setRouteMessage("Select the alumnus you want to reach first."); return }
+    setRouteLoading(true)
+    setRouteMessage("")
+    try {
+      const response = await fetch("/api/outreach-route", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ targetAlumnusId: targetId }) })
+      const data = await response.json() as RouteRecommendation & { error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to recommend an outreach route.")
+      setRouteRecommendation(data)
+    } catch (error) {
+      setRouteMessage(error instanceof Error ? error.message : "Unable to recommend an outreach route.")
+    } finally {
+      setRouteLoading(false)
+    }
+  }
+
+  function updateManualField<K extends keyof ManualForm>(field: K, value: ManualForm[K]) {
+    setManualForm(current => ({ ...current, [field]: value }))
+    setManualMatches([])
+    setManualSaved(null)
+    setManualMessage("")
+  }
+
+  async function saveManualAlumnus(continueAsNew: boolean) {
+    setManualLoading(true)
+    try {
+      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_add", record: manualForm, continueAsNew }) })
+      const data = await response.json() as { alumnus?: Alumni; matches?: ManualMatch[]; error?: string }
+      if (!response.ok || !data.alumnus) {
+        if (data.matches?.length) setManualMatches(data.matches)
+        throw new Error(data.error || "Unable to add the alumnus.")
+      }
+      setManualSaved(data.alumnus)
+      setManualMatches([])
+      setManualMessage("Alumnus added to Corporate Network. No provider credits were used.")
+      await loadWorkspace(false)
+    } catch (error) {
+      setManualMessage(error instanceof Error ? error.message : "Unable to add the alumnus.")
+    } finally {
+      setManualLoading(false)
+    }
+  }
+
+  async function checkManualAlumnus() {
+    setManualLoading(true)
+    setManualMessage("")
+    try {
+      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_check", record: manualForm }) })
+      const data = await response.json() as { matches?: ManualMatch[]; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to check for duplicates.")
+      if (data.matches?.length) {
+        setManualMatches(data.matches)
+        setManualMessage("Possible existing alumni found. Review them before continuing.")
+      } else await saveManualAlumnus(false)
+    } catch (error) {
+      setManualMessage(error instanceof Error ? error.message : "Unable to check for duplicates.")
+    } finally {
+      setManualLoading(false)
+    }
+  }
+
+  async function runProfileRefresh() {
+    if (!selectedForEnrichment.length) return
+    setEnriching(true)
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch("/api/enrichment", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "refresh_profiles", alumniIds: selectedForEnrichment }) })
+      const data = await response.json() as { results?: RefreshResult[]; error?: string }
+      if (!response.ok || !data.results) throw new Error(data.error || "Unable to refresh the selected profiles.")
+      setRefreshResults(data.results)
+      setRefreshSelections(Object.fromEntries(data.results.map(result => [result.reviewId ?? -result.alumnusId, result.fields.filter(field => field.oldValue !== field.newValue).map(field => field.field)])))
+      setRefreshConfirmOpen(false)
+      setEnrichmentMessage(`PDL profile refresh completed for ${data.results.length} alumn${data.results.length === 1 ? "us" : "i"}. Review proposed changes before applying them.`)
+      await Promise.all([loadWorkspace(false), loadEnrichment()])
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to refresh the selected profiles.")
+    } finally {
+      setEnriching(false)
+    }
+  }
+
+  async function applyRefreshResult(result: RefreshResult) {
+    if (!result.reviewId) return
+    setEnriching(true)
+    try {
+      const response = await fetch("/api/enrichment", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "apply_refresh", reviewId: result.reviewId, fields: refreshSelections[result.reviewId] ?? [] }) })
+      const data = await response.json() as { applied?: string[]; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to apply the selected profile updates.")
+      setRefreshResults(current => current.map(item => item.reviewId === result.reviewId ? { ...item, reviewStatus: data.applied?.length ? "Applied" : "Reviewed, no updates selected" } : item))
+      setEnrichmentMessage(data.applied?.length ? `${data.applied.length} professional fields updated with full change history.` : "Profile refresh reviewed. Internal values were kept.")
+      await Promise.all([loadWorkspace(false), loadEnrichment()])
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to apply the selected profile updates.")
+    } finally {
+      setEnriching(false)
     }
   }
 
@@ -942,9 +1104,10 @@ export default function Home() {
               <span className="birthday-overview-icon"><Cake /></span><span><p className="eyebrow">Birthday engagement</p><strong>{birthdaysToday.length} today · {birthdaysNextWeek.length} in the next 7 days</strong><small>{birthdayEvents.filter(birthdayReady).length} ready for review and sending</small></span><ChevronRight />
             </button>
 
-            <section className="panel route-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Direct path to Google India</h2><span>No confirmed intermediary relationship is recorded, so direct outreach remains the default.</span></div><span className="route-score">Direct route</span></div>
-              <div className="route-flow"><div className="route-node active"><span>PC</span><p><strong>PlaceCom</strong><small>Direct outreach recommended</small></p></div><div className="route-link"><span>Contact directly</span><Network /></div><button className="route-node route-button" onClick={() => setSelected(alumni.find(person => person.id === 6) ?? null)}><span>VR</span><p><strong>Vikram Rao</strong><small>Country Operations Lead</small></p></button><div className="route-link"><span>Target company</span><ChevronRight /></div><div className="company-node"><Building2 /><p><strong>Google India</strong><small>2 mapped alumni</small></p></div></div>
+            <section className="panel route-panel route-planner">
+              <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div><span className="route-score">Target-specific</span></div>
+              <div className="route-controls"><label><span>Target company</span><Select value={targetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><label><span>Search mapped alumni</span><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Type a name or role" /></label><label><span>Who do you want to reach?</span><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select a target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select></label><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
+              {routeMessage && <p className="route-message">{routeMessage}</p>}
             </section>
           </TabsContent>
 
@@ -960,7 +1123,7 @@ export default function Home() {
                 <Select value={filters.seniority} onValueChange={value => updateFilter("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All seniority</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Input value={filters.location} onChange={event => updateFilter("location", event.target.value)} placeholder="Location" aria-label="Filter by location" />
                 <Button variant="outline" onClick={() => setShowAdvancedFilters(value => !value)}><Filter /> {showAdvancedFilters ? "Fewer filters" : "More filters"}</Button>
-                <Button variant="ghost" onClick={() => { setFilters(defaultDirectoryFilters()); setDiscoveryResults([]); setDiscoveryMessage(""); setSelectedDiscoveryIds([]) }}>Clear</Button>
+                <Button variant="ghost" onClick={() => { setFilters(defaultDirectoryFilters()); setDiscoveryResults([]); setDiscoveryMessage(""); setDiscoveryState("idle"); setLastDiscoveryFilters(null); setSelectedDiscoveryIds([]) }}>Clear</Button>
               </div>
               {showAdvancedFilters && <div className="advanced-filters">
                 <Select value={filters.programme} onValueChange={value => updateFilter("programme", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{programmes.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
@@ -973,17 +1136,18 @@ export default function Home() {
                 <Select value={filters.relationship} onValueChange={value => updateFilter("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All relationships">All IIML relationships</SelectItem>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select>
               </div>}
               <Table>
-                <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead></TableRow></TableHeader>
-                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell></TableRow> })}</TableBody>
+                <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
+                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
               </Table>
               {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>Search external professional data while keeping the IIM Lucknow education criterion fixed.</p><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button></div>}
             </section>
 
-            {(discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
+            {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">
-                <div><p className="eyebrow">External discovery</p><h2>{discoveryResults.length} PDL profiles found</h2><span>Results are reviewed before any record enters Corporate Network.</span></div>
+                <div><p className="eyebrow">External discovery</p><h2>{discoveryState === "blocked" ? "External search not run" : discoveryState === "empty" ? "No additional profiles found" : `${discoveryResults.length} PDL profiles found`}</h2><span>{discoveryState === "blocked" ? "The previous search state is retained below." : "Results are reviewed before any record enters Corporate Network."}</span></div>
                 <div className="fixed-criterion"><span>Fixed alumni criterion</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div>
               </div>
+              {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Company</span><strong>{lastDiscoveryFilters.company}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.batch || "Any year"}</strong></div><div><span>Results requested</span><strong>{discoveryLimit}</strong></div></div>}
               <div className="discovery-controls">
                 <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
                 <div className="result-limit"><span>Results to retrieve</span><Select value={discoveryLimit} onValueChange={setDiscoveryLimit}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["25", "50", "100"].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => void discoverMoreAlumni()} disabled={discovering}>Run again</Button></div>
@@ -992,33 +1156,35 @@ export default function Home() {
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
               {selectedDiscoveryIds.length > 0 && <div className="batch-approval"><span>{selectedDiscoveryIds.length} clearly new profile{selectedDiscoveryIds.length === 1 ? "" : "s"} selected</span><Button onClick={() => void approveDiscoveryResults(selectedDiscoveryIds)} disabled={discovering}><Plus /> Add Selected to Corporate Network</Button></div>}
               <div className="discovery-table-wrap"><Table>
-                <TableHeader><TableRow><TableHead>Select</TableHead><TableHead>Name and education</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Seniority</TableHead><TableHead>Location</TableHead><TableHead>Database match</TableHead><TableHead>Confidence</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
+                <TableHeader><TableRow><TableHead>Select</TableHead><TableHead>Name and education</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Seniority</TableHead><TableHead>Location</TableHead><TableHead>Database match</TableHead><TableHead>Identity match confidence</TableHead><TableHead>Professional profile</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                 <TableBody>{discoveryResults.map(result => {
                   const canAdd = result.matchStatus === "New" && result.reviewStatus === "Pending review"
-                  const added = result.reviewStatus === "Added to Corporate Network" && result.linkedInternalAlumnusId
+                  const added = ["Added to Corporate Network", "Added as separate record"].includes(result.reviewStatus) && result.linkedInternalAlumnusId
                   return <TableRow key={result.id}>
                     <TableCell><input type="checkbox" aria-label={`Select ${result.name}`} disabled={!canAdd} checked={selectedDiscoveryIds.includes(result.id)} onChange={() => toggleDiscoverySelection(result.id)} /></TableCell>
-                    <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>{result.education} · {result.graduationYear || "Year not returned"}</small>{result.linkedinUrl && <a href={result.linkedinUrl} target="_blank" rel="noreferrer">View LinkedIn Profile <ArrowUpRight /></a>}</span></TableCell>
+                    <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>{result.education} · {result.graduationYear || "Year not returned"}</small></span></TableCell>
                     <TableCell><span className="stacked-cell"><strong>{result.currentCompany}</strong><small>{result.role}</small></span></TableCell>
                     <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
-                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{result.reviewStatus}</small></TableCell>
+                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{result.reviewStatus}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small></TableCell>
                     <TableCell><span className={`score-pill ${scoreTone(result.matchConfidence)}`}>{result.matchConfidence}%</span></TableCell>
+                    <TableCell>{result.linkedinUrl ? <a className="professional-link" href={result.linkedinUrl} target="_blank" rel="noreferrer">View profile <ArrowUpRight /></a> : <span className="muted-cell">Not returned</span>}</TableCell>
                     <TableCell><div className="row-actions">
                       {canAdd && <Button size="sm" onClick={() => void approveDiscoveryResults([result.id])}><Plus /> Add</Button>}
-                      {(result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate") && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><GitCompare /> Compare</Button>}
-                      {result.matchStatus === "Needs review" && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><Eye /> Review</Button>}
-                      {added && <><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email", "phone"])}>Get Both</Button></>}
-                      {result.reviewStatus === "Pending review" && <Button size="sm" variant="ghost" onClick={() => void ignoreDiscoveryResult(result.id)}><XCircle /> Ignore</Button>}
+                      {result.reviewStatus === "Pending review" && (result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate") && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><GitCompare /> Compare</Button>}
+                      {result.reviewStatus === "Pending review" && result.matchStatus === "Needs review" && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><Eye /> Review</Button>}
+                      {added && <><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email", "phone"])}>Get Both Contacts</Button></>}
+                      {result.reviewStatus === "Pending review" && <Button size="sm" variant="ghost" onClick={() => { setIgnoreResult(result); setIgnoreReason("Wrong person") }}><XCircle /> Ignore</Button>}
                     </div></TableCell>
                   </TableRow>
                 })}</TableBody>
               </Table></div>
-              {!discoveryResults.length && <div className="empty-state"><Search /><h3>No additional external alumni were found</h3><p>Broaden optional filters such as location or seniority. The IIM Lucknow criterion will remain fixed.</p></div>}
+              {discoveryState === "empty" && !discoveryResults.length && <div className="empty-state"><Search /><h3>No additional external alumni were found</h3><p>The PDL search ran successfully. Broaden optional filters such as location or seniority.</p></div>}
+              {discoveryState === "blocked" && !discoveryResults.length && <div className="empty-state blocked-search"><Ban /><h3>External search was not run</h3><p>The PDL application limit has been reached. No provider call was made and this is not a zero-result search.</p></div>}
             </section>}
           </TabsContent>
 
           <TabsContent value="companies" className="tab-panel">
-            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div><div className="company-actions"><Select value={targetCompany} onValueChange={setTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Button onClick={() => findMoreForCompany(targetCompany)} disabled={discovering}><Search /> Find More Alumni</Button></div></section>
+            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div><div className="company-actions"><Select value={targetCompany} onValueChange={changeTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Button onClick={() => findMoreForCompany(targetCompany)} disabled={discovering}><Search /> Find More Alumni</Button></div></section>
             <section className="company-grid">
               <article className="panel company-summary">
                 <div className="company-title"><div className="company-logo">{targetCompany.slice(0, 1)}</div><div><h2>{targetCompany}</h2><span>Target company · Priority inherited by all mapped alumni</span></div></div>
@@ -1027,6 +1193,7 @@ export default function Home() {
                 <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(targetAlumni.length, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
               </article>
               <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="contact-card" onClick={() => setSelected(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
+              <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Route for a specific alumnus</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Search by name or role" aria-label="Search target alumni" /><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {targetCompany} before requesting a route.</small>}</article>
               <article className="panel account-history"><div className="panel-heading"><div><p className="eyebrow">Institutional memory</p><h2>Account history</h2></div></div><div className="timeline-item"><span><CalendarClock /></span><div><strong>12 Aug 2026</strong><p>Placement outreach opened for the 2026–27 cycle.</p></div></div><div className="timeline-item"><span><History /></span><div><strong>22 Nov 2025</strong><p>Two recruiter conversations recorded. Product hiring discussed.</p></div></div><div className="timeline-item"><span><CheckCircle2 /></span><div><strong>08 Sep 2024</strong><p>Summer placement participation confirmed through an alumni introduction.</p></div></div></article>
             </section>
           </TabsContent>
@@ -1094,7 +1261,7 @@ export default function Home() {
           <TabsContent value="data-import" className="tab-panel">
             <section className="import-layout">
               <article className="panel import-panel">
-                <div className="panel-heading"><div><p className="eyebrow">Alumni master data</p><h2>Import alumni records</h2><span>Add or update up to 250 records from a CSV file.</span></div><div className="database-badge"><Database /> Shared database</div></div>
+                <div className="panel-heading"><div><p className="eyebrow">Bulk import</p><h2>Upload CSV</h2><span>Best for adding or updating many alumni at once.</span></div><div className="database-badge"><Database /> Shared database</div></div>
                 <div className="import-body">
                   <div className="upload-zone">
                     <FileSpreadsheet />
@@ -1105,6 +1272,8 @@ export default function Home() {
                   {workspaceMessage && <div className="workspace-message"><Cloud /> <span>{workspaceMessage}</span></div>}
                 </div>
               </article>
+
+              <article className="panel manual-entry-card"><div className="manual-entry-icon"><Plus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><Plus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
 
               <aside className="panel database-panel">
                 <div className="database-hero"><Database /><div><p className="eyebrow">Central data state</p><h2>{alumni.length} alumni records</h2><span>{companies.length} companies in one shared workspace</span></div></div>
@@ -1136,9 +1305,9 @@ export default function Home() {
             </section>
 
             <section className="panel batch-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Batch enrichment</p><h2>Select up to 25 approved alumni</h2><span>{selectedForEnrichment.length} selected. Contact retrieval happens only after a deliberate request.</span></div><div className="batch-actions"><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!selectedForEnrichment.length || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both</Button></div></div>
+              <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>Select up to 25 approved alumni</h2><span>{selectedForEnrichment.length} selected. PDL refreshes profiles; Lusha retrieves contact details. No action runs without selection and confirmation.</span></div><div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button><Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaEmailReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve emails through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaPhoneReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve phones through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaBothReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve email and phone through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div></div>
               {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
-              <Table><TableHeader><TableRow><TableHead><input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} /></TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email</TableHead><TableHead>Phone</TableHead><TableHead>Last verified</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => <TableRow key={person.id}><TableCell><input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} /></TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.verification.email}</TableCell><TableCell>{person.verification.phone}</TableCell><TableCell>{person.verified}</TableCell></TableRow>)}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead><input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} /></TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell><input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} /></TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
             </section>
 
             <section className="panel history-panel">
@@ -1161,16 +1330,16 @@ export default function Home() {
               <label><span>Warm-introduction potential</span><Select value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selected.experience} years · Previously {selected.previous}</strong></span></div></div>{selected.linkedinUrl && <a className="profile-link" href={selected.linkedinUrl} target="_blank" rel="noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
-            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship}</strong></span></div></div><div className="insight-note"><Sparkles /><p>{selected.note}</p></div></section>
+            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship}</strong></span></div></div><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; setSelected(null); void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></section>
             <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setSelected(null); setEngagementFilter("Needs Action"); setActiveTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { setSelected(null); setActiveTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {item.creditsUsed} credits</small></p></div>)}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>
-            <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last verified {selected.verified}</small></div><div className="verification-list">
+            <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last data check: {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
               <div><span>Current company</span><strong className={verificationTone(selected.verification.currentCompany)}>{selected.verification.currentCompany}</strong></div>
               <div><span>Designation</span><strong className={verificationTone(selected.verification.designation)}>{selected.verification.designation}</strong></div>
-              <div><span>Email · {selected.email || "Not enriched"}{selected.emailSource ? ` · Source: ${selected.emailSource}` : ""}{selected.emailRetrievedAt ? ` · Retrieved ${new Date(selected.emailRetrievedAt).toLocaleDateString()}` : ""}</span><strong className={verificationTone(selected.verification.email)}>{selected.verification.email}</strong></div>
-              <div><span>Phone · {selected.phone || "Not enriched"}{selected.phoneSource ? ` · Source: ${selected.phoneSource}` : ""}{selected.phoneRetrievedAt ? ` · Retrieved ${new Date(selected.phoneRetrievedAt).toLocaleDateString()}` : ""}</span><strong className={verificationTone(selected.verification.phone)}>{selected.verification.phone}</strong></div>
+              <div><span>Email · {selected.email || "Not enriched"}</span><strong className={verificationTone(selected.verification.email)}>{contactDataLabel(selected, "email").status} · {contactDataLabel(selected, "email").detail}</strong></div>
+              <div><span>Phone · {selected.phone || "Not enriched"}</span><strong className={verificationTone(selected.verification.phone)}>{contactDataLabel(selected, "phone").status} · {contactDataLabel(selected, "phone").detail}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">Operational status uses field-level checks. It is not inferred from Data Confidence alone.</p><div className="refresh-note"><strong>Last PDL refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful refresh may consume a credit even when no information changes.</span></div><div className="manual-enrichment"><Button variant="outline" disabled={enriching} onClick={() => compareRefreshWithPdl(selected)}>Compare & Refresh with PDL</Button><Button variant="outline" disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email</Button><Button variant="outline" disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button disabled={enriching} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both</Button></div></section>
+            </div><p className="verified-copy">“Lusha sourced” means the provider returned the contact. It does not mean independent deliverability or ownership verification.</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful PDL return may consume a credit even when no information changes.</span></div><div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.pdl.remaining < 1 || (enrichmentMode === "live" && !providerUsage.pdl.configured)} onClick={() => compareRefreshWithPdl(selected)}>Refresh Profile via PDL</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 5 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button disabled={enriching || providerUsage.lusha.remaining < 6 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div></section>
             <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>
           </div></>}
         </SheetContent>
@@ -1222,6 +1391,41 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={Boolean(routeRecommendation)} onOpenChange={open => { if (!open) setRouteRecommendation(null) }}>
+        <DialogContent className="route-dialog">
+          {routeRecommendation && <><DialogHeader><DialogTitle>Recommended outreach route</DialogTitle><DialogDescription>Target: {routeRecommendation.target.name} · {routeRecommendation.target.title}</DialogDescription></DialogHeader>
+            <div className={`route-result route-result-${routeRecommendation.routeType.toLowerCase().replaceAll(" ", "-")}`}><span>{routeRecommendation.routeType}</span><h3>{routeRecommendation.routeType === "Warm" ? `Via ${routeRecommendation.intermediary?.name}` : routeRecommendation.routeType === "Direct" ? `Contact ${routeRecommendation.target.name} directly` : "Profile enrichment or relationship evidence required"}</h3><p>{routeRecommendation.rationale}</p></div>
+            <div className="route-flow route-dialog-flow"><div className="route-node active"><span>PC</span><p><strong>PlaceCom</strong><small>Initiates outreach</small></p></div>{routeRecommendation.intermediary && <><div className="route-link"><span>Warm introduction</span><Network /></div><div className="route-node"><span>{routeRecommendation.intermediary.initials}</span><p><strong>{routeRecommendation.intermediary.name}</strong><small>{routeRecommendation.intermediary.title}</small></p></div></>}<div className="route-link"><span>{routeRecommendation.routeType === "Direct" ? "Direct outreach" : routeRecommendation.routeType === "Warm" ? "Confirmed route" : "No credible path"}</span><ChevronRight /></div><div className="route-node"><span>{routeRecommendation.target.initials}</span><p><strong>{routeRecommendation.target.name}</strong><small>{routeRecommendation.target.title}</small></p></div></div>
+            <div className="route-evidence"><strong>Evidence used</strong><p>{routeRecommendation.evidence}</p><small>Contact route: {routeRecommendation.factors.usableContact ? "available" : "unavailable"} · Profile reliability: {routeRecommendation.factors.reliableProfile ? "sufficient" : "needs review"} · Confirmed intermediary: {routeRecommendation.factors.confirmedIntermediary ? "yes" : "no"}</small></div>
+            <DialogFooter><Button variant="outline" onClick={() => setRouteRecommendation(null)}>Close</Button><Button onClick={() => { const person = alumni.find(item => item.id === routeRecommendation.target.id); setRouteRecommendation(null); setSelected(person ?? null) }}>Open Target Profile</Button></DialogFooter></>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(ignoreResult)} onOpenChange={open => { if (!open) setIgnoreResult(null) }}>
+        <DialogContent className="ignore-dialog"><DialogHeader><DialogTitle>Ignore external result?</DialogTitle><DialogDescription>This decision will be shared so another committee member does not repeatedly review the same profile.</DialogDescription></DialogHeader><label className="dialog-field"><span>Reason</span><Select value={ignoreReason} onValueChange={setIgnoreReason}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Wrong person", "Not IIML alumnus", "Duplicate already handled", "Irrelevant", "Data appears incorrect", "Other"].map(reason => <SelectItem key={reason} value={reason}>{reason}</SelectItem>)}</SelectContent></Select></label><DialogFooter><Button variant="outline" onClick={() => setIgnoreResult(null)}>Cancel</Button><Button onClick={() => ignoreResult && void ignoreDiscoveryResult(ignoreResult.id, ignoreReason)}>Ignore Result</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={manualOpen} onOpenChange={setManualOpen}>
+        <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? "The record is now in Corporate Network. Provider actions remain optional." : "Enter what is known. Name plus an email, profile URL, or company and graduation year is required."}</DialogDescription></DialogHeader>
+          {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via PDL</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></div></div> : <div className="manual-form">
+            <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Input value={manualForm.programme} onChange={event => updateManualField("programme", event.target.value)} /></label><label><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
+            <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
+            <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML / PlaceCom relationship</span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
+            {manualMessage && <div className="manual-message">{manualMessage}</div>}
+            {manualMatches.length > 0 && <div className="manual-matches"><strong>Possible existing alumnus</strong>{manualMatches.map(match => <div key={match.id}><span className="avatar small">{match.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</span><p><strong>{match.name}</strong><small>{match.programme} {match.batch || ""} · {match.company} · {match.title}</small></p><Button variant="outline" size="sm" onClick={() => { setManualOpen(false); setSelected(alumni.find(item => item.id === match.id) ?? null) }}>Compare</Button><Button size="sm" onClick={() => { setManualOpen(false); setSelected(alumni.find(item => item.id === match.id) ?? null) }}>Use Existing</Button></div>)}</div>}
+          </div>}
+          <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); setSelected(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && <Button variant="outline" onClick={() => void saveManualAlumnus(true)}>Continue as New</Button>}<Button disabled={manualLoading} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add</Button></>}</DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Refresh professional profiles?</DialogTitle><DialogDescription>Review this provider action before it runs.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Selected alumni</span><strong>{selectedForEnrichment.length}</strong></div><div><span>Provider</span><strong>People Data Labs</strong></div><div><span>Action</span><strong>Professional Profile Refresh</strong></div></div><div className="credit-notice"><Activity /><span>A successful PDL profile return may consume one PDL credit even when no information has changed. Important field changes will wait for your approval.</span></div><DialogFooter><Button variant="outline" onClick={() => setRefreshConfirmOpen(false)}>Cancel</Button><Button disabled={!pdlSelectionReady || enriching} onClick={() => void runProfileRefresh()}>{enriching ? <LoaderCircle className="spin" /> : <Cloud />} Run Refresh</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={refreshResults.length > 0} onOpenChange={open => { if (!open) setRefreshResults([]) }}>
+        <DialogContent className="refresh-results-dialog"><DialogHeader><DialogTitle>PDL profile refresh complete</DialogTitle><DialogDescription>Provider responses and credits are already recorded. Apply only the professional-field changes you approve.</DialogDescription></DialogHeader><div className="refresh-result-list">{refreshResults.map(result => { const changed = result.fields.filter(field => field.oldValue !== field.newValue); return <article key={result.alumnusId}><div className="refresh-result-heading"><div><strong>{result.alumnusName}</strong><span>{result.reviewStatus} · {result.creditsUsed} credit{result.creditsUsed === 1 ? "" : "s"}</span></div><span className={`history-status history-${result.status}`}>{result.status.replace("_", " ")}</span></div>{result.status === "no_match" ? <p>No matching external professional profile found. Internal data was not modified.</p> : changed.length ? <div className="refresh-fields">{changed.map(field => <label key={field.field}><input type="checkbox" checked={(refreshSelections[result.reviewId ?? -result.alumnusId] ?? []).includes(field.field)} disabled={result.reviewStatus !== "Pending review"} onChange={() => result.reviewId && setRefreshSelections(current => ({ ...current, [result.reviewId!]: (current[result.reviewId!] ?? []).includes(field.field) ? current[result.reviewId!].filter(item => item !== field.field) : [...(current[result.reviewId!] ?? []), field.field] }))} /><span>{field.label}</span><strong>{field.oldValue || "Not recorded"}</strong><ChevronRight /><strong>{field.newValue}</strong></label>)}</div> : <p>No professional changes detected. Existing professional profile confirmed against PDL.</p>}{result.reviewStatus === "Pending review" && <Button size="sm" onClick={() => void applyRefreshResult(result)}>Apply Selected Updates</Button>}<small>{result.responseSummary}</small></article> })}</div><DialogFooter><Button onClick={() => setRefreshResults([])}>Done</Button></DialogFooter></DialogContent>
+      </Dialog>
+
       <Dialog open={Boolean(comparisonResult)} onOpenChange={open => { if (!open) { setComparisonResult(null); setSelectedComparisonFields([]) } }}>
         <DialogContent className="comparison-dialog">
           <DialogHeader><DialogTitle>Compare professional profile</DialogTitle><DialogDescription>Review Corporate Network and PDL values. Nothing is overwritten until you approve selected fields.</DialogDescription></DialogHeader>
@@ -1233,10 +1437,10 @@ export default function Home() {
             })}</div> : <div className="external-review-card"><div><span>Education</span><strong>{comparisonResult.education}</strong></div><div><span>Company</span><strong>{comparisonResult.currentCompany}</strong></div><div><span>Role</span><strong>{comparisonResult.role}</strong></div><div><span>Function and seniority</span><strong>{comparisonResult.function} · {comparisonResult.seniority}</strong></div><div><span>Location</span><strong>{comparisonResult.location}</strong></div><div><span>Graduation year</span><strong>{comparisonResult.graduationYear || "Not returned"}</strong></div></div>}
           </>}
           <DialogFooter className="comparison-footer">
-            {comparisonResult?.matchStatus === "Possible duplicate" && <Button variant="outline" onClick={() => void keepDiscoveryResultSeparate()} disabled={discovering}>Keep separate</Button>}
-            {comparisonResult?.matchStatus === "Needs review" && <Button variant="outline" onClick={() => { void ignoreDiscoveryResult(comparisonResult.id); setComparisonResult(null) }}>Ignore profile</Button>}
+            {comparisonResult?.matchStatus === "Possible duplicate" && <Button variant="outline" onClick={() => void keepDiscoveryResultSeparate()} disabled={discovering}>Different person · Keep Separate</Button>}
+            {comparisonResult?.matchStatus === "Needs review" && <Button variant="outline" onClick={() => { setIgnoreResult(comparisonResult); setComparisonResult(null) }}>Ignore profile</Button>}
             {comparisonAlumnus && <Button variant="ghost" onClick={() => { setSelected(comparisonAlumnus); setComparisonResult(null) }}><Eye /> View existing record</Button>}
-            {comparisonAlumnus ? <Button onClick={() => void applyComparison()} disabled={discovering}>{selectedComparisonFields.length ? "Apply selected updates" : "Confirm no changes"}</Button> : <Button onClick={() => setComparisonResult(null)}>Close review</Button>}
+            {comparisonAlumnus ? <Button onClick={() => void applyComparison()} disabled={discovering}>{comparisonResult?.matchStatus === "Possible duplicate" ? selectedComparisonFields.length ? "Same person · Apply Updates" : "Same person · Keep Internal" : selectedComparisonFields.length ? "Apply Selected Updates" : "Keep Internal Values"}</Button> : <Button onClick={() => setComparisonResult(null)}>Keep Pending Review</Button>}
           </DialogFooter>
         </DialogContent>
       </Dialog>

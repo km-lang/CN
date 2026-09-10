@@ -80,6 +80,22 @@ export const activityLog = sqliteTable("activity_log", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const alumniRelationships = sqliteTable("alumni_relationships", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  intermediaryAlumnusId: integer("intermediary_alumnus_id").notNull().references(() => alumni.id),
+  targetAlumnusId: integer("target_alumnus_id").notNull().references(() => alumni.id),
+  relationshipType: text("relationship_type").notNull(),
+  evidence: text("evidence").notNull(),
+  confirmed: integer("confirmed", { mode: "boolean" }).notNull().default(false),
+  successfulIntroductions: integer("successful_introductions").notNull().default(0),
+  source: text("source").notNull().default("Manual confirmation"),
+  updatedBy: text("updated_by").notNull().default("System"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_alumni_relationship_pair").on(table.intermediaryAlumnusId, table.targetAlumnusId),
+  index("idx_alumni_relationship_target").on(table.targetAlumnusId),
+]);
+
 export const birthdayData = sqliteTable("birthday_data", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
@@ -238,6 +254,20 @@ export const providerResponseHistory = sqliteTable("provider_response_history", 
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const providerRefreshReviews = sqliteTable("provider_refresh_reviews", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  providerResponseId: integer("provider_response_id").notNull().references(() => providerResponseHistory.id),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  proposedChangesJson: text("proposed_changes_json").notNull().default("[]"),
+  status: text("status").notNull().default("Pending review"),
+  requestedBy: text("requested_by").notNull(),
+  reviewedBy: text("reviewed_by").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  reviewedAt: text("reviewed_at").notNull().default(""),
+}, (table) => [
+  index("idx_provider_refresh_review_alumnus").on(table.alumnusId, table.status),
+]);
+
 export const externalDiscoverySearches = sqliteTable("external_discovery_searches", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   provider: text("provider").notNull().default("pdl"),
@@ -273,6 +303,7 @@ export const externalDiscoveryResults = sqliteTable("external_discovery_results"
   matchConfidence: integer("match_confidence").notNull().default(50),
   linkedInternalAlumnusId: integer("linked_internal_alumnus_id").references(() => alumni.id),
   reviewStatus: text("review_status").notNull().default("Pending review"),
+  reviewNote: text("review_note").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   reviewedAt: text("reviewed_at").notNull().default(""),
   reviewedBy: text("reviewed_by").notNull().default(""),

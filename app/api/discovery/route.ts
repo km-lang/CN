@@ -22,7 +22,8 @@ import { discoveryMode, searchExternalAlumni } from "@/lib/pdl-discovery";
 const allowedLimits = new Set([25, 50, 100]);
 
 function actorFrom(request: Request) {
-  return request.headers.get("oai-authenticated-user-email")
+  return request.headers.get("x-demo-user")
+    ?? request.headers.get("oai-authenticated-user-email")
     ?? request.headers.get("oai-authenticated-user-id")
     ?? "Public workspace user";
 }
@@ -65,7 +66,7 @@ async function pdlRemainingCredits() {
     db.select().from(providerSettings).where(eq(providerSettings.provider, "pdl")).limit(1),
     db.select({ used: sql<number>`coalesce(sum(${providerResponseHistory.creditsUsed}), 0)` })
       .from(providerResponseHistory)
-      .where(and(eq(providerResponseHistory.provider, "pdl"), eq(providerResponseHistory.status, "success"), sql`${providerResponseHistory.createdAt} >= ${monthStart()}`)),
+      .where(and(eq(providerResponseHistory.provider, "pdl"), sql`${providerResponseHistory.createdAt} >= ${monthStart()}`)),
   ]);
   const limit = settings[0]?.monthlyCreditLimit ?? 100;
   const used = Number(usage[0]?.used ?? 0);
@@ -91,6 +92,7 @@ export async function POST(request: Request) {
       resultIds?: number[];
       resultId?: number;
       fields?: string[];
+      reason?: string;
     };
     const db = getDb();
     const actor = actorFrom(request);
@@ -100,7 +102,10 @@ export async function POST(request: Request) {
       const filters = { ...defaultDirectoryFilters(), ...payload.filters } as DirectoryFilters;
       const requestedLimit = allowedLimits.has(Number(payload.limit)) ? Number(payload.limit) : 25;
       const remaining = await pdlRemainingCredits();
-      if (remaining < 1) return Response.json({ error: "The monthly PDL application limit has been reached." }, { status: 429 });
+      if (remaining < 1) {
+        await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusName: "External alumni discovery", operation: "Alumni Discovery", mode: discoveryMode(), status: "blocked", creditsUsed: 0, requestSummary: criteriaSummary(filters), responseSummary: "External search not run — PDL application limit reached.", requestedBy: actor });
+        return Response.json({ error: "External search could not be run because the PDL application limit has been reached.", blocked: true, reason: "credit_limit", filters, effectiveLimit: 0 }, { status: 429 });
+      }
       const limit = Math.min(requestedLimit, remaining);
       const people = await db.select().from(alumni).orderBy(alumni.name);
       const response = await searchExternalAlumni(filters, people, limit);
@@ -158,7 +163,7 @@ export async function POST(request: Request) {
         requestedBy: actor,
       });
       const storedResults = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id);
-      return Response.json({ searchId: search.id, results: storedResults, counts, creditsUsed: response.creditsUsed, totalAvailable: response.totalAvailable, effectiveLimit: limit });
+      return Response.json({ searchId: search.id, results: storedResults, counts, creditsUsed: response.creditsUsed, totalAvailable: response.totalAvailable, effectiveLimit: limit, filters });
     }
 
     if (payload.action === "approve") {
@@ -185,13 +190,13 @@ export async function POST(request: Request) {
           function: result.function,
           seniority: result.seniority,
           location: result.location,
-          confidence: result.matchConfidence,
+          confidence: 65,
           linkedinUrl: result.linkedinUrl,
           pdlPersonId: result.providerPersonId,
           discoverySource: "PDL",
           discoveryDate: now,
           lastPdlRefresh: now,
-          verified: "PDL sourced just now",
+          verified: `Professional profile sourced via PDL · ${now.slice(0, 10)}`,
           status: "Not contacted",
           note: "Externally discovered through PDL. IIML relationship and placement context have not been assessed.",
           source: "People Data Labs",
@@ -256,13 +261,13 @@ export async function POST(request: Request) {
         function: result.function,
         seniority: result.seniority,
         location: result.location,
-        confidence: result.matchConfidence,
+        confidence: 65,
         linkedinUrl: result.linkedinUrl,
         pdlPersonId: result.providerPersonId,
         discoverySource: "PDL",
         discoveryDate: now,
         lastPdlRefresh: now,
-        verified: "PDL sourced after duplicate review",
+        verified: `Professional profile sourced via PDL after duplicate review · ${now.slice(0, 10)}`,
         status: "Not contacted",
         note: "Added as a separate record after manual duplicate review. IIML relationship has not been assessed.",
         source: "People Data Labs",
@@ -274,8 +279,10 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "ignore" && Number.isInteger(payload.resultId)) {
-      await db.update(externalDiscoveryResults).set({ reviewStatus: "Ignored", reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, payload.resultId!));
-      return Response.json({ ignored: true });
+      const allowedReasons = new Set(["Wrong person", "Not IIML alumnus", "Duplicate already handled", "Irrelevant", "Data appears incorrect", "Other"]);
+      const reason = allowedReasons.has(String(payload.reason)) ? String(payload.reason) : "Other";
+      await db.update(externalDiscoveryResults).set({ reviewStatus: "Ignored", reviewNote: reason, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, payload.resultId!));
+      return Response.json({ ignored: true, reason });
     }
 
     return Response.json({ error: "Unsupported discovery action." }, { status: 400 });

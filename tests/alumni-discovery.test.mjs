@@ -64,10 +64,11 @@ test("3. external discovery carries filters and fixes IIM Lucknow education", ()
   assert.match(query, /india/);
 });
 
-test("4. mock discovery demonstrates five mapped, three new and two possible duplicates", () => {
-  assert.match(mockProvider, /slice\(0, 5\)/);
+test("4. mock discovery demonstrates mapped, new, duplicate and review states", () => {
+  assert.match(mockProvider, /slice\(0, 3\)/);
   assert.match(mockProvider, /Isha Malhotra/);
-  assert.match(mockProvider, /slice\(5, 7\)/);
+  assert.match(mockProvider, /slice\(5, 6\)/);
+  assert.match(mockProvider, /needs-review-1/);
   assert.match(providerSource + pageSource + discoveryRoute, /Possible duplicate/);
   assert.match(pageSource, /discoveryCounts\.new/);
 });
@@ -79,16 +80,16 @@ test("5. new external results require an explicit add action", () => {
 
 test("6. possible duplicates cannot use the batch approval path", () => {
   assert.match(discoveryRoute, /result\.matchStatus !== "New"/);
-  assert.match(pageSource, /Keep separate/);
+  assert.match(pageSource, /Keep Separate/);
 });
 
 test("7. mapped alumni support comparison before refresh", () => {
-  assert.match(pageSource, /Compare & Refresh/);
-  assert.match(pageSource, /Apply selected updates/);
+  assert.match(pageSource, /Compare professional profile/);
+  assert.match(pageSource, /Apply Selected Updates/);
 });
 
 test("8. discovery results expose a professional-profile reference", () => {
-  assert.match(pageSource, /View LinkedIn Profile/);
+  assert.match(pageSource, /View profile/);
   assert.match(pageSource, /target="_blank"/);
 });
 

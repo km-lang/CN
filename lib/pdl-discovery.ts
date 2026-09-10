@@ -70,6 +70,9 @@ function mockProfile(
 }
 
 function mockSearch(filters: DirectoryFilters, internal: InternalPerson[], limit: number): DiscoveryResponse {
+  if (/no results|nonexistent/i.test(filters.role)) {
+    return { profiles: [], creditsUsed: 0, totalAvailable: 0, responseSummary: "No additional external alumni were found in the demonstration provider." };
+  }
   if (filters.name) {
     const person = internal.find(item => normalized(item.name) === normalized(filters.name));
     if (person) {
@@ -91,7 +94,7 @@ function mockSearch(filters: DirectoryFilters, internal: InternalPerson[], limit
       return { profiles: [profile], creditsUsed: 1, totalAvailable: 1, responseSummary: "1 demonstration PDL profile returned for comparison." };
     }
   }
-  const mapped = [...internal].slice(0, 5).map((person, index) => mockProfile(
+  const mapped = [...internal].slice(0, 3).map((person, index) => mockProfile(
     `mapped-${person.id}`,
     person.name,
     filters,
@@ -104,15 +107,16 @@ function mockSearch(filters: DirectoryFilters, internal: InternalPerson[], limit
       rawTitle: index === 0 ? titleFor(filters, index) : person.title,
     },
   ));
-  const newPeople = ["Isha Malhotra", "Devansh Kulkarni", "Sana Ahmed"].map((name, index) => mockProfile(`new-${index + 1}`, name, filters, index + 5));
-  const possible = internal.slice(5, 7).map((person, index) => mockProfile(
+  const newPeople = ["Isha Malhotra", "Devansh Kulkarni"].map((name, index) => mockProfile(`new-${index + 1}`, name, filters, index + 5));
+  const possible = internal.slice(5, 6).map((person, index) => mockProfile(
     `possible-${person.id}`,
     person.name,
     filters,
     index + 8,
     { graduationYear: person.batch + 1, linkedinUrl: "", matchConfidence: 71 },
   ));
-  const profiles = [...mapped, ...newPeople, ...possible].slice(0, limit);
+  const needsReview = mockProfile("needs-review-1", "Samir Khanna", filters, 9, { education: "Education not confirmed", matchConfidence: 52 });
+  const profiles = [...mapped, ...newPeople, ...possible, needsReview].slice(0, limit);
   return {
     profiles,
     creditsUsed: profiles.length,

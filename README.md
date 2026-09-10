@@ -34,6 +34,16 @@ The end-to-end discovery flow is:
 
 Company Intelligence reuses the same workflow through **Find More Alumni**. PDL comparisons never overwrite an existing profile silently. Selected updates are recorded in field-change history, while all provider calls are recorded in provider-response history.
 
+The active filters and requested result count remain visible with every external search. The UI distinguishes a successful zero-result search from a search that was blocked before a provider call, and ignored results retain a shared review reason.
+
+## Target-specific outreach routes
+
+Outreach-route recommendations are made for an explicitly selected alumnus, never for a company alone. The engine recommends direct outreach when the selected person has a usable contact route and reliable profile. A warm route is shown only when a confirmed intermediary relationship is recorded and the intermediary has credible PlaceCom engagement; the recommendation includes the evidence and rationale. If neither route is credible, the app explains what data or relationship evidence is missing.
+
+## Bulk and manual data entry
+
+The Data Import tab separates bulk CSV import from single-record entry. Manual entry validates a minimum identity, checks possible duplicates before insertion, records the source and actor, and consumes no provider credits. PDL profile refresh and Lusha contact enrichment remain optional actions after the internal record has been created.
+
 ## Enrichment providers
 
 Phase 3 supports two operating modes:
@@ -54,8 +64,9 @@ Change `ENRICHMENT_MODE` to `live` only after both vendor keys are configured. T
 
 The Enrichment tab provides:
 
-- manual PDL profile/employment refresh
-- manual Lusha email/phone enrichment
+- manual and selected-batch PDL profile/employment refresh with confirmation
+- review-and-apply of changed professional fields; no-change and no-match results remain visible
+- manual and selected-batch Lusha email/phone enrichment
 - batch enrichment for up to 25 alumni
 - monthly credit-limit controls and usage meters
 - sanitized provider-response history
@@ -76,6 +87,7 @@ The live discovery adapter uses the PDL v5 Person Search API, while existing-pro
 - `app/api/workspace/route.ts`: alumni import and shared-workspace updates
 - `app/api/enrichment/route.ts`: manual/batch enrichment, limits, usage, and history
 - `app/api/discovery/route.ts`: PDL discovery, reconciliation, review, approval, refresh, and history
+- `app/api/outreach-route/route.ts`: target-specific direct, warm, and no-route recommendations
 - `app/api/engagements/route.ts`: engagement queues, ownership, mail workflow, responses, follow-ups, and audits
 - `lib/alumni-search.ts`: shared internal filtering and provider-query translation
 - `lib/mail-service.ts`: mock mail service and future live-mail boundary
@@ -86,7 +98,7 @@ The live discovery adapter uses the PDL v5 Person Search API, while existing-pro
 
 ## Validation
 
-Run `node --test tests/alumni-discovery.test.mjs` to verify the 15 company-first discovery acceptance conditions, and `node --test tests/engagement-workflow.test.mjs` for the 17 engagement acceptance conditions. Run `npx tsc --noEmit` and `npm test` before release.
+Run `node --test tests/alumni-discovery.test.mjs` to verify the 15 company-first discovery conditions, `node --test tests/workflow-acceptance.test.mjs` for the 18 route, discovery, manual-entry, refresh, and contact-provenance conditions, and `node --test tests/engagement-workflow.test.mjs` for the 17 engagement conditions. Run `npx tsc --noEmit` and `npm test` before release.
 
 ## Starter runtime notes
 

@@ -42,6 +42,9 @@ export function providerConfigured(provider: ProviderName) {
 }
 
 function mockPdl(input: EnrichmentInput): EnrichmentResult {
+  if (input.id % 5 === 0) {
+    return { provider: "pdl", status: "no_match", creditsUsed: 0, changes: {}, responseSummary: "No matching external professional profile found." };
+  }
   const titles = [input.title, "Senior " + input.title.replace(/^Senior\s+/i, ""), input.title];
   const title = titles[input.id % titles.length];
   return {
@@ -70,22 +73,23 @@ function mockLusha(input: EnrichmentInput): EnrichmentResult {
   const email = input.email && !input.email.endsWith("@example.com") ? input.email : `${slug}@demo-contact.invalid`;
   const phone = input.phone && !input.phone.includes("•") ? input.phone : `+91 90000 ${String(10000 + input.id).slice(-5)}`;
   const emailRequested = channels.includes("email");
+  const emailAvailable = input.id % 7 !== 0;
   const phoneRequested = channels.includes("phone");
   const phoneAvailable = input.id % 5 !== 0;
   const now = new Date().toISOString();
   return {
     provider: "lusha",
-    status: emailRequested || (phoneRequested && phoneAvailable) ? "success" : "no_match",
-    creditsUsed: (emailRequested ? 1 : 0) + (phoneRequested && phoneAvailable ? 5 : 0),
+    status: (emailRequested && emailAvailable) || (phoneRequested && phoneAvailable) ? "success" : "no_match",
+    creditsUsed: (emailRequested && emailAvailable ? 1 : 0) + (phoneRequested && phoneAvailable ? 5 : 0),
     changes: {
-      ...(emailRequested ? { email, emailVerification: "Verified", emailSource: "Lusha", emailRetrievedAt: now } : {}),
+      ...(emailRequested && emailAvailable ? { email, emailVerification: "Verified", emailSource: "Lusha", emailRetrievedAt: now } : {}),
       ...(phoneRequested && phoneAvailable ? { phone, phoneVerification: "Verified", phoneSource: "Lusha", phoneRetrievedAt: now } : {}),
       lastLushaEnrichment: now,
       verified: "just now",
       source: "Lusha demonstration enrichment",
     },
-    responseSummary: phoneRequested && !phoneAvailable
-      ? `${emailRequested ? "Demonstration work email returned. " : ""}No phone was available for this contact.`
+    responseSummary: (emailRequested && !emailAvailable) || (phoneRequested && !phoneAvailable)
+      ? `${emailRequested && emailAvailable ? "Demonstration work email returned. " : ""}${phoneRequested && phoneAvailable ? "Demonstration phone returned. " : ""}${emailRequested && !emailAvailable ? "No email was available. " : ""}${phoneRequested && !phoneAvailable ? "No phone was available." : ""}`.trim()
       : `Demonstration ${channels.join(" and ")} returned.`,
   };
 }
@@ -119,7 +123,7 @@ async function livePdl(input: EnrichmentInput): Promise<EnrichmentResult> {
   });
   const body = await response.json() as Record<string, unknown>;
   const creditsUsed = Number(response.headers.get("x-call-credits-spent") ?? (response.ok ? 1 : 0));
-  if (response.status === 404) return { provider: "pdl", status: "no_match", creditsUsed: 0, changes: {}, responseSummary: "No sufficiently likely profile match." };
+  if (response.status === 404) return { provider: "pdl", status: "no_match", creditsUsed, changes: {}, responseSummary: "No sufficiently likely profile match." };
   if (!response.ok) throw new Error(stringValue((body.error as Record<string, unknown> | undefined)?.message) || `PDL returned HTTP ${response.status}.`);
   const data = (body.data ?? body) as Record<string, unknown>;
   const job = (data.job ?? {}) as Record<string, unknown>;
