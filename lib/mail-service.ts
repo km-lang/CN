@@ -1,3 +1,6 @@
+import { appConfig } from "@/lib/app-config";
+import { serverConfig } from "@/lib/server-config";
+
 export type MailDraft = {
   recipient: string;
   subject: string;
@@ -25,7 +28,9 @@ export function createMailDraft(
   const firstName = alumnusName.trim().split(/\s+/)[0] || alumnusName;
   const replace = (value: string) => value
     .replaceAll("[First Name]", firstName)
-    .replaceAll("[Full Name]", alumnusName);
+    .replaceAll("[Full Name]", alumnusName)
+    .replaceAll("[Product Name]", appConfig.name)
+    .replaceAll("[Sender Display Name]", serverConfig.mailSenderDisplayName);
   return { recipient, subject: replace(subjectTemplate), body: replace(bodyTemplate) };
 }
 

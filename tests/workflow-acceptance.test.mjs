@@ -55,7 +55,9 @@ test("acceptance 7: mock discovery covers mapped, new, duplicate and needs-revie
 });
 
 test("acceptance 8: Lusha is not offered before a new discovery result is added", () => {
-  assert.match(page, /const added = \["Added to Corporate Network", "Added as separate record"\]\.includes\(result\.reviewStatus\)/);
+  assert.match(page, /DISCOVERY_REVIEW_STATUS\.added/);
+  assert.match(page, /DISCOVERY_REVIEW_STATUS\.addedSeparate/);
+  assert.match(page, /DISCOVERY_REVIEW_STATUS\.legacyAdded/);
   assert.match(page, /\{added && <>/);
 });
 

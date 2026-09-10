@@ -1,10 +1,16 @@
 import type { Metadata } from "next"
 import "./globals.css"
 
+import { appConfig, assetPath } from "@/lib/app-config"
+
 export const metadata: Metadata = {
-  title: "Corporate Network",
-  description: "Placement-focused alumni discovery, company intelligence and outreach tracking.",
-  icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
+  metadataBase: new URL(appConfig.publicUrl),
+  title: `${appConfig.name} | ${appConfig.subtitle}`,
+  description: appConfig.tagline,
+  applicationName: appConfig.name,
+  alternates: { canonical: appConfig.publicUrl },
+  icons: { icon: assetPath("/favicon.svg"), shortcut: assetPath("/favicon.svg") },
+  manifest: assetPath("/manifest.webmanifest"),
   other: { "codex-preview": "development" },
 }
 

@@ -23,6 +23,22 @@ import {
   matchesInternalFilters,
   type DirectoryFilters,
 } from "@/lib/alumni-search"
+import { apiPath, appConfig } from "@/lib/app-config"
+import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
+
+const API_ROUTES = Object.freeze({
+  workspace: apiPath("/api/workspace"),
+  enrichment: apiPath("/api/enrichment"),
+  engagements: apiPath("/api/engagements"),
+  discovery: apiPath("/api/discovery"),
+  outreachRoute: apiPath("/api/outreach-route"),
+})
+
+const ADDED_DISCOVERY_STATUSES = new Set<string>([
+  DISCOVERY_REVIEW_STATUS.added,
+  DISCOVERY_REVIEW_STATUS.addedSeparate,
+  DISCOVERY_REVIEW_STATUS.legacyAdded,
+])
 
 type OutreachStatus = "Not contacted" | "Contacted" | "Responded" | "Meeting set"
 type VerificationState = "Confirmed" | "Verified" | "Likely" | "Unverified" | "Possibly outdated" | "Mismatch"
@@ -320,6 +336,11 @@ function DiscoveryBadge({ status }: { status: DiscoveryResult["matchStatus"] }) 
   return <span className={`discovery-badge discovery-${status.toLowerCase().replaceAll(" ", "-")}`}>{status === "New" ? "Externally discovered" : status}</span>
 }
 
+function discoveryReviewLabel(status: string) {
+  if (status === DISCOVERY_REVIEW_STATUS.added || status === DISCOVERY_REVIEW_STATUS.legacyAdded) return `Added to ${appConfig.name}`
+  return status
+}
+
 function contactDataLabel(person: Alumni, channel: "email" | "phone") {
   const value = person[channel]
   if (!value) return { status: "Not enriched", detail: "No contact data stored" }
@@ -431,17 +452,17 @@ export default function Home() {
   const loadWorkspace = useCallback(async (seedIfEmpty = false) => {
     try {
       setWorkspaceLoading(true)
-      let response = await fetch("/api/workspace", { cache: "no-store" })
+      let response = await fetch(API_ROUTES.workspace, { cache: "no-store" })
       let data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load the shared workspace.")
       if (seedIfEmpty && data.alumni?.length === 0) {
-        const seedResponse = await fetch("/api/workspace", {
+        const seedResponse = await fetch(API_ROUTES.workspace, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ action: "import", filename: "Demonstration alumni dataset", records: alumniSeed }),
         })
         if (!seedResponse.ok) throw new Error("The shared database was created, but the demonstration dataset could not be loaded.")
-        response = await fetch("/api/workspace", { cache: "no-store" })
+        response = await fetch(API_ROUTES.workspace, { cache: "no-store" })
         data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
         if (!response.ok) throw new Error(data.error || "Unable to reload the shared workspace.")
       }
@@ -466,7 +487,7 @@ export default function Home() {
 
   const loadEnrichment = useCallback(async () => {
     try {
-      const response = await fetch("/api/enrichment", { cache: "no-store" })
+      const response = await fetch(API_ROUTES.enrichment, { cache: "no-store" })
       const data = await response.json() as { mode?: "mock" | "live"; usage?: ProviderUsage; history?: ProviderHistory[]; error?: string }
       if (!response.ok || !data.usage) throw new Error(data.error || "Unable to load provider activity.")
       setEnrichmentMode(data.mode ?? "mock")
@@ -486,7 +507,7 @@ export default function Home() {
   const loadEngagements = useCallback(async () => {
     try {
       setEngagementLoading(true)
-      const response = await fetch("/api/engagements", { cache: "no-store", headers: { "x-demo-user": currentDemoUser } })
+      const response = await fetch(API_ROUTES.engagements, { cache: "no-store", headers: { "x-demo-user": currentDemoUser } })
       const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; mode?: "mock" | "live"; error?: string }
       if (!response.ok || !data.events) throw new Error(data.error || "Unable to load the shared engagement queue.")
       setEngagements(data.events)
@@ -572,7 +593,7 @@ export default function Home() {
   async function saveAlumnus(id: number, changes: { status?: OutreachStatus; assessment?: Partial<Alumni["assessment"]> }) {
     setSyncing(true)
     try {
-      const response = await fetch("/api/workspace", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_alumnus", id, ...changes }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_alumnus", id, ...changes }) })
       const data = await response.json() as { alumnus?: Alumni; error?: string }
       if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the update.")
       replaceAlumnus(data.alumnus)
@@ -596,7 +617,7 @@ export default function Home() {
   async function updateCompanyPriority(name: string, priority: string) {
     setSyncing(true)
     try {
-      const response = await fetch("/api/workspace", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_priority", company: name, priority }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_priority", company: name, priority }) })
       const data = await response.json() as { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to save company priority.")
       setCompanyPriorities(current => ({ ...current, [name]: priority }))
@@ -626,7 +647,7 @@ export default function Home() {
     setImporting(true)
     try {
       const records = parseCsv(await importFile.text())
-      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
       const data = await response.json() as { imported?: number; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
       setWorkspaceMessage(`${data.imported ?? records.length} alumni records imported into the shared database.`)
@@ -644,7 +665,7 @@ export default function Home() {
     setEnriching(true)
     setEnrichmentMessage("")
     try {
-      const response = await fetch("/api/enrichment", {
+      const response = await fetch(API_ROUTES.enrichment, {
         method: "POST",
         headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ alumniIds: ids.slice(0, 25), providers: requestedProviders, operation, contactChannels }),
@@ -665,7 +686,7 @@ export default function Home() {
     const monthlyCreditLimit = Number(creditDrafts[provider])
     if (!Number.isInteger(monthlyCreditLimit) || monthlyCreditLimit < 0) { setEnrichmentMessage("Enter a whole-number credit limit."); return }
     try {
-      const response = await fetch("/api/enrichment", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, monthlyCreditLimit }) })
+      const response = await fetch(API_ROUTES.enrichment, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, monthlyCreditLimit }) })
       const data = await response.json() as { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to save the credit limit.")
       setEnrichmentMessage(`${provider.toUpperCase()} monthly application limit saved.`)
@@ -683,7 +704,7 @@ export default function Home() {
     setEngagementLoading(true)
     setEngagementMessage("")
     try {
-      const response = await fetch("/api/engagements", {
+      const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
         headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action, eventId, ...extra }),
@@ -715,7 +736,7 @@ export default function Home() {
     const template = messageTemplates.find(item => item.eventType === event.eventType)
     setEngagementLoading(true)
     try {
-      const response = await fetch("/api/engagements", {
+      const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
         headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "preview", eventId: event.id, templateId: template?.id }),
@@ -758,7 +779,7 @@ export default function Home() {
   async function previewSelectedBirthdays() {
     setEngagementLoading(true)
     try {
-      const response = await fetch("/api/engagements", {
+      const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
         headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "bulk_preview", eventIds: selectedBirthdayIds }),
@@ -805,7 +826,7 @@ export default function Home() {
     setDiscoveryMessage("")
     setLastDiscoveryFilters(searchFilters)
     try {
-      const response = await fetch("/api/discovery", {
+      const response = await fetch(API_ROUTES.discovery, {
         method: "POST",
         headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
@@ -869,7 +890,7 @@ export default function Home() {
     if (!resultIds.length) return
     setDiscovering(true)
     try {
-      const response = await fetch("/api/discovery", {
+      const response = await fetch(API_ROUTES.discovery, {
         method: "POST",
         headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "approve", resultIds }),
@@ -878,7 +899,7 @@ export default function Home() {
       if (!response.ok || !data.added) throw new Error(data.error || "Unable to add the selected alumni.")
       const addedMap = new Map(data.added.map(item => [item.resultId, item.alumnusId]))
       setDiscoveryResults(current => current.map(item => addedMap.has(item.id)
-        ? { ...item, linkedInternalAlumnusId: addedMap.get(item.id) ?? null, reviewStatus: "Added to Corporate Network" }
+        ? { ...item, linkedInternalAlumnusId: addedMap.get(item.id) ?? null, reviewStatus: DISCOVERY_REVIEW_STATUS.added }
         : item))
       setSelectedDiscoveryIds([])
       setDiscoveryMessage(`${data.addedCount ?? data.added.length} alumn${data.added.length === 1 ? "us" : "i"} added. Contact enrichment is now available.`)
@@ -891,7 +912,7 @@ export default function Home() {
   }
 
   async function ignoreDiscoveryResult(resultId: number, reason = ignoreReason) {
-    const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "ignore", resultId, reason }) })
+    const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "ignore", resultId, reason }) })
     if (response.ok) {
       setDiscoveryResults(current => current.map(item => item.id === resultId ? { ...item, reviewStatus: "Ignored", reviewNote: reason } : item))
       setIgnoreResult(null)
@@ -903,7 +924,7 @@ export default function Home() {
     if (!comparisonResult) return
     setDiscovering(true)
     try {
-      const response = await fetch("/api/discovery", {
+      const response = await fetch(API_ROUTES.discovery, {
         method: "POST",
         headers: { "content-type": "application/json", "x-demo-user": currentDemoUser },
         body: JSON.stringify({ action: "apply_updates", resultId: comparisonResult.id, fields: selectedComparisonFields }),
@@ -926,10 +947,10 @@ export default function Home() {
     if (!comparisonResult) return
     setDiscovering(true)
     try {
-      const response = await fetch("/api/discovery", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "keep_separate", resultId: comparisonResult.id }) })
+      const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "keep_separate", resultId: comparisonResult.id }) })
       const data = await response.json() as { alumnusId?: number; error?: string }
       if (!response.ok || !data.alumnusId) throw new Error(data.error || "Unable to keep this alumnus as a separate record.")
-      setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, linkedInternalAlumnusId: data.alumnusId!, reviewStatus: "Added as separate record" } : item))
+      setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, linkedInternalAlumnusId: data.alumnusId!, reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate } : item))
       setComparisonResult(null)
       setSelectedComparisonFields([])
       setDiscoveryMessage("The reviewed profile was added as a separate alumnus. Lusha enrichment is now available from the internal profile.")
@@ -946,7 +967,7 @@ export default function Home() {
     setRouteLoading(true)
     setRouteMessage("")
     try {
-      const response = await fetch("/api/outreach-route", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ targetAlumnusId: targetId }) })
+      const response = await fetch(API_ROUTES.outreachRoute, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ targetAlumnusId: targetId }) })
       const data = await response.json() as RouteRecommendation & { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to recommend an outreach route.")
       setRouteRecommendation(data)
@@ -967,7 +988,7 @@ export default function Home() {
   async function saveManualAlumnus(continueAsNew: boolean) {
     setManualLoading(true)
     try {
-      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_add", record: manualForm, continueAsNew }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_add", record: manualForm, continueAsNew }) })
       const data = await response.json() as { alumnus?: Alumni; matches?: ManualMatch[]; error?: string }
       if (!response.ok || !data.alumnus) {
         if (data.matches?.length) setManualMatches(data.matches)
@@ -975,7 +996,7 @@ export default function Home() {
       }
       setManualSaved(data.alumnus)
       setManualMatches([])
-      setManualMessage("Alumnus added to Corporate Network. No provider credits were used.")
+      setManualMessage(`Alumnus added to ${appConfig.name}. No provider credits were used.`)
       await loadWorkspace(false)
     } catch (error) {
       setManualMessage(error instanceof Error ? error.message : "Unable to add the alumnus.")
@@ -988,7 +1009,7 @@ export default function Home() {
     setManualLoading(true)
     setManualMessage("")
     try {
-      const response = await fetch("/api/workspace", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_check", record: manualForm }) })
+      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "manual_check", record: manualForm }) })
       const data = await response.json() as { matches?: ManualMatch[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to check for duplicates.")
       if (data.matches?.length) {
@@ -1007,7 +1028,7 @@ export default function Home() {
     setEnriching(true)
     setEnrichmentMessage("")
     try {
-      const response = await fetch("/api/enrichment", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "refresh_profiles", alumniIds: selectedForEnrichment }) })
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "refresh_profiles", alumniIds: selectedForEnrichment }) })
       const data = await response.json() as { results?: RefreshResult[]; error?: string }
       if (!response.ok || !data.results) throw new Error(data.error || "Unable to refresh the selected profiles.")
       setRefreshResults(data.results)
@@ -1026,7 +1047,7 @@ export default function Home() {
     if (!result.reviewId) return
     setEnriching(true)
     try {
-      const response = await fetch("/api/enrichment", { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "apply_refresh", reviewId: result.reviewId, fields: refreshSelections[result.reviewId] ?? [] }) })
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json", "x-demo-user": currentDemoUser }, body: JSON.stringify({ action: "apply_refresh", reviewId: result.reviewId, fields: refreshSelections[result.reviewId] ?? [] }) })
       const data = await response.json() as { applied?: string[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to apply the selected profile updates.")
       setRefreshResults(current => current.map(item => item.reviewId === result.reviewId ? { ...item, reviewStatus: data.applied?.length ? "Applied" : "Reviewed, no updates selected" } : item))
@@ -1059,13 +1080,13 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand-lockup"><div className="brand-mark">CN</div><div><strong>Corporate Network</strong><span>Placement Committee Workspace</span></div></div>
+        <div className="brand-lockup"><div className="brand-mark">{appConfig.shortName}</div><div><strong>{appConfig.name}</strong><span>{appConfig.subtitle}</span></div></div>
         <div className={`data-state ${workspaceMessage ? "data-state-warning" : ""}`}><span /> {workspaceLoading ? "Connecting to shared database" : syncing ? "Saving changes" : workspaceMessage || "Shared database · Synced"}</div>
       </header>
 
       <section className="workspace">
         <div className="page-heading">
-          <div><p className="eyebrow">Placement intelligence</p><h1>Connect alumni relationships to corporate opportunities.</h1></div>
+          <div><p className="eyebrow">Placement intelligence</p><h1>{appConfig.tagline}</h1></div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="product-tabs">
@@ -1113,7 +1134,7 @@ export default function Home() {
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in Corporate Network, ranked by Placement Relevance</span></div><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div><Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
                 <Input list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />
@@ -1144,7 +1165,7 @@ export default function Home() {
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">
-                <div><p className="eyebrow">External discovery</p><h2>{discoveryState === "blocked" ? "External search not run" : discoveryState === "empty" ? "No additional profiles found" : `${discoveryResults.length} PDL profiles found`}</h2><span>{discoveryState === "blocked" ? "The previous search state is retained below." : "Results are reviewed before any record enters Corporate Network."}</span></div>
+                <div><p className="eyebrow">External discovery</p><h2>{discoveryState === "blocked" ? "External search not run" : discoveryState === "empty" ? "No additional profiles found" : `${discoveryResults.length} PDL profiles found`}</h2><span>{discoveryState === "blocked" ? "The previous search state is retained below." : `Results are reviewed before any record enters ${appConfig.name}.`}</span></div>
                 <div className="fixed-criterion"><span>Fixed alumni criterion</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div>
               </div>
               {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Company</span><strong>{lastDiscoveryFilters.company}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.batch || "Any year"}</strong></div><div><span>Results requested</span><strong>{discoveryLimit}</strong></div></div>}
@@ -1154,18 +1175,18 @@ export default function Home() {
               </div>
               <div className="credit-notice"><Activity /><span>External discovery may consume PDL credits based on the number of person records returned. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
-              {selectedDiscoveryIds.length > 0 && <div className="batch-approval"><span>{selectedDiscoveryIds.length} clearly new profile{selectedDiscoveryIds.length === 1 ? "" : "s"} selected</span><Button onClick={() => void approveDiscoveryResults(selectedDiscoveryIds)} disabled={discovering}><Plus /> Add Selected to Corporate Network</Button></div>}
+              {selectedDiscoveryIds.length > 0 && <div className="batch-approval"><span>{selectedDiscoveryIds.length} clearly new profile{selectedDiscoveryIds.length === 1 ? "" : "s"} selected</span><Button onClick={() => void approveDiscoveryResults(selectedDiscoveryIds)} disabled={discovering}><Plus /> Add Selected to {appConfig.name}</Button></div>}
               <div className="discovery-table-wrap"><Table>
                 <TableHeader><TableRow><TableHead>Select</TableHead><TableHead>Name and education</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Seniority</TableHead><TableHead>Location</TableHead><TableHead>Database match</TableHead><TableHead>Identity match confidence</TableHead><TableHead>Professional profile</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                 <TableBody>{discoveryResults.map(result => {
                   const canAdd = result.matchStatus === "New" && result.reviewStatus === "Pending review"
-                  const added = ["Added to Corporate Network", "Added as separate record"].includes(result.reviewStatus) && result.linkedInternalAlumnusId
+                  const added = ADDED_DISCOVERY_STATUSES.has(result.reviewStatus) && result.linkedInternalAlumnusId
                   return <TableRow key={result.id}>
                     <TableCell><input type="checkbox" aria-label={`Select ${result.name}`} disabled={!canAdd} checked={selectedDiscoveryIds.includes(result.id)} onChange={() => toggleDiscoverySelection(result.id)} /></TableCell>
                     <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>{result.education} · {result.graduationYear || "Year not returned"}</small></span></TableCell>
                     <TableCell><span className="stacked-cell"><strong>{result.currentCompany}</strong><small>{result.role}</small></span></TableCell>
                     <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
-                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{result.reviewStatus}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small></TableCell>
+                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{discoveryReviewLabel(result.reviewStatus)}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small></TableCell>
                     <TableCell><span className={`score-pill ${scoreTone(result.matchConfidence)}`}>{result.matchConfidence}%</span></TableCell>
                     <TableCell>{result.linkedinUrl ? <a className="professional-link" href={result.linkedinUrl} target="_blank" rel="noreferrer">View profile <ArrowUpRight /></a> : <span className="muted-cell">Not returned</span>}</TableCell>
                     <TableCell><div className="row-actions">
@@ -1324,7 +1345,7 @@ export default function Home() {
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             <details className="score-breakdown"><summary>Why this Placement Relevance score?</summary><div className="breakdown-list">{selectedBreakdown.items.map(item => <div key={item.label}><span>{item.label}<small>{item.weight}% weight</small></span><strong>{item.score}</strong><em>{(item.score * item.weight / 100).toFixed(1)}</em></div>)}</div><p>Weighted contributions are added and rounded to the nearest whole number.</p></details>
-            <section className="profile-section"><h3>Assess alumnus</h3><p className="section-help">Choose qualitative evidence. Corporate Network converts each choice into an auditable score.</p><div className="assessment-grid">
+            <section className="profile-section"><h3>Assess alumnus</h3><p className="section-help">Choose qualitative evidence. {appConfig.name} converts each choice into an auditable score.</p><div className="assessment-grid">
               <label><span>Hiring influence</span><Select value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>IIML relationship</span><Select value={selected.assessment.iimlRelationship} onValueChange={value => updateAssessment(selected.id, "iimlRelationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>Warm-introduction potential</span><Select value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
@@ -1406,7 +1427,7 @@ export default function Home() {
       </Dialog>
 
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
-        <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? "The record is now in Corporate Network. Provider actions remain optional." : "Enter what is known. Name plus an email, profile URL, or company and graduation year is required."}</DialogDescription></DialogHeader>
+        <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? `The record is now in ${appConfig.name}. Provider actions remain optional.` : "Enter what is known. Name plus an email, profile URL, or company and graduation year is required."}</DialogDescription></DialogHeader>
           {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via PDL</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></div></div> : <div className="manual-form">
             <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Input value={manualForm.programme} onChange={event => updateManualField("programme", event.target.value)} /></label><label><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
             <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
@@ -1428,7 +1449,7 @@ export default function Home() {
 
       <Dialog open={Boolean(comparisonResult)} onOpenChange={open => { if (!open) { setComparisonResult(null); setSelectedComparisonFields([]) } }}>
         <DialogContent className="comparison-dialog">
-          <DialogHeader><DialogTitle>Compare professional profile</DialogTitle><DialogDescription>Review Corporate Network and PDL values. Nothing is overwritten until you approve selected fields.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Compare professional profile</DialogTitle><DialogDescription>Review {appConfig.name} and PDL values. Nothing is overwritten until you approve selected fields.</DialogDescription></DialogHeader>
           {comparisonResult && <>
             <div className="comparison-person"><div className="avatar">{comparisonAlumnus?.initials ?? comparisonResult.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</div><div><strong>{comparisonResult.name}</strong><span><DiscoveryBadge status={comparisonResult.matchStatus} /> · {comparisonResult.matchConfidence}% match confidence</span></div></div>
             {comparisonAlumnus ? <div className="comparison-grid"><div className="comparison-head"><span>Field</span><strong>Internal database</strong><strong>PDL result</strong></div>{comparisonRows.map(row => {

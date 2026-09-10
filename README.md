@@ -2,6 +2,36 @@
 
 Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and an internal-search-to-PDL-to-Lusha discovery workflow.
 
+## Deployment configuration
+
+Product identity and deployment paths are centralized in `lib/app-config.ts`. The current deployment keeps its existing brand, public URL, and root path when no environment variables are set. `next.config.ts` applies the base path at build time, while browser API requests, icons, the web manifest, metadata, and visible product copy consume the resolved configuration.
+
+Supported public configuration keys:
+
+```text
+NEXT_PUBLIC_APP_NAME=Corporate Network
+NEXT_PUBLIC_APP_SHORT_NAME=CN
+NEXT_PUBLIC_APP_SUBTITLE=Placement Committee Workspace
+NEXT_PUBLIC_APP_TAGLINE=Connect alumni relationships to corporate opportunities.
+NEXT_PUBLIC_APP_PUBLIC_URL=https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site
+NEXT_PUBLIC_APP_BASE_PATH=/
+```
+
+The equivalent server-side aliases `APP_NAME`, `APP_SHORT_NAME`, `APP_SUBTITLE`, `APP_TAGLINE`, `APP_PUBLIC_URL`, and `APP_BASE_PATH` are also accepted by the build configuration. Do not place secrets in any `NEXT_PUBLIC_` variable.
+
+For a future deployment at `https://teamsynapse.app/corporate_network`, build with:
+
+```text
+APP_NAME=Corporate Network
+APP_SHORT_NAME=CN
+APP_PUBLIC_URL=https://teamsynapse.app/corporate_network
+APP_BASE_PATH=/corporate_network
+```
+
+Changing `APP_BASE_PATH` requires a new deployment build because route prefixes are compiled by Next/Vinext. It does not require application business-logic changes or a D1 schema migration. External PDL, Lusha, and professional-profile URLs remain absolute and are intentionally not prefixed.
+
+Institutional sender identity is separate from the product brand. `MAIL_SENDER_DISPLAY_NAME` defaults to `Placement Committee, IIM Lucknow`. `MAIL_OAUTH_CALLBACK_URL` is reserved for a future official-mailbox adapter and should contain the full callback URL registered with the mail provider. The existing `app/chatgpt-auth.ts` callback is dispatch-owned ChatGPT sign-in infrastructure, not the institutional mailbox callback.
+
 ## Shared engagement workspace
 
 Professional signals and birthdays now use one D1-backed engagement-event framework. Each event records its source, status, owner, views, planned or completed actions, responses, follow-ups, skipped/incorrect reasons, and audit history. Viewing an event does not imply that action was taken, and an atomic action key prevents duplicate sends across committee members.

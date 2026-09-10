@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { activityLog, alumni, alumniRelationships, engagementEvents } from "@/db/schema";
+import { appConfig } from "@/lib/app-config";
 
 function actorFrom(request: Request) {
   return request.headers.get("x-demo-user")
@@ -45,7 +46,7 @@ export async function POST(request: Request) {
     const actor = actorFrom(request);
     const targetId = Number(payload.targetAlumnusId);
     const [target] = await db.select().from(alumni).where(eq(alumni.id, targetId)).limit(1);
-    if (!target) return Response.json({ error: "The selected alumnus is not in Corporate Network." }, { status: 404 });
+    if (!target) return Response.json({ error: `The selected alumnus is not in ${appConfig.name}.` }, { status: 404 });
 
     const [relations, targetHistory] = await Promise.all([
       db.select().from(alumniRelationships).where(and(eq(alumniRelationships.targetAlumnusId, targetId), eq(alumniRelationships.confirmed, true))),

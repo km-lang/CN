@@ -18,6 +18,7 @@ import {
   type MatchStatus,
 } from "@/lib/alumni-search";
 import { discoveryMode, searchExternalAlumni } from "@/lib/pdl-discovery";
+import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status";
 
 const allowedLimits = new Set([25, 50, 100]);
 
@@ -204,7 +205,7 @@ export async function POST(request: Request) {
           updatedAt: now,
         }).returning();
         added.push({ resultId: result.id, alumnusId: created.id });
-        await db.update(externalDiscoveryResults).set({ reviewStatus: "Added to Corporate Network", linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id));
+        await db.update(externalDiscoveryResults).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.added, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id));
       }
       return Response.json({ addedCount: added.length, added }, { status: 201 });
     }
@@ -274,7 +275,7 @@ export async function POST(request: Request) {
         updatedBy: actor,
         updatedAt: now,
       }).returning();
-      await db.update(externalDiscoveryResults).set({ reviewStatus: "Added as separate record", linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id));
+      await db.update(externalDiscoveryResults).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id));
       return Response.json({ alumnusId: created.id }, { status: 201 });
     }
 
