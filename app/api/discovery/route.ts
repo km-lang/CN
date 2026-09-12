@@ -130,9 +130,26 @@ export async function POST(request: Request) {
       }
       const limit = Math.min(requestedLimit, remaining, discoveryMode() === "live" ? pdlLiveSearchMaximum() : requestedLimit);
       const people = await db.select().from(alumni).orderBy(alumni.name);
+      let canonicalSchoolId = pdlIimlSchoolId();
+      if (discoveryMode() === "live" && !canonicalSchoolId) {
+        try {
+          const school = await cleanIimLucknowSchool();
+          canonicalSchoolId = school.id;
+          await db.insert(providerResponseHistory).values({
+            provider: "pdl", alumnusName: "Provider connectivity", operation: "PDL Connection Check", mode: "live", status: "success",
+            creditsUsed: school.creditsUsed, resultCount: 1, requestSummary: `School Cleaner: ${FIXED_ALUMNI_SCHOOL}`,
+            responseSummary: `PDL authenticated and returned canonical school ${school.name} (${school.id}).`, requestedBy: actor,
+          });
+          await writeSecurityAudit(context, { action: "pdl_connectivity_validated", entityType: "provider", entityId: "pdl", metadata: { canonicalSchoolId: school.id, creditsUsed: school.creditsUsed, source: "pre_search" } });
+        } catch (error) {
+          const failure = safePdlError(error);
+          await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusName: "Provider connectivity", operation: "PDL Connection Check", mode: "live", status: "error", creditsUsed: 0, requestSummary: `School Cleaner: ${FIXED_ALUMNI_SCHOOL}`, responseSummary: failure.message, errorMessage: failure.message, requestedBy: actor });
+          return Response.json({ error: failure.message, failureType: failure.kind, blocked: true, reason: "connectivity_error", filters, effectiveLimit: limit }, { status: failure.status === 429 ? 429 : 502 });
+        }
+      }
       let response;
       try {
-        response = await searchExternalAlumni(filters, people, limit);
+        response = await searchExternalAlumni(filters, people, limit, canonicalSchoolId);
       } catch (error) {
         const failure = safePdlError(error);
         const responseSummary = error instanceof Error && /canonical IIM Lucknow/.test(error.message) ? error.message : failure.message;

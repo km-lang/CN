@@ -282,3 +282,13 @@ test("stage3 21: live Person Enrichment no-match changes nothing", async () => {
     globalThis.fetch = previousFetch;
   }
 });
+
+test("stage3 22: first live Search validates connectivity before Person Search without changing RBAC", () => {
+  const block = discoveryRoute.match(/let canonicalSchoolId = pdlIimlSchoolId\(\);[\s\S]*?let response;/)?.[0] ?? "";
+  assert.match(block, /cleanIimLucknowSchool\(\)/);
+  assert.match(block, /PDL Connection Check/);
+  assert.match(block, /reason: "connectivity_error"/);
+  assert.match(discoveryRoute, /searchExternalAlumni\(filters, people, limit, canonicalSchoolId\)/);
+  assert.match(discoveryRoute, /"OPERATE_PCOM"/);
+  assert.match(discoveryRoute, /"MANAGE_PROVIDER_SETTINGS"/);
+});

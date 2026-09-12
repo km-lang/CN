@@ -127,9 +127,10 @@ export async function searchExternalAlumni(
   filters: DirectoryFilters,
   internal: InternalPerson[],
   limit: number,
+  canonicalSchoolOverride = "",
 ): Promise<DiscoveryResponse> {
   if (providerMode("pdl") === "mock") return mockSearch(filters, internal, limit);
-  const canonicalSchoolId = pdlIimlSchoolId();
+  const canonicalSchoolId = canonicalSchoolOverride || pdlIimlSchoolId();
   if (!canonicalSchoolId) throw new Error("The canonical IIM Lucknow PDL school identifier has not been configured.");
   const effectiveLimit = Math.min(limit, pdlLiveSearchMaximum());
   const url = buildPdlSearchUrl(filters, effectiveLimit, canonicalSchoolId);
