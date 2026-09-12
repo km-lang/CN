@@ -9,7 +9,10 @@ process.env.AUTH_SESSION_SECRET = "stage-2-5-test-secret-with-at-least-thirty-tw
 process.env.GOOGLE_CLIENT_ID = "corporate-network-test.apps.googleusercontent.com";
 process.env.GOOGLE_CLIENT_SECRET = "test-only-client-secret";
 process.env.GOOGLE_ALLOWED_DOMAIN = "iiml.ac.in";
-process.env.GOOGLE_OAUTH_CALLBACK_URL = "https://example.test/auth/google/callback";
+process.env.APP_PUBLIC_URL = "https://network.teamsynapse.app";
+process.env.APP_BASE_PATH = "/";
+// Simulate a stale public value baked into an earlier build. Runtime APP_PUBLIC_URL must win.
+process.env.NEXT_PUBLIC_APP_PUBLIC_URL = "https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true, hmr: false } });
@@ -33,7 +36,15 @@ test("institutional auth 1: Google authorization uses OIDC, PKCE, state, nonce a
   assert.equal(url.searchParams.get("scope"), "openid email profile");
   assert.equal(url.searchParams.get("code_challenge_method"), "S256");
   assert.equal(url.searchParams.get("hd"), "iiml.ac.in");
+  assert.equal(url.searchParams.get("redirect_uri"), "https://network.teamsynapse.app/auth/google/callback");
   assert.ok(request.state.length > 20 && request.nonce.length > 20 && request.codeVerifier.length > 40);
+});
+
+test("institutional auth 1b: configured public URL never falls back to the retired Sites hostname", async () => {
+  const request = await google.createGoogleAuthorizationRequest("/");
+  const redirectUri = new URL(request.authorizationUrl).searchParams.get("redirect_uri");
+  assert.equal(redirectUri, "https://network.teamsynapse.app/auth/google/callback");
+  assert.notEqual(redirectUri, "https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site/auth/google/callback");
 });
 
 test("institutional auth 2: provider-neutral application sessions are signed and verifiable", async () => {
@@ -124,7 +135,7 @@ test("institutional auth 13: the identity migration is additive and Admin data l
   assert.match(migration, /CREATE TABLE `application_identities`/);
   assert.doesNotMatch(migration, /DROP TABLE|DELETE FROM|ALTER TABLE .* DROP/i);
   assert.match(admin, /identities: identities\.filter/);
-  for (const key of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CALLBACK_URL", "GOOGLE_ALLOWED_DOMAIN", "AUTH_SESSION_SECRET"]) assert.match(envExample, new RegExp(key));
+  for (const key of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "APP_PUBLIC_URL", "APP_BASE_PATH", "GOOGLE_ALLOWED_DOMAIN", "AUTH_SESSION_SECRET"]) assert.match(envExample, new RegExp(key));
 });
 
 test("institutional auth 14: wrong-audience Google tokens are rejected", async () => {

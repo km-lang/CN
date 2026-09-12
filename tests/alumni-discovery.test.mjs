@@ -142,7 +142,7 @@ test("16. application configuration preserves the current root-hosted defaults",
   assert.equal(current.shortName, "CN");
   assert.equal(current.subtitle, "Placement Committee Workspace");
   assert.equal(current.tagline, "Connect alumni relationships to corporate opportunities.");
-  assert.equal(current.publicUrl, "https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site");
+  assert.equal(current.publicUrl, "http://localhost:3000");
   assert.equal(current.basePath, "");
 });
 

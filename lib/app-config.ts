@@ -11,7 +11,7 @@ const defaults = {
   name: "Corporate Network",
   subtitle: "Placement Committee Workspace",
   tagline: "Connect alumni relationships to corporate opportunities.",
-  publicUrl: "https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site",
+  publicUrl: "http://localhost:3000",
 }
 
 function text(value: string | undefined, fallback: string) {
@@ -79,4 +79,3 @@ export function apiPath(path: string) {
 export function assetPath(path: string) {
   return withBasePath(path)
 }
-

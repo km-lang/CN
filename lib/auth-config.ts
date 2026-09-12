@@ -1,4 +1,4 @@
-import { appConfig, withBasePath } from "@/lib/app-config"
+import { appConfig, createAppConfig, withBasePath } from "@/lib/app-config"
 
 export const IDENTITY_PROVIDERS = ["google_workspace", "chatgpt"] as const
 export type IdentityProvider = typeof IDENTITY_PROVIDERS[number]
@@ -8,13 +8,15 @@ export function googleAllowedDomain() {
 }
 
 export function googleOAuthCallbackUrl() {
-  const configured = process.env.GOOGLE_OAUTH_CALLBACK_URL?.trim()
-  if (configured) return configured
   return absoluteAppUrl("/auth/google/callback")
 }
 
 export function absoluteAppUrl(path: string) {
-  return new URL(withBasePath(path), `${appConfig.publicUrl}/`).toString()
+  const runtimeConfig = createAppConfig({
+    NEXT_PUBLIC_APP_PUBLIC_URL: process.env.APP_PUBLIC_URL ?? process.env.NEXT_PUBLIC_APP_PUBLIC_URL ?? appConfig.publicUrl,
+    NEXT_PUBLIC_APP_BASE_PATH: process.env.APP_BASE_PATH ?? process.env.NEXT_PUBLIC_APP_BASE_PATH ?? appConfig.basePath,
+  })
+  return new URL(withBasePath(path, runtimeConfig.basePath), `${runtimeConfig.publicUrl}/`).toString()
 }
 
 export function googleOAuthConfiguration() {

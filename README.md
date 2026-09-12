@@ -4,7 +4,7 @@ Corporate Network is an alumni relationship and placement-intelligence MVP. It i
 
 ## Deployment configuration
 
-Product identity and deployment paths are centralized in `lib/app-config.ts`. The current deployment keeps its existing brand, public URL, and root path when no environment variables are set. `next.config.ts` applies the base path at build time, while browser API requests, icons, the web manifest, metadata, and visible product copy consume the resolved configuration.
+Product identity and deployment paths are centralized in `lib/app-config.ts`. `next.config.ts` applies the base path at build time, while browser API requests, icons, the web manifest, metadata, and visible product copy consume the resolved configuration. Server-side redirects resolve the production URL at request time, so Sites runtime configuration cannot be replaced by a stale build default.
 
 Supported public configuration keys:
 
@@ -13,11 +13,11 @@ NEXT_PUBLIC_APP_NAME=Corporate Network
 NEXT_PUBLIC_APP_SHORT_NAME=CN
 NEXT_PUBLIC_APP_SUBTITLE=Placement Committee Workspace
 NEXT_PUBLIC_APP_TAGLINE=Connect alumni relationships to corporate opportunities.
-NEXT_PUBLIC_APP_PUBLIC_URL=https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site
-NEXT_PUBLIC_APP_BASE_PATH=/
+APP_PUBLIC_URL=https://network.teamsynapse.app
+APP_BASE_PATH=/
 ```
 
-The equivalent server-side aliases `APP_NAME`, `APP_SHORT_NAME`, `APP_SUBTITLE`, `APP_TAGLINE`, `APP_PUBLIC_URL`, and `APP_BASE_PATH` are also accepted by the build configuration. Do not place secrets in any `NEXT_PUBLIC_` variable.
+`APP_PUBLIC_URL` and `APP_BASE_PATH` are the production source of truth. The equivalent `NEXT_PUBLIC_` values are emitted during the build for browser-visible configuration. Do not place secrets in any `NEXT_PUBLIC_` variable.
 
 For a future deployment at `https://teamsynapse.app/corporate_network`, build with:
 
@@ -54,7 +54,6 @@ Security-related server configuration:
 BOOTSTRAP_ADMIN_EMAILS=first.admin@example.edu
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
-GOOGLE_OAUTH_CALLBACK_URL=https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site/auth/google/callback
 GOOGLE_ALLOWED_DOMAIN=iiml.ac.in
 AUTH_SESSION_SECRET=
 ENRICHMENT_MODE=mock
@@ -74,18 +73,20 @@ Migration `drizzle/0005_security_access_controls.sql` adds `application_users`, 
 Create a Google Cloud OAuth 2.0 Web application owned by the institution, configure its consent screen for the IIM Lucknow Workspace organization, and register this exact current callback URI:
 
 ```text
-https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site/auth/google/callback
+https://network.teamsynapse.app/auth/google/callback
 ```
 
 Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and a randomly generated `AUTH_SESSION_SECRET` of at least 32 characters as server-only secrets. Keep `GOOGLE_ALLOWED_DOMAIN=iiml.ac.in`. Authorization Code flow uses PKCE, state, nonce, issuer/audience/signature/expiry checks, Google `email_verified`, and the Workspace `hd` claim. The OAuth callback never assigns a role; it only links to an existing approved user.
 
-For a future deployment at `https://teamsynapse.app/corporate_network`, register and set:
+The Google callback is derived at request time using safe URL joining:
 
 ```text
-GOOGLE_OAUTH_CALLBACK_URL=https://teamsynapse.app/corporate_network/auth/google/callback
+APP_PUBLIC_URL=https://network.teamsynapse.app
+APP_BASE_PATH=/
+Generated callback: https://network.teamsynapse.app/auth/google/callback
 ```
 
-Changing the callback/base-path configuration requires a new build and an added redirect URI in Google Cloud. Existing identity links and application users remain valid; no new database migration or re-authorization is required.
+Changing the public URL or base-path configuration changes the callback without a separate callback override. Existing identity links and application users remain valid; no database migration or re-authorization is required.
 
 ### Pre-migration D1 recovery point
 
