@@ -163,13 +163,16 @@ function phrase(field: string, value: string) {
   return { match_phrase: { [field]: normalized(value) } };
 }
 
-export function buildPdlQuery(filters: DirectoryFilters) {
-  const must: Record<string, unknown>[] = [phrase("education.school.name", FIXED_ALUMNI_SCHOOL)];
+export function buildPdlQuery(filters: DirectoryFilters, canonicalSchoolId = "") {
+  const must: Record<string, unknown>[] = [canonicalSchoolId
+    ? { term: { "education.school.id": canonicalSchoolId } }
+    : phrase("education.school.name", FIXED_ALUMNI_SCHOOL)];
   if (filters.name) must.push(phrase("full_name", filters.name));
   if (filters.company !== "All companies") must.push(phrase("job_company_name", filters.company));
   if (filters.role) must.push({ match: { job_title: normalized(filters.role) } });
   if (filters.location) must.push({ match: { location_name: normalized(filters.location) } });
   if (filters.batch) must.push({ match_phrase: { "education.end_date": String(filters.batch) } });
+  if (filters.previousCompany) must.push(phrase("experience.company.name", filters.previousCompany));
   if (filters.function !== "All functions") {
     const terms = functionTerms[filters.function] ?? [filters.function];
     must.push({ bool: { minimum_should_match: 1, should: terms.map(term => phrase("job_title", term)) } });
@@ -197,25 +200,34 @@ export function criteriaSummary(filters: DirectoryFilters) {
   return parts.join(" · ");
 }
 
-export function findEducationYear(education: unknown) {
-  if (!Array.isArray(education)) return 0;
-  const iiml = education.find(item => {
+function findIimlEducation(education: unknown, canonicalSchoolId = "") {
+  if (!Array.isArray(education)) return undefined;
+  return education.find(item => {
     if (!item || typeof item !== "object") return false;
     const school = (item as Record<string, unknown>).school as Record<string, unknown> | undefined;
-    return normalized(school?.name ?? school?.raw).includes("indian institute of management lucknow");
+    return (canonicalSchoolId && clean(school?.id) === canonicalSchoolId)
+      || normalized(school?.name ?? school?.raw).includes("indian institute of management lucknow");
   }) as Record<string, unknown> | undefined;
+}
+
+export function findEducationYear(education: unknown, canonicalSchoolId = "") {
+  const iiml = findIimlEducation(education, canonicalSchoolId);
+  if (!iiml || typeof iiml !== "object") return 0;
   const year = clean(iiml?.end_date).match(/\d{4}/)?.[0];
   return year ? Number(year) : 0;
 }
 
-export function toDiscoveryProfile(record: Record<string, unknown>, index: number): DiscoveryProfile {
+export function toDiscoveryProfile(record: Record<string, unknown>, index: number, canonicalSchoolId = ""): DiscoveryProfile {
   const rawTitle = clean(record.job_title ?? (record.job as Record<string, unknown> | undefined)?.title);
   const company = clean(record.job_company_name ?? (record.job as Record<string, unknown> | undefined)?.company_name);
-  const education = Array.isArray(record.education) && record.education.length
-    ? FIXED_ALUMNI_SCHOOL
-    : FIXED_ALUMNI_SCHOOL;
+  const iimlEducation = findIimlEducation(record.education, canonicalSchoolId);
+  const school = iimlEducation && typeof iimlEducation === "object"
+    ? iimlEducation.school as Record<string, unknown> | undefined
+    : undefined;
+  const education = clean(school?.name ?? school?.raw) || "Education not returned";
   const functionValue = normalizeFunction(clean(record.job_title_role ?? record.job_title_sub_role), rawTitle);
   const seniorityValue = normalizeSeniority(clean(record.job_title_levels), rawTitle);
+  const completeness = [record.id, record.full_name, education !== "Education not returned", company, rawTitle, record.linkedin_url].filter(Boolean).length;
   return {
     providerResultId: clean(record.id) || `pdl-${index + 1}`,
     providerPersonId: clean(record.id),
@@ -227,9 +239,9 @@ export function toDiscoveryProfile(record: Record<string, unknown>, index: numbe
     function: functionValue,
     seniority: seniorityValue,
     location: clean(record.location_name ?? record.location) || "Location unavailable",
-    graduationYear: findEducationYear(record.education),
+    graduationYear: findEducationYear(record.education, canonicalSchoolId),
     linkedinUrl: clean(record.linkedin_url),
-    matchConfidence: 82,
+    matchConfidence: Math.min(95, 65 + completeness * 5),
   };
 }
 

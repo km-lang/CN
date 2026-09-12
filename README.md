@@ -56,15 +56,18 @@ GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_ALLOWED_DOMAIN=iiml.ac.in
 AUTH_SESSION_SECRET=
-ENRICHMENT_MODE=mock
-PROVIDER_LIVE_ENABLED=false
+PDL_LIVE_ENABLED=false
+LUSHA_LIVE_ENABLED=false
+PDL_IIML_SCHOOL_ID=
+PDL_LIVE_SEARCH_MAX_RESULTS=5
+PDL_LIVE_REFRESH_MAX_PROFILES=1
 MAIL_MODE=mock
 MAIL_LIVE_ENABLED=false
 PDL_API_KEY=
 LUSHA_API_KEY=
 ```
 
-Live provider access requires both `ENRICHMENT_MODE=live` and `PROVIDER_LIVE_ENABLED=true` on the server. Live institutional mail similarly requires both `MAIL_MODE=live` and `MAIL_LIVE_ENABLED=true`. Browser controls cannot activate either mode.
+Live provider access uses independent server-side gates. `PDL_LIVE_ENABLED=true` activates only PDL, while Lusha remains mock unless `LUSHA_LIVE_ENABLED=true` is separately approved. Live institutional mail similarly requires both `MAIL_MODE=live` and `MAIL_LIVE_ENABLED=true`. Browser controls cannot activate any provider or mail mode.
 
 Migration `drizzle/0005_security_access_controls.sql` adds `application_users`, `security_audit_events`, `alumni_privacy_controls`, and `alumni_data_lifecycle` without altering or dropping the original 19 tables. Stage 2.5 migration `drizzle/0006_application_identities.sql` adds only `application_identities` and its indexes. Privacy preferences treat `Unknown` as unknown, not affirmative consent. A general `Do not contact` blocks birthday and professional sends in the server route. Data lifecycle changes are Admin-only; anonymization requires typing `ANONYMIZE <record-id>` and retains non-identifying audit history.
 
@@ -136,7 +139,7 @@ The Data Import tab separates bulk CSV import from single-record entry. Manual e
 
 ## Enrichment providers
 
-Phase 3 supports two operating modes:
+Each Phase 3 provider supports two independent operating modes:
 
 - `mock` is the safe default. It runs deterministic demonstration enrichments, consumes only application-level mock credits, and needs no vendor account.
 - `live` calls People Data Labs and Lusha from server routes. Provider keys never reach the browser.
@@ -144,13 +147,17 @@ Phase 3 supports two operating modes:
 Copy `.env.example` into your local environment configuration and set:
 
 ```text
-ENRICHMENT_MODE=mock
+PDL_LIVE_ENABLED=false
+LUSHA_LIVE_ENABLED=false
+PDL_IIML_SCHOOL_ID=
+PDL_LIVE_SEARCH_MAX_RESULTS=5
+PDL_LIVE_REFRESH_MAX_PROFILES=1
 MAIL_MODE=mock
 PDL_API_KEY=
 LUSHA_API_KEY=
 ```
 
-Change `ENRICHMENT_MODE` to `live` only after both vendor keys are configured and the separate server-only `PROVIDER_LIVE_ENABLED=true` safety gate is approved. The application also enforces adjustable monthly credit caps stored in D1. The default caps are 100 credits per provider per month.
+Set `PDL_LIVE_ENABLED=true` only after the PDL key and canonical IIM Lucknow School Cleaner ID are configured. This does not activate Lusha. Keep `LUSHA_LIVE_ENABLED=false` until Stage 4. Stage 3 additionally caps a live Person Search at five returned profiles and a live Person Enrichment action at one profile. The application enforces adjustable monthly credit caps stored in D1; the default caps are 100 credits per provider per month.
 
 The Enrichment tab provides:
 
@@ -161,7 +168,7 @@ The Enrichment tab provides:
 - monthly credit-limit controls and usage meters
 - sanitized provider-response history
 
-The live discovery adapter uses the PDL v5 Person Search API, while existing-profile refresh continues through the PDL enrichment workflow. The live Lusha adapter targets the v3 Search and Enrich endpoint. Provider errors are saved to response history without saving API secrets or raw provider payloads.
+The live discovery adapter uses the PDL v5 Person Search API with the canonical school ID in `education.school.id`, while existing-profile refresh uses the PDL v5 Person Enrichment endpoint and its persistent PDL person ID when available. The live Lusha adapter targets the v3 Search and Enrich endpoint but remains independently gated. Provider errors are normalized and saved to response history without saving API secrets or raw provider payloads.
 
 ## Local setup
 

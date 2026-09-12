@@ -107,7 +107,8 @@ type Alumni = {
 
 type LatestImport = { filename: string; rowCount: number; importedBy: string; createdAt: string }
 type Provider = "pdl" | "lusha"
-type ProviderUsage = Record<Provider, { used: number; limit: number; remaining: number; configured: boolean }>
+type ProviderMode = "mock" | "live"
+type ProviderUsage = Record<Provider, { used: number; limit: number; remaining: number; configured: boolean; mode?: ProviderMode }>
 type ProviderHistory = {
   id: number
   provider: Provider
@@ -411,7 +412,7 @@ export default function Home() {
   const [latestImport, setLatestImport] = useState<LatestImport | null>(null)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
-  const [enrichmentMode, setEnrichmentMode] = useState<"mock" | "live">("mock")
+  const [providerModes, setProviderModes] = useState<Record<Provider, ProviderMode>>({ pdl: "mock", lusha: "mock" })
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ pdl: { used: 0, limit: 100, remaining: 100, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
   const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
   const [creditDrafts, setCreditDrafts] = useState<Record<Provider, string>>({ pdl: "100", lusha: "100" })
@@ -420,11 +421,12 @@ export default function Home() {
   const [enrichmentMessage, setEnrichmentMessage] = useState("")
   const [discoveryResults, setDiscoveryResults] = useState<DiscoveryResult[]>([])
   const [discoveryCounts, setDiscoveryCounts] = useState<DiscoveryCounts>({ existing: 0, new: 0, possibleDuplicate: 0, needsReview: 0 })
-  const [discoveryLimit, setDiscoveryLimit] = useState("25")
+  const [discoveryLimit, setDiscoveryLimit] = useState("5")
   const [discovering, setDiscovering] = useState(false)
   const [discoveryMessage, setDiscoveryMessage] = useState("")
   const [discoveryState, setDiscoveryState] = useState<"idle" | "results" | "empty" | "blocked">("idle")
   const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DirectoryFilters | null>(null)
+  const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DirectoryFilters | null>(null)
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
@@ -501,9 +503,9 @@ export default function Home() {
   const loadEnrichment = useCallback(async () => {
     try {
       const response = await fetch(API_ROUTES.enrichment, { cache: "no-store" })
-      const data = await response.json() as { mode?: "mock" | "live"; usage?: ProviderUsage; history?: ProviderHistory[]; error?: string }
+      const data = await response.json() as { modes?: Record<Provider, ProviderMode>; usage?: ProviderUsage; history?: ProviderHistory[]; error?: string }
       if (!response.ok || !data.usage) throw new Error(data.error || "Unable to load provider activity.")
-      setEnrichmentMode(data.mode ?? "mock")
+      setProviderModes(data.modes ?? { pdl: data.usage.pdl.mode ?? "mock", lusha: data.usage.lusha.mode ?? "mock" })
       setProviderUsage(data.usage)
       setProviderHistory(data.history ?? [])
       setCreditDrafts({ pdl: String(data.usage.pdl.limit), lusha: String(data.usage.lusha.limit) })
@@ -565,10 +567,10 @@ export default function Home() {
   const birthdaysNextWeek = birthdayEvents.filter(event => event.eventDate >= today && event.eventDate <= nextWeek)
   const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
   const followUpsDue = engagements.filter(event => event.status === "Follow-up Due")
-  const pdlSelectionReady = selectedForEnrichment.length > 0 && providerUsage.pdl.remaining >= selectedForEnrichment.length && (enrichmentMode === "mock" || providerUsage.pdl.configured)
-  const lushaEmailReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length && (enrichmentMode === "mock" || providerUsage.lusha.configured)
-  const lushaPhoneReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 5 && (enrichmentMode === "mock" || providerUsage.lusha.configured)
-  const lushaBothReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 6 && (enrichmentMode === "mock" || providerUsage.lusha.configured)
+  const pdlSelectionReady = selectedForEnrichment.length > 0 && (providerModes.pdl === "mock" || selectedForEnrichment.length === 1) && providerUsage.pdl.remaining >= selectedForEnrichment.length && (providerModes.pdl === "mock" || providerUsage.pdl.configured)
+  const lushaEmailReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
+  const lushaPhoneReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 5 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
+  const lushaBothReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 6 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
   const birthdayReady = (event: EngagementEvent) => Boolean(event.alumnus?.email)
     && ["Confirmed internally", "Manually confirmed", "PDL sourced"].includes(event.birthday?.status ?? "")
     && !["Do not contact", "Do not send birthday wishes", "Professional engagement only"].includes(event.preference)
@@ -728,8 +730,25 @@ export default function Home() {
     }
   }
 
+  async function validatePdlConnection() {
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "validate_pdl" }) })
+      const data = await response.json() as { connected?: boolean; school?: { id: string; name: string; creditsUsed: number }; error?: string }
+      if (!response.ok || !data.connected || !data.school) throw new Error(data.error || "Unable to validate PDL connectivity.")
+      setEnrichmentMessage(`PDL authenticated successfully. Canonical school: ${data.school.name} (${data.school.id}). Cleaner credits reported: ${data.school.creditsUsed}.`)
+      await loadEnrichment()
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to validate PDL connectivity.")
+    }
+  }
+
   function toggleEnrichmentSelection(id: number) {
-    setSelectedForEnrichment(current => current.includes(id) ? current.filter(item => item !== id) : current.length < 25 ? [...current, id] : current)
+    setSelectedForEnrichment(current => {
+      if (current.includes(id)) return current.filter(item => item !== id)
+      if (providerModes.pdl === "live") return [id]
+      return current.length < 25 ? [...current, id] : current
+    })
   }
 
   async function postEngagement(action: string, eventId?: number, extra: Record<string, unknown> = {}) {
@@ -853,7 +872,15 @@ export default function Home() {
     setLastDiscoveryFilters(null)
   }
 
-  async function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
+  function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
+    if (providerModes.pdl === "live") {
+      setPendingDiscoveryFilters(searchFilters)
+      return
+    }
+    void runDiscovery(searchFilters)
+  }
+
+  async function runDiscovery(searchFilters: DirectoryFilters) {
     setDiscovering(true)
     setDiscoveryMessage("")
     setLastDiscoveryFilters(searchFilters)
@@ -863,13 +890,14 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
       })
-      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; error?: string; blocked?: boolean }
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; effectiveLimit?: number; error?: string; blocked?: boolean }
       if (data.blocked) {
         setDiscoveryState("blocked")
         setDiscoveryMessage(data.error || "External search could not be run because the PDL application limit has been reached.")
         return
       }
       if (!response.ok || !data.results || !data.counts) throw new Error(data.error || "Unable to search external professional data.")
+      if (data.effectiveLimit) setDiscoveryLimit(String(data.effectiveLimit))
       setDiscoveryResults(data.results)
       setDiscoveryCounts(data.counts)
       setSelectedDiscoveryIds([])
@@ -882,6 +910,7 @@ export default function Home() {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to search external professional data.")
     } finally {
       setDiscovering(false)
+      setPendingDiscoveryFilters(null)
     }
   }
 
@@ -889,7 +918,7 @@ export default function Home() {
     const next = { ...defaultDirectoryFilters(), company: companyName }
     setFilters(next)
     setActiveTab("directory")
-    void discoverMoreAlumni(next)
+    discoverMoreAlumni(next)
   }
 
   function compareRefreshWithPdl(person: Alumni) {
@@ -1167,7 +1196,7 @@ export default function Home() {
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button>}</div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <Button onClick={() => discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button>}</div>
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
                 <Input list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />
@@ -1193,7 +1222,7 @@ export default function Home() {
                 <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                 <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
               </Table>
-              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Search external professional data while keeping the IIM Lucknow education criterion fixed." : "No authorized records match the selected filters."}</p>{session.canOperate && <Button onClick={() => void discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button>}</div>}
+              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Search external professional data while keeping the IIM Lucknow education criterion fixed." : "No authorized records match the selected filters."}</p>{session.canOperate && <Button onClick={() => discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button>}</div>}
             </section>
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
@@ -1204,7 +1233,7 @@ export default function Home() {
               {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Company</span><strong>{lastDiscoveryFilters.company}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.batch || "Any year"}</strong></div><div><span>Results requested</span><strong>{discoveryLimit}</strong></div></div>}
               <div className="discovery-controls">
                 <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
-                <div className="result-limit"><span>Results to retrieve</span><Select value={discoveryLimit} onValueChange={setDiscoveryLimit}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["25", "50", "100"].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => void discoverMoreAlumni()} disabled={discovering}>Run again</Button></div>
+                <div className="result-limit"><span>Results to retrieve</span><Select value={discoveryLimit} onValueChange={setDiscoveryLimit}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(providerModes.pdl === "live" ? ["5"] : ["5", "25", "50", "100"]).map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => discoverMoreAlumni()} disabled={discovering}>Run again</Button></div>
               </div>
               <div className="credit-notice"><Activity /><span>External discovery may consume PDL credits based on the number of person records returned. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
@@ -1221,7 +1250,7 @@ export default function Home() {
                     <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
                     <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{discoveryReviewLabel(result.reviewStatus)}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small></TableCell>
                     <TableCell><span className={`score-pill ${scoreTone(result.matchConfidence)}`}>{result.matchConfidence}%</span></TableCell>
-                    <TableCell>{result.linkedinUrl ? <a className="professional-link" href={result.linkedinUrl} target="_blank" rel="noreferrer">View profile <ArrowUpRight /></a> : <span className="muted-cell">Not returned</span>}</TableCell>
+                    <TableCell>{result.linkedinUrl ? <span className="stacked-cell"><a className="professional-link" href={result.linkedinUrl} target="_blank" rel="noreferrer">View LinkedIn Profile <ArrowUpRight /></a><small>PDL sourced professional profile</small></span> : <span className="muted-cell">Not returned</span>}</TableCell>
                     <TableCell><div className="row-actions">
                       {canAdd && <Button size="sm" onClick={() => void approveDiscoveryResults([result.id])}><Plus /> Add</Button>}
                       {result.reviewStatus === "Pending review" && (result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate") && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><GitCompare /> Compare</Button>}
@@ -1233,7 +1262,7 @@ export default function Home() {
                 })}</TableBody>
               </Table></div>
               {discoveryState === "empty" && !discoveryResults.length && <div className="empty-state"><Search /><h3>No additional external alumni were found</h3><p>The PDL search ran successfully. Broaden optional filters such as location or seniority.</p></div>}
-              {discoveryState === "blocked" && !discoveryResults.length && <div className="empty-state blocked-search"><Ban /><h3>External search was not run</h3><p>The PDL application limit has been reached. No provider call was made and this is not a zero-result search.</p></div>}
+              {discoveryState === "blocked" && !discoveryResults.length && <div className="empty-state blocked-search"><Ban /><h3>External search was not run</h3><p>Review the explanation above. No result is being treated as a successful zero-result search.</p></div>}
             </section>}
           </TabsContent>
 
@@ -1340,7 +1369,7 @@ export default function Home() {
           <TabsContent value="enrichment" className="tab-panel">
             <section className="enrichment-header">
               <div><p className="eyebrow">PDL and Lusha</p><h2>Provider enrichment centre</h2><span>Refresh professional profiles, retrieve contact channels and control paid usage from one place.</span></div>
-              <span className={`provider-mode mode-${enrichmentMode}`}>{enrichmentMode === "mock" ? "Demonstration mode" : "Live provider mode"}</span>
+              <span className={`provider-mode mode-${providerModes.pdl}`}>PDL {providerModes.pdl.toUpperCase()} · Lusha {providerModes.lusha.toUpperCase()}</span>
             </section>
 
             <section className="provider-grid">
@@ -1349,10 +1378,11 @@ export default function Home() {
                 const percent = usage.limit ? Math.min(100, usage.used / usage.limit * 100) : 100
                 return <article className="panel provider-card" key={provider}>
                   <div className="provider-title"><span>{provider === "pdl" ? "PDL" : "LU"}</span><div><h3>{provider === "pdl" ? "People Data Labs" : "Lusha"}</h3><small>{provider === "pdl" ? "Profile discovery and employment refresh" : "Email and phone enrichment"}</small></div></div>
-                  <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{enrichmentMode === "mock" ? "Mock provider active" : usage.configured ? "API key configured" : "API key missing"}</span><strong>{usage.remaining} credits remaining</strong></div>
+                  <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{provider === "pdl" ? "People Data Labs" : "Lusha"} — {providerModes[provider].toUpperCase()}{providerModes[provider] === "live" ? usage.configured ? " · key configured" : " · key missing" : ""}</span><strong>{usage.remaining} credits remaining</strong></div>
                   <div className="credit-meter"><i style={{ width: `${percent}%` }} /></div>
                   <div className="credit-numbers"><span>{usage.used} used this month</span><span>{usage.limit} app limit</span></div>
                   <div className="credit-limit"><Input type="number" min="0" value={creditDrafts[provider]} disabled={!session.canAdminister} onChange={event => setCreditDrafts(current => ({ ...current, [provider]: event.target.value }))} aria-label={`${provider} monthly credit limit`} />{session.canAdminister && <Button variant="outline" onClick={() => void saveCreditLimit(provider)}>Save limit</Button>}</div>
+                  {provider === "pdl" && session.canAdminister && providerModes.pdl === "live" && <Button variant="outline" onClick={() => void validatePdlConnection()}>Validate PDL connection</Button>}
                   {!session.canAdminister && <small className="role-restriction">Only an Admin can change application credit limits.</small>}
                   <p>{provider === "pdl" ? "A successful match is counted as 1 PDL credit." : "Usage estimate: 1 credit per email and 5 per phone. Actual usage is recorded from each result."}</p>
                 </article>
@@ -1360,9 +1390,9 @@ export default function Home() {
             </section>
 
             <section className="panel batch-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. PDL refreshes profiles; Lusha retrieves contact details. No action runs without selection and confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button><Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaEmailReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve emails through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaPhoneReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve phones through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaBothReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve email and phone through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</div>
+              <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? providerModes.pdl === "live" ? "Select one approved alumnus for live PDL refresh" : "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. PDL refreshes profiles; Lusha retrieves contact details. No action runs without selection and confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button><Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaEmailReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve emails through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaPhoneReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve phones through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaBothReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve email and phone through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</div>
               {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
-              <Table><TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label="Select first 25 alumni" checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, 25).map(person => person.id) : [])} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} />}</TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label={providerModes.pdl === "live" ? "Select first alumnus" : "Select first 25 alumni"} checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(providerModes.pdl === "live" ? 1 : 25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, providerModes.pdl === "live" ? 1 : 25).map(person => person.id) : [])} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} />}</TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
             </section>
 
             <section className="panel history-panel">
@@ -1397,7 +1427,7 @@ export default function Home() {
               <div><span>Email · {selected.email || "Not enriched"}</span><strong className={verificationTone(selected.verification.email)}>{contactDataLabel(selected, "email").status} · {contactDataLabel(selected, "email").detail}</strong></div>
               <div><span>Phone · {selected.phone || "Not enriched"}</span><strong className={verificationTone(selected.verification.phone)}>{contactDataLabel(selected, "phone").status} · {contactDataLabel(selected, "phone").detail}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">{session.canViewContacts ? "“Lusha sourced” means the provider returned the contact. It does not mean independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful PDL return may consume a credit even when no information changes.</span></div>{session.canOperate && <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.pdl.remaining < 1 || (enrichmentMode === "live" && !providerUsage.pdl.configured)} onClick={() => compareRefreshWithPdl(selected)}>Refresh Profile via PDL</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 5 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button disabled={enriching || providerUsage.lusha.remaining < 6 || (enrichmentMode === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</section>
+            </div><p className="verified-copy">{session.canViewContacts ? "“Lusha sourced” means the provider returned the contact. It does not mean independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful PDL return may consume a credit even when no information changes.</span></div>{session.canOperate && <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.pdl.remaining < 1 || (providerModes.pdl === "live" && !providerUsage.pdl.configured)} onClick={() => compareRefreshWithPdl(selected)}>Refresh Profile via PDL</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1 || (providerModes.lusha === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 5 || (providerModes.lusha === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button disabled={enriching || providerUsage.lusha.remaining < 6 || (providerModes.lusha === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</section>
             {session.canOperate && <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>}
           </div></>}
         </SheetContent>
@@ -1476,8 +1506,12 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={Boolean(pendingDiscoveryFilters)} onOpenChange={open => { if (!open) setPendingDiscoveryFilters(null) }}>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live PDL Person Search?</DialogTitle><DialogDescription>Confirm this controlled, credit-consuming search before it reaches People Data Labs.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>People Data Labs — LIVE</strong></div><div><span>Maximum results</span><strong>5</strong></div><div><span>Application credits remaining</span><strong>{providerUsage.pdl.remaining}</strong></div><div><span>Company filter</span><strong>{pendingDiscoveryFilters?.company ?? "Not selected"}</strong></div></div><div className="credit-notice"><Activity /><span>Education is fixed to the canonical IIM Lucknow school identity. PDL Search can charge one credit for each result returned. Results are review-only and will not be added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || pendingDiscoveryFilters.company === "All companies" || providerUsage.pdl.remaining < 1} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
+      </Dialog>
+
       <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>
-        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Refresh professional profiles?</DialogTitle><DialogDescription>Review this provider action before it runs.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Selected alumni</span><strong>{selectedForEnrichment.length}</strong></div><div><span>Provider</span><strong>People Data Labs</strong></div><div><span>Action</span><strong>Professional Profile Refresh</strong></div></div><div className="credit-notice"><Activity /><span>A successful PDL profile return may consume one PDL credit even when no information has changed. Important field changes will wait for your approval.</span></div><DialogFooter><Button variant="outline" onClick={() => setRefreshConfirmOpen(false)}>Cancel</Button><Button disabled={!pdlSelectionReady || enriching} onClick={() => void runProfileRefresh()}>{enriching ? <LoaderCircle className="spin" /> : <Cloud />} Run Refresh</Button></DialogFooter></DialogContent>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Refresh professional profiles?</DialogTitle><DialogDescription>Review this provider action before it runs.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Selected alumni</span><strong>{selectedForEnrichment.length}</strong></div><div><span>Provider</span><strong>People Data Labs — {providerModes.pdl.toUpperCase()}</strong></div><div><span>Action</span><strong>Person Enrichment</strong></div></div><div className="credit-notice"><Activity /><span>A successful PDL profile return may consume one PDL credit even when no information has changed. Important field changes will wait for your approval.</span></div><DialogFooter><Button variant="outline" onClick={() => setRefreshConfirmOpen(false)}>Cancel</Button><Button disabled={!pdlSelectionReady || enriching} onClick={() => void runProfileRefresh()}>{enriching ? <LoaderCircle className="spin" /> : <Cloud />} Run Refresh</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={refreshResults.length > 0} onOpenChange={open => { if (!open) setRefreshResults([]) }}>

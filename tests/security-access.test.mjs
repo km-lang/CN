@@ -139,8 +139,9 @@ test("security 16: audit metadata masks contacts and redacts secrets", () => {
   assert.equal(sanitized.nested.accessToken, "[REDACTED]");
 });
 
-test("security 17: future live integrations require two server-side gates", () => {
-  assert.match(envExample, /PROVIDER_LIVE_ENABLED=false/);
+test("security 17: provider and mail live modes require independent server-side gates", () => {
+  assert.match(envExample, /PDL_LIVE_ENABLED=false/);
+  assert.match(envExample, /LUSHA_LIVE_ENABLED=false/);
   assert.match(envExample, /MAIL_LIVE_ENABLED=false/);
   assert.match(routes[1], /OPERATE_PCOM/);
 });

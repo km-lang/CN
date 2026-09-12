@@ -2,6 +2,7 @@ import { desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
+import { pdlLiveRefreshMaximum } from "@/lib/provider-runtime";
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const providers: ProviderName[] = ["pdl", "lusha"];
@@ -33,7 +34,7 @@ async function usageSnapshot() {
   return Object.fromEntries(providers.map(provider => {
     const limit = settings.find(row => row.provider === provider)?.monthlyCreditLimit ?? defaultLimits[provider];
     const used = usedByProvider[provider] ?? 0;
-    return [provider, { used, limit, remaining: Math.max(0, limit - used), configured: providerConfigured(provider) }];
+    return [provider, { used, limit, remaining: Math.max(0, limit - used), configured: providerConfigured(provider), mode: enrichmentMode(provider) }];
   }));
 }
 
@@ -45,7 +46,7 @@ export async function GET(request: Request) {
       usageSnapshot(),
       db.select().from(providerResponseHistory).orderBy(desc(providerResponseHistory.createdAt), desc(providerResponseHistory.id)).limit(100),
     ]);
-    return Response.json({ mode: enrichmentMode(), usage, history: context.role === "DEVELOPER" ? [] : history, historyRestricted: context.role === "DEVELOPER" });
+    return Response.json({ modes: { pdl: enrichmentMode("pdl"), lusha: enrichmentMode("lusha") }, usage, history: context.role === "DEVELOPER" ? [] : history, historyRestricted: context.role === "DEVELOPER" });
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
@@ -110,19 +111,22 @@ export async function POST(request: Request) {
     const requestedProviders = [...new Set(payload.providers?.filter(provider => providers.includes(provider)) ?? [])];
     if (payload.action === "refresh_profiles") {
       if (!alumniIds.length || alumniIds.length > 25) return Response.json({ error: "Select 1 to 25 approved alumni." }, { status: 400 });
+      if (enrichmentMode("pdl") === "live" && alumniIds.length > pdlLiveRefreshMaximum()) {
+        return Response.json({ error: "The controlled live PDL pilot permits exactly one profile refresh at a time." }, { status: 400 });
+      }
       const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
       const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
       const results = [];
       const labels: Record<string, string> = { company: "Current company", title: "Role", function: "Function", seniority: "Seniority", location: "Location", previous: "Employment history", linkedinUrl: "Professional profile", pdlPersonId: "PDL profile ID" };
       for (const person of people) {
         if (usage.pdl.remaining < 1) {
-          await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusId: person.id, alumnusName: person.name, operation: "Profile Refresh", mode: enrichmentMode(), status: "blocked", creditsUsed: 0, requestSummary: `${person.name} at ${person.company}`, responseSummary: "Monthly application credit limit reached.", requestedBy: actor });
+          await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusId: person.id, alumnusName: person.name, operation: "Person Enrichment", mode: enrichmentMode("pdl"), status: "blocked", creditsUsed: 0, requestSummary: `${person.name} at ${person.company}`, responseSummary: "Monthly application credit limit reached.", requestedBy: actor });
           results.push({ alumnusId: person.id, alumnusName: person.name, status: "blocked", creditsUsed: 0, responseSummary: "PDL application limit reached.", fields: [] });
           continue;
         }
-        const result = await enrich("pdl", { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl });
+        const result = await enrich("pdl", { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl, pdlPersonId: person.pdlPersonId });
         const [history] = await db.insert(providerResponseHistory).values({
-          provider: "pdl", alumnusId: person.id, alumnusName: person.name, operation: "Profile Refresh", mode: enrichmentMode(), status: result.status,
+          provider: "pdl", alumnusId: person.id, alumnusName: person.name, operation: "Person Enrichment", mode: enrichmentMode("pdl"), status: result.status,
           creditsUsed: result.creditsUsed, resultCount: result.status === "success" ? 1 : 0, requestSummary: `${person.name} at ${person.company}`,
           responseSummary: result.responseSummary, errorMessage: result.errorMessage ?? "", requestedBy: actor,
         }).returning();
@@ -149,7 +153,7 @@ export async function POST(request: Request) {
         }
         results.push({ alumnusId: person.id, alumnusName: person.name, status: result.status, reviewStatus, reviewId: review.id, creditsUsed: result.creditsUsed, responseSummary: result.responseSummary, fields });
       }
-      await writeSecurityAudit(context, { action: "pdl_profile_refresh", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, mode: enrichmentMode() } });
+      await writeSecurityAudit(context, { action: "pdl_profile_refresh", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, mode: enrichmentMode("pdl") } });
       return Response.json({ processed: people.length, results, usage: await usageSnapshot() });
     }
 
@@ -168,7 +172,7 @@ export async function POST(request: Request) {
           const blocked = { provider, status: "blocked", creditsUsed: 0, alumnusId: person.id, alumnusName: person.name, responseSummary: "Monthly application credit limit reached." };
           results.push(blocked);
           const blockedOperation = channels.length === 2 ? "Email + Phone Enrichment" : channels[0] === "email" ? "Email Enrichment" : "Phone Enrichment";
-          await db.insert(providerResponseHistory).values({ provider, alumnusId: person.id, alumnusName: person.name, operation: blockedOperation, mode: enrichmentMode(), status: "blocked", creditsUsed: 0, requestSummary: `${person.name} at ${person.company}`, responseSummary: blocked.responseSummary, requestedBy: actor });
+          await db.insert(providerResponseHistory).values({ provider, alumnusId: person.id, alumnusName: person.name, operation: blockedOperation, mode: enrichmentMode(provider), status: "blocked", creditsUsed: 0, requestSummary: `${person.name} at ${person.company}`, responseSummary: blocked.responseSummary, requestedBy: actor });
           continue;
         }
         const result = await enrich(provider, { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl, contactChannels: channels });
@@ -187,7 +191,7 @@ export async function POST(request: Request) {
           alumnusId: person.id,
           alumnusName: person.name,
           operation: channels.length === 2 ? "Email + Phone Enrichment" : channels[0] === "email" ? "Email Enrichment" : "Phone Enrichment",
-          mode: enrichmentMode(),
+          mode: enrichmentMode(provider),
           status: result.status,
           creditsUsed: result.creditsUsed,
           resultCount: result.status === "success" ? 1 : 0,
@@ -199,7 +203,7 @@ export async function POST(request: Request) {
         results.push({ ...result, alumnusId: person.id, alumnusName: person.name });
       }
     }
-    await writeSecurityAudit(context, { action: "lusha_contact_enrichment", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, channels: payload.contactChannels ?? ["email", "phone"], mode: enrichmentMode() } });
+    await writeSecurityAudit(context, { action: "lusha_contact_enrichment", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, channels: payload.contactChannels ?? ["email", "phone"], mode: enrichmentMode("lusha") } });
     return Response.json({ processed: people.length, results, usage: await usageSnapshot() });
   } catch (error) {
     const denied = accessErrorResponse(error);

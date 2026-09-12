@@ -19,9 +19,11 @@ import {
 } from "@/lib/alumni-search";
 import { discoveryMode, searchExternalAlumni } from "@/lib/pdl-discovery";
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status";
+import { cleanIimLucknowSchool, safePdlError } from "@/lib/pdl-client";
+import { pdlIimlSchoolId, pdlLiveSearchMaximum, providerConfigured } from "@/lib/provider-runtime";
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
-const allowedLimits = new Set([25, 50, 100]);
+const allowedLimits = new Set([5, 25, 50, 100]);
 
 function monthStart() {
   const date = new Date();
@@ -73,7 +75,7 @@ export async function GET(request: Request) {
     await authorizeRequest(request, "OPERATE_PCOM");
     const db = getDb();
     const searches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10);
-    return Response.json({ mode: discoveryMode(), searches });
+    return Response.json({ mode: discoveryMode(), searches, configured: providerConfigured("pdl"), canonicalSchoolConfigured: Boolean(pdlIimlSchoolId()), liveMaximum: pdlLiveSearchMaximum() });
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
@@ -83,7 +85,6 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as {
       action?: string;
       filters?: Partial<DirectoryFilters>;
@@ -93,21 +94,51 @@ export async function POST(request: Request) {
       fields?: string[];
       reason?: string;
     };
+    const context = await authorizeRequest(request, payload.action === "validate_pdl" ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM");
     const db = getDb();
     const actor = context.displayName;
     const now = new Date().toISOString();
 
+    if (payload.action === "validate_pdl") {
+      if (discoveryMode() !== "live") return Response.json({ error: "PDL live mode is not enabled." }, { status: 409 });
+      try {
+        const school = await cleanIimLucknowSchool();
+        await db.insert(providerResponseHistory).values({
+          provider: "pdl", alumnusName: "Provider connectivity", operation: "PDL Connection Check", mode: "live", status: "success",
+          creditsUsed: school.creditsUsed, resultCount: 1, requestSummary: `School Cleaner: ${FIXED_ALUMNI_SCHOOL}`,
+          responseSummary: `PDL authenticated and returned canonical school ${school.name} (${school.id}).`, requestedBy: actor,
+        });
+        await writeSecurityAudit(context, { action: "pdl_connectivity_validated", entityType: "provider", entityId: "pdl", metadata: { canonicalSchoolId: school.id, creditsUsed: school.creditsUsed } });
+        return Response.json({ connected: true, school });
+      } catch (error) {
+        const failure = safePdlError(error);
+        await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusName: "Provider connectivity", operation: "PDL Connection Check", mode: "live", status: "error", creditsUsed: 0, requestSummary: `School Cleaner: ${FIXED_ALUMNI_SCHOOL}`, responseSummary: failure.message, errorMessage: failure.message, requestedBy: actor });
+        return Response.json({ error: failure.message, failureType: failure.kind }, { status: failure.status === 429 ? 429 : 502 });
+      }
+    }
+
     if (payload.action === "search") {
       const filters = { ...defaultDirectoryFilters(), ...payload.filters } as DirectoryFilters;
       const requestedLimit = allowedLimits.has(Number(payload.limit)) ? Number(payload.limit) : 25;
+      if (discoveryMode() === "live" && filters.company === "All companies") {
+        return Response.json({ error: "Choose one company before running the controlled live PDL search.", blocked: true, reason: "company_required", filters, effectiveLimit: 0 }, { status: 400 });
+      }
       const remaining = await pdlRemainingCredits();
       if (remaining < 1) {
         await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusName: "External alumni discovery", operation: "Alumni Discovery", mode: discoveryMode(), status: "blocked", creditsUsed: 0, requestSummary: criteriaSummary(filters), responseSummary: "External search not run — PDL application limit reached.", requestedBy: actor });
         return Response.json({ error: "External search could not be run because the PDL application limit has been reached.", blocked: true, reason: "credit_limit", filters, effectiveLimit: 0 }, { status: 429 });
       }
-      const limit = Math.min(requestedLimit, remaining);
+      const limit = Math.min(requestedLimit, remaining, discoveryMode() === "live" ? pdlLiveSearchMaximum() : requestedLimit);
       const people = await db.select().from(alumni).orderBy(alumni.name);
-      const response = await searchExternalAlumni(filters, people, limit);
+      let response;
+      try {
+        response = await searchExternalAlumni(filters, people, limit);
+      } catch (error) {
+        const failure = safePdlError(error);
+        const responseSummary = error instanceof Error && /canonical IIM Lucknow/.test(error.message) ? error.message : failure.message;
+        await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusName: "External alumni discovery", operation: "Person Search", mode: discoveryMode(), status: "error", creditsUsed: 0, requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${limit}`, responseSummary, errorMessage: responseSummary, requestedBy: actor });
+        return Response.json({ error: responseSummary, failureType: failure.kind, blocked: true, reason: "provider_error", filters, effectiveLimit: limit }, { status: failure.status === 429 ? 429 : 502 });
+      }
       const [search] = await db.insert(externalDiscoverySearches).values({
         filtersJson: JSON.stringify(filters),
         criteriaSummary: criteriaSummary(filters),
@@ -152,18 +183,18 @@ export async function POST(request: Request) {
         provider: "pdl",
         alumnusName: "External alumni discovery",
         searchId: search.id,
-        operation: "alumni discovery",
+        operation: "Person Search",
         mode: discoveryMode(),
         status: "success",
         creditsUsed: response.creditsUsed,
         resultCount: response.profiles.length,
-        requestSummary: criteriaSummary(filters),
-        responseSummary: response.responseSummary,
+        requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${limit}`,
+        responseSummary: `${response.responseSummary}${response.creditType ? ` PDL reported ${response.creditsUsed} ${response.creditType} credit${response.creditsUsed === 1 ? "" : "s"}.` : ""}`,
         requestedBy: actor,
       });
       const storedResults = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id);
       await writeSecurityAudit(context, { action: "pdl_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.profiles.length, creditsUsed: response.creditsUsed, mode: discoveryMode() } });
-      return Response.json({ searchId: search.id, results: storedResults, counts, creditsUsed: response.creditsUsed, totalAvailable: response.totalAvailable, effectiveLimit: limit, filters });
+      return Response.json({ searchId: search.id, results: storedResults, counts, creditsUsed: response.creditsUsed, totalAvailable: response.totalAvailable, effectiveLimit: limit, filters, providerCreditsRemaining: response.providerCreditsRemaining, canonicalSchoolId: response.canonicalSchoolId });
     }
 
     if (payload.action === "approve") {

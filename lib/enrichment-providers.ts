@@ -1,4 +1,8 @@
-export type ProviderName = "pdl" | "lusha";
+import { clean, normalizeFunction, normalizeSeniority } from "@/lib/alumni-search";
+import { pdlGet } from "@/lib/pdl-client";
+import { providerConfigured, providerMode, providerSecret, type ProviderName } from "@/lib/provider-runtime";
+
+export type { ProviderName } from "@/lib/provider-runtime";
 
 export type EnrichmentInput = {
   id: number;
@@ -9,6 +13,7 @@ export type EnrichmentInput = {
   email: string;
   phone: string;
   linkedinUrl: string;
+  pdlPersonId?: string;
   contactChannels?: ("email" | "phone")[];
 };
 
@@ -21,26 +26,11 @@ export type EnrichmentResult = {
   errorMessage?: string;
 };
 
-type RuntimeEnv = {
-  PDL_API_KEY?: string;
-  LUSHA_API_KEY?: string;
-  ENRICHMENT_MODE?: string;
-  PROVIDER_LIVE_ENABLED?: string;
-};
-
-function runtimeEnv() {
-  return process.env as RuntimeEnv;
+export function enrichmentMode(provider: ProviderName = "pdl"): "mock" | "live" {
+  return providerMode(provider);
 }
 
-export function enrichmentMode(): "mock" | "live" {
-  const configured = runtimeEnv().ENRICHMENT_MODE?.toLowerCase();
-  return configured === "live" && runtimeEnv().PROVIDER_LIVE_ENABLED?.toLowerCase() === "true" ? "live" : "mock";
-}
-
-export function providerConfigured(provider: ProviderName) {
-  const values = runtimeEnv();
-  return provider === "pdl" ? Boolean(values.PDL_API_KEY) : Boolean(values.LUSHA_API_KEY);
-}
+export { providerConfigured };
 
 function mockPdl(input: EnrichmentInput): EnrichmentResult {
   if (input.id % 5 === 0) {
@@ -115,17 +105,15 @@ function firstString(value: unknown): string {
 }
 
 async function livePdl(input: EnrichmentInput): Promise<EnrichmentResult> {
-  const key = runtimeEnv().PDL_API_KEY;
-  if (!key) throw new Error("PDL_API_KEY is not configured.");
-  const query = new URLSearchParams({ name: input.name, company: input.company, min_likelihood: "6" });
-  if (input.linkedinUrl) query.set("profile", input.linkedinUrl);
-  const response = await fetch(`https://api.peopledatalabs.com/v5/person/enrich?${query}`, {
-    headers: { "X-Api-Key": key, accept: "application/json" },
-  });
-  const body = await response.json() as Record<string, unknown>;
-  const creditsUsed = Number(response.headers.get("x-call-credits-spent") ?? (response.ok ? 1 : 0));
-  if (response.status === 404) return { provider: "pdl", status: "no_match", creditsUsed, changes: {}, responseSummary: "No sufficiently likely profile match." };
-  if (!response.ok) throw new Error(stringValue((body.error as Record<string, unknown> | undefined)?.message) || `PDL returned HTTP ${response.status}.`);
+  const query = new URLSearchParams({ min_likelihood: "6", include_if_matched: "true" });
+  if (input.pdlPersonId) query.set("pdl_id", input.pdlPersonId);
+  else if (input.linkedinUrl) query.set("profile", input.linkedinUrl);
+  else { query.set("name", input.name); query.set("company", input.company); }
+  query.set("data_include", ["id", "full_name", "education", "experience", "job_company_name", "job_title", "job_title_role", "job_title_sub_role", "job_title_levels", "location_name", "linkedin_url"].join(","));
+  const response = await pdlGet(new URL(`https://api.peopledatalabs.com/v5/person/enrich?${query}`));
+  const body = response.body;
+  const creditsUsed = response.creditsUsed || (response.status === 200 ? 1 : 0);
+  if (response.status === 404) return { provider: "pdl", status: "no_match", creditsUsed, changes: {}, responseSummary: "No matching external professional profile found." };
   const data = (body.data ?? body) as Record<string, unknown>;
   const job = (data.job ?? {}) as Record<string, unknown>;
   const changes: Record<string, string | number> = {
@@ -137,21 +125,29 @@ async function livePdl(input: EnrichmentInput): Promise<EnrichmentResult> {
     verified: "just now",
     source: "People Data Labs",
   };
-  const company = stringValue(job.company_name ?? job.company);
-  const title = stringValue(job.title);
+  const company = stringValue(data.job_company_name ?? job.company_name ?? job.company);
+  const title = stringValue(data.job_title ?? job.title);
   const location = stringValue(data.location_name ?? data.location);
   const linkedinUrl = stringValue(data.linkedin_url);
   const pdlPersonId = stringValue(data.id ?? body.id);
+  const functionValue = normalizeFunction(stringValue(data.job_title_role ?? data.job_title_sub_role), title);
+  const seniorityValue = normalizeSeniority(Array.isArray(data.job_title_levels) ? data.job_title_levels.join(" ") : stringValue(data.job_title_levels), title);
+  const priorCompanies = Array.isArray(data.experience)
+    ? [...new Set(data.experience.map(item => item && typeof item === "object" ? clean((item as Record<string, unknown>).company_name ?? ((item as Record<string, unknown>).company as Record<string, unknown> | undefined)?.name) : "").filter(value => value && value.toLowerCase() !== company.toLowerCase()))].slice(0, 8).join(", ")
+    : "";
   if (company) changes.company = company;
   if (title) changes.title = title;
+  if (functionValue) changes.function = functionValue;
+  if (seniorityValue) changes.seniority = seniorityValue;
   if (location) changes.location = location;
+  if (priorCompanies) changes.previous = priorCompanies;
   if (linkedinUrl) changes.linkedinUrl = linkedinUrl;
   if (pdlPersonId) changes.pdlPersonId = pdlPersonId;
-  return { provider: "pdl", status: "success", creditsUsed, changes, responseSummary: `Profile matched with likelihood ${String(body.likelihood ?? "available")}; employment fields refreshed.` };
+  return { provider: "pdl", status: "success", creditsUsed, changes, responseSummary: `PDL profile returned with likelihood ${String(body.likelihood ?? "available")}. ${creditsUsed} provider credit${creditsUsed === 1 ? "" : "s"} reported.` };
 }
 
 async function liveLusha(input: EnrichmentInput): Promise<EnrichmentResult> {
-  const key = runtimeEnv().LUSHA_API_KEY;
+  const key = providerSecret("lusha");
   if (!key) throw new Error("LUSHA_API_KEY is not configured.");
   const [firstName, ...surname] = input.name.split(/\s+/);
   const channels = input.contactChannels?.length ? input.contactChannels : ["email", "phone"];
@@ -186,7 +182,7 @@ async function liveLusha(input: EnrichmentInput): Promise<EnrichmentResult> {
 }
 
 export async function enrich(provider: ProviderName, input: EnrichmentInput) {
-  if (enrichmentMode() === "mock") return provider === "pdl" ? mockPdl(input) : mockLusha(input);
+  if (enrichmentMode(provider) === "mock") return provider === "pdl" ? mockPdl(input) : mockLusha(input);
   try {
     return await (provider === "pdl" ? livePdl(input) : liveLusha(input));
   } catch (error) {

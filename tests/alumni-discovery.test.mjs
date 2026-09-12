@@ -57,9 +57,10 @@ test("2. combined function and Director+ filters narrow results with AND", () =>
 
 test("3. external discovery carries filters and fixes IIM Lucknow education", () => {
   const filters = { ...helper.defaultDirectoryFilters(), company: "Microsoft", function: "HR", seniority: "Director+", location: "India" };
-  const query = JSON.stringify(helper.buildPdlQuery(filters));
-  assert.match(query, /education\.school\.name/);
-  assert.match(query, /indian institute of management lucknow/);
+  const query = JSON.stringify(helper.buildPdlQuery(filters, "school-iim-lucknow"));
+  assert.match(query, /education\.school\.id/);
+  assert.match(query, /school-iim-lucknow/);
+  assert.doesNotMatch(query, /education\.school\.name/);
   assert.match(query, /microsoft/);
   assert.match(query, /human resources/);
   assert.match(query, /director/);
@@ -91,7 +92,8 @@ test("7. mapped alumni support comparison before refresh", () => {
 });
 
 test("8. discovery results expose a professional-profile reference", () => {
-  assert.match(pageSource, /View profile/);
+  assert.match(pageSource, /View LinkedIn Profile/);
+  assert.match(pageSource, /PDL sourced professional profile/);
   assert.match(pageSource, /target="_blank"/);
 });
 
@@ -132,7 +134,8 @@ test("14. filtering the internal dataset has no provider call", () => {
 });
 
 test("15. external usage is attached to explicit buttons", () => {
-  assert.match(pageSource, /onClick=\{\(\) => void discoverMoreAlumni\(\)\}/);
+  assert.match(pageSource, /onClick=\{\(\) => discoverMoreAlumni\(\)\}/);
+  assert.match(pageSource, /Confirm Live Search/);
   assert.equal(pageSource.includes('runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual"'), true);
 });
 

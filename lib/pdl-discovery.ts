@@ -1,7 +1,6 @@
 import {
   FIXED_ALUMNI_SCHOOL,
   buildPdlQuery,
-  clean,
   normalizeFunction,
   normalizeSeniority,
   normalized,
@@ -9,6 +8,8 @@ import {
   type DirectoryFilters,
   type DiscoveryProfile,
 } from "@/lib/alumni-search";
+import { pdlGet } from "@/lib/pdl-client";
+import { pdlIimlSchoolId, pdlLiveSearchMaximum, providerMode } from "@/lib/provider-runtime";
 
 type InternalPerson = {
   id: number;
@@ -26,14 +27,10 @@ export type DiscoveryResponse = {
   creditsUsed: number;
   totalAvailable: number;
   responseSummary: string;
+  creditType?: string;
+  providerCreditsRemaining?: number | null;
+  canonicalSchoolId?: string;
 };
-
-type RuntimeEnv = { PDL_API_KEY?: string; ENRICHMENT_MODE?: string; PROVIDER_LIVE_ENABLED?: string };
-
-function mode() {
-  const values = process.env as RuntimeEnv;
-  return values.ENRICHMENT_MODE?.toLowerCase() === "live" && values.PROVIDER_LIVE_ENABLED?.toLowerCase() === "true" ? "live" : "mock";
-}
 
 function titleFor(filters: DirectoryFilters, index: number) {
   if (filters.role) return filters.role;
@@ -131,34 +128,43 @@ export async function searchExternalAlumni(
   internal: InternalPerson[],
   limit: number,
 ): Promise<DiscoveryResponse> {
-  if (mode() === "mock") return mockSearch(filters, internal, limit);
-  const key = (process.env as RuntimeEnv).PDL_API_KEY;
-  if (!key) throw new Error("PDL is not configured for live discovery.");
+  if (providerMode("pdl") === "mock") return mockSearch(filters, internal, limit);
+  const canonicalSchoolId = pdlIimlSchoolId();
+  if (!canonicalSchoolId) throw new Error("The canonical IIM Lucknow PDL school identifier has not been configured.");
+  const effectiveLimit = Math.min(limit, pdlLiveSearchMaximum());
+  const url = buildPdlSearchUrl(filters, effectiveLimit, canonicalSchoolId);
+  const response = await pdlGet(url);
+  if (response.status === 404) return {
+    profiles: [], creditsUsed: response.creditsUsed, totalAvailable: 0,
+    responseSummary: "No additional external alumni were found.", creditType: response.creditType,
+    providerCreditsRemaining: response.totalCreditsRemaining, canonicalSchoolId,
+  };
+  const body = response.body;
+  const data = Array.isArray(body.data) ? body.data as Record<string, unknown>[] : [];
+  const creditsUsed = response.creditsUsed || data.length;
+  return {
+    profiles: data.map((record, index) => toDiscoveryProfile(record, index, canonicalSchoolId)),
+    creditsUsed,
+    totalAvailable: Number(body.total ?? data.length),
+    responseSummary: data.length ? `${data.length} PDL profiles returned for review.` : "No additional external alumni were found.",
+    creditType: response.creditType || "search",
+    providerCreditsRemaining: response.totalCreditsRemaining,
+    canonicalSchoolId,
+  };
+}
+
+export function buildPdlSearchUrl(filters: DirectoryFilters, limit: number, canonicalSchoolId: string) {
   const url = new URL("https://api.peopledatalabs.com/v5/person/search");
-  url.searchParams.set("query", JSON.stringify(buildPdlQuery(filters).query));
+  url.searchParams.set("query", JSON.stringify(buildPdlQuery(filters, canonicalSchoolId).query));
   url.searchParams.set("size", String(limit));
   url.searchParams.set("titlecase", "true");
   url.searchParams.set("data_include", [
     "id", "full_name", "education", "job_company_name", "job_title", "job_title_role",
-    "job_title_sub_role", "job_title_levels", "location_name", "linkedin_url",
+    "job_title_sub_role", "job_title_levels", "location_name", "linkedin_url", "experience",
   ].join(","));
-  const response = await fetch(url.toString(), { headers: { "X-Api-Key": key, accept: "application/json" } });
-  const body = await response.json() as Record<string, unknown>;
-  if (response.status === 404) return { profiles: [], creditsUsed: 0, totalAvailable: 0, responseSummary: "No additional external alumni were found." };
-  if (!response.ok) {
-    const providerMessage = clean((body.error as Record<string, unknown> | undefined)?.message ?? body.message);
-    throw new Error(providerMessage || "PDL discovery is temporarily unavailable.");
-  }
-  const data = Array.isArray(body.data) ? body.data as Record<string, unknown>[] : [];
-  const creditsUsed = Number(response.headers.get("x-call-credits-spent") ?? data.length);
-  return {
-    profiles: data.map(toDiscoveryProfile),
-    creditsUsed,
-    totalAvailable: Number(body.total ?? data.length),
-    responseSummary: `${data.length} PDL profiles returned for review.`,
-  };
+  return url;
 }
 
 export function discoveryMode() {
-  return mode();
+  return providerMode("pdl");
 }
