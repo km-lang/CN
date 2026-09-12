@@ -118,9 +118,10 @@ test("security 13: privacy, lifecycle, users and central audit use additive tabl
 });
 
 test("security 14: anonymization is protected and audited instead of hard deletion", () => {
-  assert.match(admin, /ANONYMIZE \$\{payload\.alumnusId\}/);
-  assert.match(admin, /alumnus_anonymized/);
-  assert.doesNotMatch(admin, /delete\(alumni\)/);
+  const anonymizeBlock = admin.match(/if \(payload\.action === "anonymize_alumnus"[\s\S]*?return Response\.json\(\{ anonymized: true/)?.[0] ?? "";
+  assert.match(anonymizeBlock, /ANONYMIZE \$\{payload\.alumnusId\}/);
+  assert.match(anonymizeBlock, /alumnus_anonymized/);
+  assert.doesNotMatch(anonymizeBlock, /delete\(alumni\)/);
 });
 
 test("security 15: sensitive state changes write central audit events", () => {

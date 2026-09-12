@@ -234,27 +234,6 @@ const responsivenessOptions = [
   ["Contacted once, no response", 35], ["Never contacted / no history", 50],
 ] as const
 
-const companyPrioritySeed: Record<string, string> = {
-  Microsoft: "Tier 1 Strategic Target", Amazon: "High Priority", "Tata Consumer": "Target Recruiter",
-  ITC: "Target Recruiter", Google: "Tier 1 Strategic Target", Deloitte: "High Priority",
-  Flipkart: "High Priority", "HDFC Bank": "Target Recruiter",
-}
-
-const alumniSeed: Alumni[] = [
-  { id: 1, name: "Aditi Srivastava", initials: "AS", batch: 2012, programme: "PGP", company: "Microsoft", title: "Director, People & Culture", function: "HR", seniority: "Director", location: "Gurugram", previous: "Deloitte, GE", experience: 14, confidence: 94, email: "aditi.s@example.com", phone: "+91 98••• 4102", verified: "12 days ago", status: "Meeting set", note: "Supported summer placements in 2024. Best route to India TA leadership.", assessment: { hiringInfluence: "Direct hiring decision-maker", iimlRelationship: "Very strong", warmIntroPotential: "Confirmed direct connection to decision-maker" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Verified", phone: "Unverified", location: "Verified" } },
-  { id: 2, name: "Rohan Mehta", initials: "RM", batch: 2015, programme: "PGP", company: "Amazon", title: "Senior Manager, Talent Acquisition", function: "HR", seniority: "Senior Manager", location: "Bengaluru", previous: "Flipkart, EY", experience: 11, confidence: 91, email: "rohan.m@example.com", phone: "+91 99••• 6721", verified: "21 days ago", status: "Responded", note: "Replied positively last cycle. Interested in product and operations roles.", assessment: { hiringInfluence: "Direct hiring decision-maker", iimlRelationship: "Strong", warmIntroPotential: "Can credibly provide introduction" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Verified", phone: "Verified", location: "Verified" } },
-  { id: 3, name: "Neha Kapoor", initials: "NK", batch: 2008, programme: "PGP", company: "Tata Consumer", title: "Vice President, Strategy", function: "Strategy", seniority: "VP", location: "Mumbai", previous: "Bain & Company", experience: 18, confidence: 88, email: "neha.k@example.com", phone: "+91 98••• 0385", verified: "36 days ago", status: "Contacted", note: "Regular alumni speaker. No confirmed relationship with the current Google target is recorded.", assessment: { hiringInfluence: "Moderate hiring influence", iimlRelationship: "Very strong", warmIntroPotential: "Can credibly provide introduction" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Likely", email: "Verified", phone: "Unverified", location: "Possibly outdated" } },
-  { id: 4, name: "Arjun Bhatia", initials: "AB", batch: 2017, programme: "PGP", company: "Microsoft", title: "Principal Product Manager", function: "Product", seniority: "Director", location: "Hyderabad", previous: "Adobe, Infosys", experience: 9, confidence: 96, email: "arjun.b@example.com", phone: "+91 97••• 9460", verified: "8 days ago", status: "Not contacted", note: "High-confidence profile. Useful product hiring route, but no prior placement interaction.", assessment: { hiringInfluence: "Moderate hiring influence", iimlRelationship: "Moderate", warmIntroPotential: "Same company only" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Verified", phone: "Unverified", location: "Verified" } },
-  { id: 5, name: "Kavya Nair", initials: "KN", batch: 2013, programme: "PGP-ABM", company: "ITC", title: "General Manager, Rural Markets", function: "Sales", seniority: "GM", location: "Kolkata", previous: "HUL", experience: 13, confidence: 87, email: "kavya.n@example.com", phone: "+91 98••• 2241", verified: "44 days ago", status: "Responded", note: "Previously mentored ABM students. Strong fit for rural sales and strategy roles.", assessment: { hiringInfluence: "Strong hiring influence", iimlRelationship: "Strong", warmIntroPotential: "Same relevant function / business unit" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Likely", email: "Unverified", phone: "Unverified", location: "Verified" } },
-  { id: 6, name: "Vikram Rao", initials: "VR", batch: 2010, programme: "PGP", company: "Google", title: "Country Operations Lead", function: "Operations", seniority: "Country Head", location: "Bengaluru", previous: "Uber, McKinsey", experience: 16, confidence: 90, email: "vikram.r@example.com", phone: "+91 99••• 7814", verified: "17 days ago", status: "Not contacted", note: "Senior decision-maker. Direct outreach is preferred because no confirmed intermediary relationship is recorded.", assessment: { hiringInfluence: "Direct hiring decision-maker", iimlRelationship: "Unknown / Not assessed", warmIntroPotential: "No known route" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Verified", phone: "Unverified", location: "Verified" } },
-  { id: 7, name: "Meera Iyer", initials: "MI", batch: 2019, programme: "PGP", company: "Amazon", title: "Finance Manager", function: "Finance", seniority: "Manager", location: "Bengaluru", previous: "P&G", experience: 7, confidence: 92, email: "meera.i@example.com", phone: "+91 96••• 4108", verified: "15 days ago", status: "Contacted", note: "Engaged with the finance club. Better suited for role intelligence than recruiter outreach.", assessment: { hiringInfluence: "Limited hiring influence", iimlRelationship: "Moderate", warmIntroPotential: "Same company only" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Likely", phone: "Unverified", location: "Verified" } },
-  { id: 8, name: "Siddharth Jain", initials: "SJ", batch: 2006, programme: "PGP", company: "Deloitte", title: "Managing Director", function: "Consulting", seniority: "C-suite", location: "Mumbai", previous: "Kearney", experience: 20, confidence: 86, email: "siddharth.j@example.com", phone: "+91 98••• 5542", verified: "52 days ago", status: "Meeting set", note: "Long-standing campus relationship. Priority route for consulting leadership.", assessment: { hiringInfluence: "Direct hiring decision-maker", iimlRelationship: "Very strong", warmIntroPotential: "Confirmed direct connection to decision-maker" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Verified", phone: "Verified", location: "Possibly outdated" } },
-  { id: 9, name: "Priya Menon", initials: "PM", batch: 2016, programme: "PGP", company: "Flipkart", title: "Director, Category Management", function: "Operations", seniority: "Director", location: "Bengaluru", previous: "Amazon", experience: 10, confidence: 89, email: "priya.m@example.com", phone: "+91 97••• 1973", verified: "28 days ago", status: "Not contacted", note: "Recently promoted. Timely congratulations can open a placement conversation.", assessment: { hiringInfluence: "Moderate hiring influence", iimlRelationship: "Moderate", warmIntroPotential: "Same company only" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Likely", email: "Likely", phone: "Unverified", location: "Verified" } },
-  { id: 10, name: "Rahul Banerjee", initials: "RB", batch: 2011, programme: "PGP", company: "HDFC Bank", title: "Senior Vice President", function: "Finance", seniority: "VP", location: "Mumbai", previous: "ICICI Bank", experience: 15, confidence: 84, email: "rahul.b@example.com", phone: "+91 99••• 2636", verified: "61 days ago", status: "Not contacted", note: "Role is relevant, but contact data needs another verification before outreach.", assessment: { hiringInfluence: "Strong hiring influence", iimlRelationship: "Unknown / Not assessed", warmIntroPotential: "No known route" }, verification: { profileMatch: "Confirmed", currentCompany: "Likely", designation: "Likely", email: "Unverified", phone: "Unverified", location: "Possibly outdated" } },
-  { id: 11, name: "Tanvi Gupta", initials: "TG", batch: 2018, programme: "PGP", company: "Google", title: "People Partner, India", function: "HR", seniority: "Senior Manager", location: "Gurugram", previous: "Microsoft", experience: 8, confidence: 95, email: "tanvi.g@example.com", phone: "+91 98••• 8309", verified: "6 days ago", status: "Responded", note: "Moved to Google People Operations recently. Prior engagement provides useful context.", assessment: { hiringInfluence: "Direct hiring decision-maker", iimlRelationship: "Strong", warmIntroPotential: "Can credibly provide introduction" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Verified", phone: "Verified", location: "Verified" } },
-  { id: 12, name: "Mohit Khanna", initials: "MK", batch: 2014, programme: "IPMX", company: "Deloitte", title: "Partner, Technology Strategy", function: "Consulting", seniority: "Partner", location: "Gurugram", previous: "Accenture", experience: 17, confidence: 93, email: "mohit.k@example.com", phone: "+91 96••• 5427", verified: "19 days ago", status: "Contacted", note: "Past guest lecturer. Strong candidate for technology consulting outreach.", assessment: { hiringInfluence: "Strong hiring influence", iimlRelationship: "Strong", warmIntroPotential: "Can credibly provide introduction" }, verification: { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Likely", phone: "Unverified", location: "Verified" } },
-]
-
 const statusOptions: OutreachStatus[] = ["Not contacted", "Contacted", "Responded", "Meeting set"]
 const functionFilterOptions = ["HR", "Finance", "Strategy", "Consulting", "Product", "Operations", "Sales", "Marketing", "Technology", "General Management", "Other"]
 const seniorityFilterOptions = ["Director+", "VP+", "CXO", "EVP/SVP", "VP", "Director", "GM", "Senior Manager", "Manager", "Associate/Consultant", "Analyst/Junior"]
@@ -399,8 +378,8 @@ function parseCsv(content: string) {
 export default function Home() {
   const session = useAccessSession()
   const currentDemoUser = session.displayName
-  const [alumni, setAlumni] = useState<Alumni[]>(alumniSeed)
-  const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>(companyPrioritySeed)
+  const [alumni, setAlumni] = useState<Alumni[]>([])
+  const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>({})
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [selected, setSelected] = useState<Alumni | null>(null)
@@ -464,28 +443,15 @@ export default function Home() {
   const [refreshResults, setRefreshResults] = useState<RefreshResult[]>([])
   const [refreshSelections, setRefreshSelections] = useState<Record<number, string[]>>({})
 
-  const loadWorkspace = useCallback(async (seedIfEmpty = false) => {
+  const loadWorkspace = useCallback(async () => {
     try {
       setWorkspaceLoading(true)
-      let response = await fetch(API_ROUTES.workspace, { cache: "no-store" })
-      let data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
+      const response = await fetch(API_ROUTES.workspace, { cache: "no-store" })
+      const data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load the shared workspace.")
-      if (seedIfEmpty && data.alumni?.length === 0) {
-        const seedResponse = await fetch(API_ROUTES.workspace, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "import", filename: "Demonstration alumni dataset", records: alumniSeed }),
-        })
-        if (!seedResponse.ok) throw new Error("The shared database was created, but the demonstration dataset could not be loaded.")
-        response = await fetch(API_ROUTES.workspace, { cache: "no-store" })
-        data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
-        if (!response.ok) throw new Error(data.error || "Unable to reload the shared workspace.")
-      }
-      if (data.alumni?.length) {
-        setAlumni(data.alumni)
-        setSelected(current => current ? data.alumni?.find(person => person.id === current.id) ?? null : null)
-      }
-      if (data.companyPriorities) setCompanyPriorities(current => ({ ...current, ...data.companyPriorities }))
+      setAlumni(data.alumni ?? [])
+      setSelected(current => current ? data.alumni?.find(person => person.id === current.id) ?? null : null)
+      setCompanyPriorities(data.companyPriorities ?? {})
       setLatestImport(data.latestImport ?? null)
       setWorkspaceMessage("")
     } catch (error) {
@@ -496,7 +462,7 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadWorkspace(session.canOperate), 0)
+    const timer = window.setTimeout(() => void loadWorkspace(), 0)
     return () => window.clearTimeout(timer)
   }, [loadWorkspace, session.canOperate])
 
@@ -617,7 +583,7 @@ export default function Home() {
       setWorkspaceMessage("Saved to the shared workspace.")
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save the update.")
-      await loadWorkspace(false)
+      await loadWorkspace()
     } finally {
       setSyncing(false)
     }
@@ -686,7 +652,7 @@ export default function Home() {
       if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
       setWorkspaceMessage(`${data.imported ?? records.length} alumni records imported into the shared database.`)
       setImportFile(null)
-      await loadWorkspace(false)
+      await loadWorkspace()
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to import the selected file.")
     } finally {
@@ -708,7 +674,7 @@ export default function Home() {
       if (!response.ok) throw new Error(data.error || "Unable to run enrichment.")
       const successes = data.results?.filter(result => result.status === "success").length ?? 0
       setEnrichmentMessage(`${successes} provider result${successes === 1 ? "" : "s"} applied. Full details are in response history.`)
-      await Promise.all([loadWorkspace(false), loadEnrichment()])
+      await Promise.all([loadWorkspace(), loadEnrichment()])
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to run enrichment.")
     } finally {
@@ -810,7 +776,7 @@ export default function Home() {
       setMailPreview(null)
       setSelectedEngagement(null)
       setEngagementMessage(mailMode === "mock" ? "Mock email sent. The shared engagement history has been updated." : "Email sent and recorded in the shared engagement history.")
-      await loadWorkspace(false)
+      await loadWorkspace()
     }
   }
 
@@ -852,14 +818,14 @@ export default function Home() {
       setBulkPreview(null)
       setSelectedBirthdayIds([])
       setEngagementMessage(mailMode === "mock" ? "Selected birthday emails were sent in mock mode and recorded." : "Selected birthday emails were sent and recorded.")
-      await loadWorkspace(false)
+      await loadWorkspace()
     }
   }
 
   async function getBirthdayEmail(event: EngagementEvent) {
     if (!event.alumnus) return
     await runEnrichment([event.alumnus.id], ["lusha"], "manual", ["email"])
-    await Promise.all([loadWorkspace(false), loadEngagements()])
+    await Promise.all([loadWorkspace(), loadEngagements()])
     setEngagementMessage("Lusha email enrichment completed. Review the updated contact before sending.")
   }
 
@@ -964,7 +930,7 @@ export default function Home() {
         : item))
       setSelectedDiscoveryIds([])
       setDiscoveryMessage(`${data.addedCount ?? data.added.length} alumn${data.added.length === 1 ? "us" : "i"} added. Contact enrichment is now available.`)
-      await loadWorkspace(false)
+      await loadWorkspace()
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to add the selected alumni.")
     } finally {
@@ -996,7 +962,7 @@ export default function Home() {
       setDiscoveryMessage(data.changedFields?.length ? `${data.changedFields.length} professional fields updated and recorded in Change History.` : "No professional changes detected. The PDL interaction remains in Provider History.")
       setComparisonResult(null)
       setSelectedComparisonFields([])
-      await loadWorkspace(false)
+      await loadWorkspace()
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to apply the selected updates.")
     } finally {
@@ -1015,7 +981,7 @@ export default function Home() {
       setComparisonResult(null)
       setSelectedComparisonFields([])
       setDiscoveryMessage("The reviewed profile was added as a separate alumnus. Lusha enrichment is now available from the internal profile.")
-      await loadWorkspace(false)
+      await loadWorkspace()
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to keep this alumnus as a separate record.")
     } finally {
@@ -1058,7 +1024,7 @@ export default function Home() {
       setManualSaved(data.alumnus)
       setManualMatches([])
       setManualMessage(`Alumnus added to ${appConfig.name}. No provider credits were used.`)
-      await loadWorkspace(false)
+      await loadWorkspace()
     } catch (error) {
       setManualMessage(error instanceof Error ? error.message : "Unable to add the alumnus.")
     } finally {
@@ -1096,7 +1062,7 @@ export default function Home() {
       setRefreshSelections(Object.fromEntries(data.results.map(result => [result.reviewId ?? -result.alumnusId, result.fields.filter(field => field.oldValue !== field.newValue).map(field => field.field)])))
       setRefreshConfirmOpen(false)
       setEnrichmentMessage(`PDL profile refresh completed for ${data.results.length} alumn${data.results.length === 1 ? "us" : "i"}. Review proposed changes before applying them.`)
-      await Promise.all([loadWorkspace(false), loadEnrichment()])
+      await Promise.all([loadWorkspace(), loadEnrichment()])
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to refresh the selected profiles.")
     } finally {
@@ -1113,7 +1079,7 @@ export default function Home() {
       if (!response.ok) throw new Error(data.error || "Unable to apply the selected profile updates.")
       setRefreshResults(current => current.map(item => item.reviewId === result.reviewId ? { ...item, reviewStatus: data.applied?.length ? "Applied" : "Reviewed, no updates selected" } : item))
       setEnrichmentMessage(data.applied?.length ? `${data.applied.length} professional fields updated with full change history.` : "Profile refresh reviewed. Internal values were kept.")
-      await Promise.all([loadWorkspace(false), loadEnrichment()])
+      await Promise.all([loadWorkspace(), loadEnrichment()])
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to apply the selected profile updates.")
     } finally {
@@ -1360,7 +1326,7 @@ export default function Home() {
 
               <aside className="panel database-panel">
                 <div className="database-hero"><Database /><div><p className="eyebrow">Central data state</p><h2>{alumni.length} alumni records</h2><span>{companies.length} companies in one shared workspace</span></div></div>
-                <div className="database-facts"><div><span>Persistence</span><strong>Across users and devices</strong></div><div><span>Duplicate control</span><strong>Name + batch + company</strong></div><div><span>Maximum batch</span><strong>250 records per import</strong></div><div><span>Current source</span><strong>{latestImport?.filename ?? "Demonstration alumni dataset"}</strong></div></div>
+                <div className="database-facts"><div><span>Persistence</span><strong>Across users and devices</strong></div><div><span>Duplicate control</span><strong>Name + batch + company</strong></div><div><span>Maximum batch</span><strong>250 records per import</strong></div><div><span>Current source</span><strong>{latestImport?.filename ?? "No alumni data imported"}</strong></div></div>
                 <div className="latest-import"><CheckCircle2 /><div><strong>{latestImport ? "Latest import completed" : "Database ready"}</strong><span>{latestImport ? `${latestImport.rowCount} records by ${latestImport.importedBy}` : "No uploaded file has been recorded yet."}</span></div></div>
               </aside>
             </section>

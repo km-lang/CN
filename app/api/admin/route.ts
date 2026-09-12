@@ -1,13 +1,104 @@
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
-import { alumni, alumniDataLifecycle, alumniPrivacyControls, applicationIdentities, applicationUsers, providerSettings, securityAuditEvents } from "@/db/schema"
+import {
+  activityLog,
+  alumni,
+  alumniDataLifecycle,
+  alumniPrivacyControls,
+  alumniRelationships,
+  applicationIdentities,
+  applicationUsers,
+  birthdayData,
+  communicationPreferences,
+  companyPriorities,
+  engagementActions,
+  engagementAuditLog,
+  engagementEvents,
+  engagementResponses,
+  eventViews,
+  externalDiscoveryResults,
+  externalDiscoverySearches,
+  fieldChangeHistory,
+  importRuns,
+  providerRefreshReviews,
+  providerResponseHistory,
+  providerSettings,
+  securityAuditEvents,
+} from "@/db/schema"
 import { InvalidEmailError, isLikelyInstitutionalEmailTypo, normalizeEmail } from "@/lib/email-identity"
+import { classifyMockDataset } from "@/lib/mock-cleanup"
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
 import { safeAuditMetadata } from "@/lib/security-policy"
 
 function clean(value: unknown, max = 500) {
   return String(value ?? "").trim().slice(0, max)
+}
+
+async function mockCleanupInventory() {
+  const db = getDb()
+  const [
+    alumniRows,
+    companyPriorityRows,
+    activityRows,
+    relationshipRows,
+    birthdayRows,
+    communicationRows,
+    eventRows,
+    actionRows,
+    responseRows,
+    viewRows,
+    engagementAuditRows,
+    searchRows,
+    discoveryResultRows,
+    providerHistoryRows,
+    providerReviewRows,
+    fieldChangeRows,
+    importRows,
+    privacyRows,
+    lifecycleRows,
+  ] = await Promise.all([
+    db.select().from(alumni),
+    db.select().from(companyPriorities),
+    db.select().from(activityLog),
+    db.select().from(alumniRelationships),
+    db.select().from(birthdayData),
+    db.select().from(communicationPreferences),
+    db.select().from(engagementEvents),
+    db.select().from(engagementActions),
+    db.select().from(engagementResponses),
+    db.select().from(eventViews),
+    db.select().from(engagementAuditLog),
+    db.select().from(externalDiscoverySearches),
+    db.select().from(externalDiscoveryResults),
+    db.select().from(providerResponseHistory),
+    db.select().from(providerRefreshReviews),
+    db.select().from(fieldChangeHistory),
+    db.select().from(importRuns),
+    db.select().from(alumniPrivacyControls),
+    db.select().from(alumniDataLifecycle),
+  ])
+  return classifyMockDataset({
+    alumni: alumniRows,
+    companyPriorities: companyPriorityRows,
+    activityLog: activityRows,
+    alumniRelationships: relationshipRows,
+    birthdayData: birthdayRows,
+    communicationPreferences: communicationRows,
+    engagementEvents: eventRows,
+    engagementActions: actionRows,
+    engagementResponses: responseRows,
+    eventViews: viewRows,
+    engagementAuditLog: engagementAuditRows,
+    externalDiscoverySearches: searchRows,
+    externalDiscoveryResults: discoveryResultRows,
+    providerResponseHistory: providerHistoryRows,
+    providerRefreshReviews: providerReviewRows,
+    fieldChangeHistory: fieldChangeRows,
+    importRuns: importRows,
+    alumniPrivacyControls: privacyRows,
+    alumniDataLifecycle: lifecycleRows,
+  })
 }
 
 export async function GET(request: Request) {
@@ -35,6 +126,94 @@ export async function POST(request: Request) {
     const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean }
     const db = getDb()
     const now = new Date().toISOString()
+
+    if (payload.action === "preview_mock_cleanup") {
+      const inventory = await mockCleanupInventory()
+      return Response.json({ inventory })
+    }
+
+    if (payload.action === "remove_mock_dataset") {
+      if (payload.confirmation !== "REMOVE MOCK DATASET") {
+        return Response.json({ error: "Type REMOVE MOCK DATASET to confirm." }, { status: 409 })
+      }
+      const inventory = await mockCleanupInventory()
+      if (inventory.ambiguous.length) {
+        return Response.json({ error: "Cleanup stopped because ambiguous records require review.", inventory }, { status: 409 })
+      }
+      const ids = inventory.ids
+      await db.batch([
+        db.delete(engagementAuditLog).where(inArray(engagementAuditLog.id, ids.engagementAuditLog)),
+        db.delete(engagementResponses).where(inArray(engagementResponses.id, ids.engagementResponses)),
+        db.delete(eventViews).where(inArray(eventViews.id, ids.eventViews)),
+        db.delete(engagementActions).where(inArray(engagementActions.id, ids.engagementActions)),
+        db.delete(engagementEvents).where(inArray(engagementEvents.id, ids.engagementEvents)),
+        db.delete(birthdayData).where(inArray(birthdayData.id, ids.birthdayData)),
+        db.delete(communicationPreferences).where(inArray(communicationPreferences.id, ids.communicationPreferences)),
+        db.delete(alumniRelationships).where(or(
+          inArray(alumniRelationships.intermediaryAlumnusId, ids.alumni),
+          inArray(alumniRelationships.targetAlumnusId, ids.alumni),
+        )),
+        db.delete(alumniPrivacyControls).where(inArray(alumniPrivacyControls.id, ids.alumniPrivacyControls)),
+        db.delete(alumniDataLifecycle).where(inArray(alumniDataLifecycle.id, ids.alumniDataLifecycle)),
+        db.delete(providerRefreshReviews).where(inArray(providerRefreshReviews.id, ids.providerRefreshReviews)),
+        db.delete(providerResponseHistory).where(inArray(providerResponseHistory.id, ids.providerResponseHistory)),
+        db.delete(fieldChangeHistory).where(inArray(fieldChangeHistory.id, ids.fieldChangeHistory)),
+        db.delete(externalDiscoveryResults).where(inArray(externalDiscoveryResults.id, ids.externalDiscoveryResults)),
+        db.delete(externalDiscoverySearches).where(inArray(externalDiscoverySearches.id, ids.externalDiscoverySearches)),
+        db.delete(activityLog).where(inArray(activityLog.id, ids.activityLog)),
+        db.delete(companyPriorities).where(inArray(companyPriorities.company, ids.companyPriorities)),
+        db.delete(importRuns).where(inArray(importRuns.id, ids.importRuns)),
+        db.delete(alumni).where(inArray(alumni.id, ids.alumni)),
+        db.insert(securityAuditEvents).values({
+          actorUserId: context.userId,
+          actorIdentity: context.externalIdentity,
+          actorName: context.displayName,
+          actorRole: context.role,
+          action: "mock_dataset_removed",
+          entityType: "dataset",
+          entityId: "production-business-data",
+          metadataJson: safeAuditMetadata({
+            timestamp: now,
+            alumniRemoved: inventory.counts.alumni,
+            companiesRemoved: inventory.counts.companies,
+            engagementOutreachRemoved: inventory.counts.engagementOutreach,
+            mockProviderRecordsRemoved: inventory.counts.providerHistory + inventory.counts.providerSearches + inventory.counts.providerResults + inventory.counts.providerReviews + inventory.counts.fieldChanges,
+            reason: "production transition to real-data pilot",
+          }),
+          result: "success",
+          source: "application",
+          createdAt: now,
+        }),
+      ])
+      const [finalAlumni, finalUsers, finalIdentities, finalLiveSearches, finalLiveResults, finalMockHistory, integrity, foreignKeys] = await Promise.all([
+        db.select({ id: alumni.id }).from(alumni),
+        db.select({ id: applicationUsers.id }).from(applicationUsers),
+        db.select({ id: applicationIdentities.id }).from(applicationIdentities),
+        db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.mode, "live")),
+        db.select({ id: externalDiscoveryResults.id }).from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId,
+          db.select({ id: externalDiscoverySearches.id }).from(externalDiscoverySearches).where(eq(externalDiscoverySearches.mode, "live")),
+        )),
+        db.select({ id: providerResponseHistory.id }).from(providerResponseHistory).where(eq(providerResponseHistory.mode, "mock")),
+        db.all<{ integrity_check: string }>(sql.raw("PRAGMA integrity_check")),
+        db.all<Record<string, unknown>>(sql.raw("PRAGMA foreign_key_check")),
+      ])
+      return Response.json({
+        removed: inventory.counts,
+        retained: {
+          ...inventory.retained,
+          liveDiscoveryResults: finalLiveResults.length,
+          liveSearchCredits: finalLiveSearches.reduce((total, row) => total + row.creditsUsed, 0),
+        },
+        final: {
+          alumni: finalAlumni.length,
+          applicationUsers: finalUsers.length,
+          applicationIdentities: finalIdentities.length,
+          mockProviderHistory: finalMockHistory.length,
+          integrity,
+          foreignKeys,
+        },
+      })
+    }
 
     if (payload.action === "authorize_user") {
       const email = normalizeEmail(payload.email)

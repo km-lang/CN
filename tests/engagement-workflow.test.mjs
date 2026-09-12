@@ -4,6 +4,7 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createServer } from "vite";
+import { engagementFixtures } from "./fixtures/engagement-events.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const vite = await createServer({
@@ -23,8 +24,9 @@ const migration = await readFile(new URL("../drizzle/0003_puzzling_flatman.sql",
 const { createMailDraft, sendMail } = await vite.ssrLoadModule("/lib/mail-service.ts");
 
 test("1. a Lusha professional signal enters the shared queue as New", () => {
-  assert.match(route, /source: "Lusha Signals"/);
-  assert.match(route, /status: "New"/);
+  const signal = engagementFixtures.find(event => event.eventType === "Professional Signal");
+  assert.equal(signal.source, "Lusha Signals");
+  assert.equal(signal.status, "New");
 });
 
 test("2. viewing is tracked separately from taking action", () => {
@@ -67,9 +69,10 @@ test("7. preview personalises a template and mock send returns a receipt", async
   assert.match(result.messageId, /^mock-mail-/);
 });
 
-test("8. an already-actioned birthday is seeded under another member", () => {
-  assert.match(route, /person\.name === "Vikram Rao"/);
-  assert.match(route, /alreadySent \? "PCOMmer 2"/);
+test("8. an already-actioned birthday fixture remains attributable to another member", () => {
+  const birthday = engagementFixtures.find(event => event.eventType === "Birthday");
+  assert.equal(birthday.status, "Action Taken");
+  assert.equal(birthday.actionTakenBy, "PCOM Fixture User");
 });
 
 test("9. missing email is excluded and Lusha retrieval is explicit", () => {
@@ -79,7 +82,7 @@ test("9. missing email is excluded and Lusha retrieval is explicit", () => {
 });
 
 test("10. birthday events use a unique alumnus and year key", () => {
-  assert.match(route, /birthday:\$\{person\.id\}:\$\{date\.getUTCFullYear\(\)\}/);
+  assert.match(engagementFixtures[0].eventKey, /^birthday:\d+:\d{4}$/);
   assert.match(migration, /CREATE UNIQUE INDEX `idx_engagement_event_key`/);
 });
 
