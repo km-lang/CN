@@ -57,6 +57,8 @@ button { cursor: pointer; }
 .access-card > span { color: #7b8994; font-size: .7rem; }
 .access-action { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 0 1rem; border-radius: 8px; color: #fff; background: #8c1d2c; font-size: .8rem; font-weight: 800; text-decoration: none; }
 .access-action:hover { background: #741724; }
+.access-secondary-action { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 1rem; border: 1px solid #ccd7de; border-radius: 8px; color: #315064; background: #fff; font-size: .76rem; font-weight: 750; text-decoration: none; }
+.access-secondary-action:hover { background: #f3f6f8; }
 .workspace { width: min(1480px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
 .page-heading { display: flex; justify-content: space-between; align-items: end; gap: 2rem; margin-bottom: 1.5rem; }
 .page-heading h1 { font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 3.2vw, 3.4rem); line-height: 1.05; letter-spacing: -.045em; margin: .3rem 0 0; max-width: 800px; color: #0b2235; }
@@ -624,6 +626,9 @@ button { cursor: pointer; }
 .refresh-fields svg { width: 14px; color: #8a979f; }
 
 .admin-workspace { display: grid; gap: 1rem; }
+.identity-provider { display: block; color: #244c42; font-size: .72rem; font-weight: 750; }
+.identity-provider + .identity-provider { margin-top: .35rem; }
+.identity-provider small { display: block; color: #7b8994; font-size: .62rem; font-weight: 500; }
 .admin-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .admin-heading h2 { margin: .2rem 0; color: #172f40; font-family: Georgia, serif; font-size: 1.7rem; }
 .admin-heading span:not(.security-chip) { color: #687b88; font-size: .78rem; }

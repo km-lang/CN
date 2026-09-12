@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm"
 
 import { getDb } from "@/db"
-import { alumni, alumniDataLifecycle, alumniPrivacyControls, applicationUsers, providerSettings, securityAuditEvents } from "@/db/schema"
+import { alumni, alumniDataLifecycle, alumniPrivacyControls, applicationIdentities, applicationUsers, providerSettings, securityAuditEvents } from "@/db/schema"
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
 
 function clean(value: unknown, max = 500) {
@@ -12,13 +12,14 @@ export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_USERS")
     const db = getDb()
-    const [users, audit, lifecycle, providerLimits] = await Promise.all([
+    const [users, identities, audit, lifecycle, providerLimits] = await Promise.all([
       db.select().from(applicationUsers).orderBy(applicationUsers.displayName),
+      db.select({ id: applicationIdentities.id, applicationUserId: applicationIdentities.applicationUserId, provider: applicationIdentities.provider, verifiedEmail: applicationIdentities.verifiedEmail, providerDomain: applicationIdentities.providerDomain, lastAuthenticatedAt: applicationIdentities.lastAuthenticatedAt }).from(applicationIdentities).orderBy(applicationIdentities.provider),
       db.select().from(securityAuditEvents).orderBy(desc(securityAuditEvents.createdAt), desc(securityAuditEvents.id)).limit(200),
       db.select().from(alumniDataLifecycle).orderBy(desc(alumniDataLifecycle.updatedAt)),
       db.select().from(providerSettings).orderBy(providerSettings.provider),
     ])
-    return Response.json({ users, audit, lifecycle, providerLimits })
+    return Response.json({ users: users.map(user => ({ ...user, identities: identities.filter(identity => identity.applicationUserId === user.id) })), audit, lifecycle, providerLimits })
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied

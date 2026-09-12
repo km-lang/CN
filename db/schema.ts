@@ -342,6 +342,23 @@ export const applicationUsers = sqliteTable("application_users", {
   index("idx_application_users_role_enabled").on(table.role, table.enabled),
 ]);
 
+export const applicationIdentities = sqliteTable("application_identities", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  applicationUserId: integer("application_user_id").notNull().references(() => applicationUsers.id),
+  provider: text("provider").notNull(),
+  providerSubjectId: text("provider_subject_id").notNull(),
+  verifiedEmail: text("verified_email").notNull(),
+  emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+  providerDomain: text("provider_domain").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastAuthenticatedAt: text("last_authenticated_at").notNull().default(""),
+}, (table) => [
+  uniqueIndex("idx_application_identities_provider_subject").on(table.provider, table.providerSubjectId),
+  index("idx_application_identities_user").on(table.applicationUserId),
+  index("idx_application_identities_verified_email").on(table.verifiedEmail),
+]);
+
 export const securityAuditEvents = sqliteTable("security_audit_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   actorUserId: integer("actor_user_id").references(() => applicationUsers.id),

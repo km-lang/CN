@@ -40,10 +40,10 @@ test("security 1: role values are explicit and deny-by-default is visible", () =
 });
 
 test("security 2: unauthenticated visitors receive only the sign-in page", () => {
-  assert.match(layout, /if \(!user\)/);
+  assert.match(layout, /if \(session\)/);
   assert.match(layout, /Sign in to Corporate Network/);
-  assert.match(layout, /Authentication is required before any alumni/);
-  assert.match(layout, /chatGPTSignInPath\(returnTo\)/);
+  assert.match(layout, /Sign in with IIM Lucknow/);
+  assert.match(layout, /Sign in with ChatGPT \(Admin recovery\)/);
 });
 
 test("security 3: PCOM can operate but cannot administer users or provider settings", () => {
@@ -145,7 +145,7 @@ test("security 17: future live integrations require two server-side gates", () =
 
 test("security 18: bootstrap Admin uses authenticated identity and a server allowlist", () => {
   assert.match(security, /BOOTSTRAP_ADMIN_EMAILS/);
-  assert.match(security, /identity\.externalIdentity/);
+  assert.match(security, /providerSubjectId/);
   assert.doesNotMatch(security + layout, /password/i);
 });
 

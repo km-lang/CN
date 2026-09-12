@@ -34,7 +34,9 @@ Institutional sender identity is separate from the product brand. `MAIL_SENDER_D
 
 ## Production security and access control
 
-Corporate Network uses dispatch-owned **Sign in with ChatGPT** for authentication. The hosting layer owns the secure OAuth session, cookies, callback, and authenticated identity headers. The application never stores a password. After authentication, every page request and sensitive API request resolves that identity against the central D1 `application_users` table. Access is denied by default.
+Corporate Network uses institutional Google Workspace OIDC as the primary authentication path and keeps dispatch-owned **Sign in with ChatGPT** as a temporary Admin/recovery path. Both providers resolve to the same provider-neutral application session. The application stores neither Google nor ChatGPT passwords. Authentication and authorization are separate: after either provider verifies an identity, every page request and sensitive API request reloads the linked `application_users` record, checks that it remains enabled, and applies its server-side role. Access is denied by default.
+
+`application_identities` stores provider links separately from roles. The first successful Google sign-in links the verified Google subject to an existing, pre-authorized user row with the same institutional email. A verified but unrecognized identity is denied and is not added automatically. The Admin screen lists linked providers beside each authorized user.
 
 The application roles are:
 
@@ -44,12 +46,17 @@ The application roles are:
 
 Frontend controls reflect these permissions, but they are not the security boundary. `lib/security.ts` authenticates each protected request and the route handlers enforce server-side permissions. A disabled user is rejected on the next request while historical actor names remain in audit records.
 
-The first Admin is created by setting the server-only `BOOTSTRAP_ADMIN_EMAILS` allowlist to the verified ChatGPT account email and signing in once. The bootstrap creates an Admin row and audit event. Clear the allowlist after successful bootstrap if desired. Future users and Admins are added from the Admin-only **Administration** tab.
+The existing recovery Admin may be preserved by setting the server-only `BOOTSTRAP_ADMIN_EMAILS` allowlist to its verified ChatGPT account email. New institutional users must first be added from the Admin-only **Administration** tab and then authenticate with the exact pre-authorized `@iiml.ac.in` Google Workspace identity.
 
 Security-related server configuration:
 
 ```text
 BOOTSTRAP_ADMIN_EMAILS=first.admin@example.edu
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_OAUTH_CALLBACK_URL=https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site/auth/google/callback
+GOOGLE_ALLOWED_DOMAIN=iiml.ac.in
+AUTH_SESSION_SECRET=
 ENRICHMENT_MODE=mock
 PROVIDER_LIVE_ENABLED=false
 MAIL_MODE=mock
@@ -60,7 +67,25 @@ LUSHA_API_KEY=
 
 Live provider access requires both `ENRICHMENT_MODE=live` and `PROVIDER_LIVE_ENABLED=true` on the server. Live institutional mail similarly requires both `MAIL_MODE=live` and `MAIL_LIVE_ENABLED=true`. Browser controls cannot activate either mode.
 
-Migration `drizzle/0005_security_access_controls.sql` adds `application_users`, `security_audit_events`, `alumni_privacy_controls`, and `alumni_data_lifecycle` without altering or dropping the original 19 tables. Privacy preferences treat `Unknown` as unknown, not affirmative consent. A general `Do not contact` blocks birthday and professional sends in the server route. Data lifecycle changes are Admin-only; anonymization requires typing `ANONYMIZE <record-id>` and retains non-identifying audit history.
+Migration `drizzle/0005_security_access_controls.sql` adds `application_users`, `security_audit_events`, `alumni_privacy_controls`, and `alumni_data_lifecycle` without altering or dropping the original 19 tables. Stage 2.5 migration `drizzle/0006_application_identities.sql` adds only `application_identities` and its indexes. Privacy preferences treat `Unknown` as unknown, not affirmative consent. A general `Do not contact` blocks birthday and professional sends in the server route. Data lifecycle changes are Admin-only; anonymization requires typing `ANONYMIZE <record-id>` and retains non-identifying audit history.
+
+### Google Workspace OAuth configuration
+
+Create a Google Cloud OAuth 2.0 Web application owned by the institution, configure its consent screen for the IIM Lucknow Workspace organization, and register this exact current callback URI:
+
+```text
+https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site/auth/google/callback
+```
+
+Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and a randomly generated `AUTH_SESSION_SECRET` of at least 32 characters as server-only secrets. Keep `GOOGLE_ALLOWED_DOMAIN=iiml.ac.in`. Authorization Code flow uses PKCE, state, nonce, issuer/audience/signature/expiry checks, Google `email_verified`, and the Workspace `hd` claim. The OAuth callback never assigns a role; it only links to an existing approved user.
+
+For a future deployment at `https://teamsynapse.app/corporate_network`, register and set:
+
+```text
+GOOGLE_OAUTH_CALLBACK_URL=https://teamsynapse.app/corporate_network/auth/google/callback
+```
+
+Changing the callback/base-path configuration requires a new build and an added redirect URI in Google Cloud. Existing identity links and application users remain valid; no new database migration or re-authorization is required.
 
 ### Pre-migration D1 recovery point
 

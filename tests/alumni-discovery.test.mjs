@@ -159,6 +159,7 @@ test("17. application configuration supports another brand and a non-root base p
   assert.equal(future.publicUrl, "https://teamsynapse.app/corporate_network");
   assert.equal(future.basePath, "/corporate_network");
   assert.equal(config.withBasePath("/api/workspace", future.basePath), "/corporate_network/api/workspace");
+  assert.equal(config.withBasePath("/auth/google/callback", future.basePath), "/corporate_network/auth/google/callback");
   assert.equal(config.withBasePath("favicon.svg", future.basePath), "/corporate_network/favicon.svg");
 });
 
