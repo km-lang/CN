@@ -57,6 +57,13 @@
       "when": 1789202656699,
       "tag": "0007_colorful_the_hood",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789212797245,
+      "tag": "0008_application_user_pre_authorization_cleanup",
+      "breakpoints": true
     }
   ]
 }
