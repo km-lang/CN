@@ -5,6 +5,7 @@ import { applicationIdentities, applicationUsers, securityAuditEvents } from "@/
 import { type AccessSession, type ApplicationRole } from "@/lib/access-types"
 import type { IdentityProvider } from "@/lib/auth-config"
 import { APP_SESSION_COOKIE, cookieValue, type AppSessionClaims, verifyAppSessionToken } from "@/lib/auth-session"
+import { tryNormalizeEmail } from "@/lib/email-identity"
 import { hasPermission, isApplicationRole, safeAuditMetadata, type Permission } from "@/lib/security-policy"
 
 export { hasPermission, isApplicationRole, maskEmail, maskPhone, safeAuditMetadata } from "@/lib/security-policy"
@@ -37,7 +38,7 @@ export class AccessError extends Error {
 
 export function identityFromRequest(request: Request): RequestIdentity | null {
   const externalIdentity = request.headers.get("oai-authenticated-user-id")?.trim() ?? ""
-  const email = request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase() ?? ""
+  const email = tryNormalizeEmail(request.headers.get("oai-authenticated-user-email"))
   if (!externalIdentity || !email) return null
   const encodedName = request.headers.get("oai-authenticated-user-full-name")
   const displayName = encodedName && request.headers.get("oai-authenticated-user-full-name-encoding") === "percent-encoded-utf-8"
@@ -49,7 +50,7 @@ export function identityFromRequest(request: Request): RequestIdentity | null {
 function bootstrapAdminEmails() {
   return new Set((process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
     .split(",")
-    .map(value => value.trim().toLowerCase())
+    .map(tryNormalizeEmail)
     .filter(Boolean))
 }
 
@@ -58,7 +59,7 @@ export async function resolveAuthorizedIdentity(identity: RequestIdentity): Prom
   const now = new Date().toISOString()
   const provider = identity.provider ?? "chatgpt"
   const providerSubjectId = (identity.providerSubjectId ?? identity.externalIdentity ?? "").trim()
-  const email = identity.email.trim().toLowerCase()
+  const email = tryNormalizeEmail(identity.email)
   const emailVerified = identity.emailVerified ?? provider === "chatgpt"
   if (!providerSubjectId || !email || !emailVerified) {
     await auditIdentity(null, { provider, providerSubjectId, email, displayName: identity.displayName }, "login_denied", "identity_not_verified")

@@ -71,7 +71,9 @@ test("security 5: Admin has operational and administrative permissions", () => {
 test("security 6: a disabled account is rejected without deleting its history", () => {
   assert.match(security, /if \(!user\.enabled\)/);
   assert.match(security, /account_disabled/);
-  assert.doesNotMatch(admin, /delete\(applicationUsers\)/);
+  assert.match(admin, /Only a disabled, never-authenticated and unlinked pre-authorization/);
+  assert.match(admin, /user_pre_authorization_corrected/);
+  assert.doesNotMatch(admin, /delete\(securityAuditEvents\)/);
   assert.match(schema, /actorName: text\("actor_name"\)/);
 });
 

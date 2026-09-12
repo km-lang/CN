@@ -14,6 +14,7 @@ type AdminIdentity = { id: number; provider: "google_workspace" | "chatgpt"; ver
 type AdminUser = { id: number; externalIdentity: string; displayName: string; email: string; role: ApplicationRole; enabled: boolean; createdAt: string; updatedAt: string; lastLoginAt: string; identities: AdminIdentity[] }
 type AuditEvent = { id: number; actorName: string; actorRole: string; action: string; entityType: string; entityId: string; result: string; createdAt: string }
 type AdminData = { users: AdminUser[]; audit: AuditEvent[] }
+type SimilarEmailWarning = { enteredEmail: string; similarUser: { id: number; email: string; displayName: string } }
 
 export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: string; lifecycle?: string }> }) {
   const [data, setData] = useState<AdminData>({ users: [], audit: [] })
@@ -22,6 +23,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [loading, setLoading] = useState(false)
   const [anonymizeId, setAnonymizeId] = useState<number | null>(null)
   const [confirmation, setConfirmation] = useState("")
+  const [similarEmailWarning, setSimilarEmailWarning] = useState<SimilarEmailWarning | null>(null)
 
   const load = useCallback(async () => {
     const response = await fetch(apiPath("/api/admin"), { cache: "no-store" })
@@ -44,8 +46,32 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       if (!response.ok) throw new Error(result.error || "Administration action failed.")
       await load()
       setMessage("Administration change saved and audited.")
+      return true
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Administration action failed.")
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function authorizeUser(confirmSimilarEmail = false) {
+    setLoading(true)
+    setMessage("")
+    try {
+      const response = await fetch(apiPath("/api/admin"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "authorize_user", ...form, confirmSimilarEmail }) })
+      const result = await response.json() as { error?: string; code?: string; enteredEmail?: string; similarUser?: SimilarEmailWarning["similarUser"] }
+      if (response.status === 409 && result.code === "possible_similar_user" && result.enteredEmail && result.similarUser) {
+        setSimilarEmailWarning({ enteredEmail: result.enteredEmail, similarUser: result.similarUser })
+        return
+      }
+      if (!response.ok) throw new Error(result.error || "Unable to authorize this user.")
+      await load()
+      setForm({ displayName: "", email: "", role: "PCOM" })
+      setSimilarEmailWarning(null)
+      setMessage("User authorization saved and audited.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to authorize this user.")
     } finally {
       setLoading(false)
     }
@@ -57,7 +83,8 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
 
     <section className="panel admin-section">
       <div className="panel-heading"><div><h2>Authorize a user</h2><span>Authorize the institutional email first. A verified Google Workspace or recovery identity is linked only after successful sign-in.</span></div></div>
-      <div className="admin-add-user"><Input placeholder="Display name" value={form.displayName} onChange={event => setForm({ ...form, displayName: event.target.value })} /><Input type="email" placeholder="Institutional email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /><Select value={form.role} onValueChange={role => setForm({ ...form, role: role as ApplicationRole })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem><SelectItem value="ADMIN">Admin</SelectItem></SelectContent></Select><Button disabled={loading || !form.email} onClick={() => void action({ action: "authorize_user", ...form }).then(() => setForm({ displayName: "", email: "", role: "PCOM" }))}><UserPlus /> Authorize</Button></div>
+      <div className="admin-add-user"><Input placeholder="Display name" value={form.displayName} onChange={event => { setForm({ ...form, displayName: event.target.value }); setSimilarEmailWarning(null) }} /><Input type="email" placeholder="Institutional email" value={form.email} onChange={event => { setForm({ ...form, email: event.target.value }); setSimilarEmailWarning(null) }} /><Select value={form.role} onValueChange={role => setForm({ ...form, role: role as ApplicationRole })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem><SelectItem value="ADMIN">Admin</SelectItem></SelectContent></Select><Button disabled={loading || !form.email} onClick={() => void authorizeUser()}><UserPlus /> Authorize</Button></div>
+      {similarEmailWarning && <div className="admin-similar-warning"><div><strong>Possible similar authorized user found:</strong><span>{similarEmailWarning.similarUser.email}</span><strong>You entered:</strong><span>{similarEmailWarning.enteredEmail}</span><small>Review the address carefully. This warning does not automatically block authorization.</small></div><div><Button variant="outline" disabled={loading} onClick={() => void authorizeUser(true)}>Continue anyway</Button><Button variant="ghost" disabled={loading} onClick={() => setSimilarEmailWarning(null)}>Cancel</Button></div></div>}
       <Table><TableHeader><TableRow><TableHead>User</TableHead><TableHead>Linked sign-in</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Last login</TableHead><TableHead>Action</TableHead></TableRow></TableHeader><TableBody>{data.users.map(user => <TableRow key={user.id}><TableCell><strong>{user.displayName}</strong><small className="review-status">{user.email}</small></TableCell><TableCell>{user.identities.length ? user.identities.map(identity => <span key={identity.id} className="identity-provider">{identity.provider === "google_workspace" ? "Institutional Google" : "ChatGPT recovery"}<small>{identity.verifiedEmail}</small></span>) : <span className="review-status">Pending first sign-in</span>}</TableCell><TableCell><Select value={user.role} onValueChange={role => void action({ action: "change_role", userId: user.id, role })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ADMIN">Admin</SelectItem><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem></SelectContent></Select></TableCell><TableCell><span className={`history-status ${user.enabled ? "history-success" : "history-blocked"}`}>{user.enabled ? "Active" : "Disabled"}</span></TableCell><TableCell>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "Not signed in"}</TableCell><TableCell><Button size="sm" variant="outline" disabled={loading} onClick={() => void action({ action: "set_user_status", userId: user.id, enabled: !user.enabled })}>{user.enabled ? "Disable" : "Enable"}</Button></TableCell></TableRow>)}</TableBody></Table>
     </section>
 

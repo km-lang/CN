@@ -1,4 +1,5 @@
 import { googleOAuthConfiguration } from "@/lib/auth-config"
+import { normalizeEmail } from "@/lib/email-identity"
 
 const GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -94,7 +95,7 @@ export async function verifyGoogleIdToken(idToken: string, expectedNonce: string
   if (!claims.exp || claims.exp <= now || !claims.iat || claims.iat > now + 60) throw new GoogleOidcError("The Google identity token is expired or not yet valid.", "invalid_token_time")
   if (!claims.nonce || claims.nonce !== expectedNonce) throw new GoogleOidcError("Google sign-in state could not be verified.", "invalid_nonce")
   if (!claims.sub || !claims.email || claims.email_verified !== true) throw new GoogleOidcError("A verified Google email identity is required.", "email_not_verified")
-  const email = claims.email.trim().toLowerCase()
+  const email = normalizeEmail(claims.email)
   const hostedDomain = claims.hd?.trim().toLowerCase() ?? ""
   if (hostedDomain !== config.allowedDomain || !email.endsWith(`@${config.allowedDomain}`)) {
     throw new GoogleOidcError(`Use an approved ${config.allowedDomain} Google Workspace account.`, "institutional_domain_required")

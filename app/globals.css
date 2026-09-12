@@ -636,6 +636,12 @@ button { cursor: pointer; }
 .security-chip svg { width: 15px; }
 .admin-section { overflow: hidden; }
 .admin-add-user { display: grid; grid-template-columns: 1fr 1.3fr .7fr auto; gap: .55rem; padding: 1rem 1.25rem; border-bottom: 1px solid #e4e9ec; }
+.admin-similar-warning { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: .85rem 1.25rem; padding: .9rem 1rem; border: 1px solid #e4c46a; border-radius: 11px; background: #fff9e8; color: #594b20; }
+.admin-similar-warning strong, .admin-similar-warning span, .admin-similar-warning small { display: block; }
+.admin-similar-warning strong { margin-top: .2rem; font-size: .75rem; }
+.admin-similar-warning span { font-size: .78rem; }
+.admin-similar-warning small { margin-top: .45rem; color: #776a3b; font-size: .68rem; }
+.admin-similar-warning > div:last-child { display: flex; gap: .4rem; flex: 0 0 auto; }
 .admin-section table small { display: block; }
 .anonymize-confirm { display: grid; grid-template-columns: 1fr auto auto; gap: .35rem; min-width: 430px; }
 
@@ -655,6 +661,7 @@ button { cursor: pointer; }
   .route-controls, .external-search-summary { grid-template-columns: 1fr 1fr; }
   .manual-grid { grid-template-columns: 1fr 1fr; }
   .admin-add-user { grid-template-columns: 1fr 1fr; }
+  .admin-similar-warning { align-items: flex-start; flex-direction: column; }
   .anonymize-confirm { min-width: 0; grid-template-columns: 1fr; }
 }
 
@@ -709,4 +716,5 @@ button { cursor: pointer; }
   .refresh-fields label > strong, .refresh-fields label > svg { grid-column: 2; }
   .admin-heading { align-items: flex-start; flex-direction: column; }
   .admin-add-user { grid-template-columns: 1fr; }
+  .admin-similar-warning > div:last-child { width: 100%; flex-wrap: wrap; }
 }

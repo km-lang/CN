@@ -1,8 +1,10 @@
-import { desc, eq } from "drizzle-orm"
+import { and, desc, eq } from "drizzle-orm"
 
 import { getDb } from "@/db"
 import { alumni, alumniDataLifecycle, alumniPrivacyControls, applicationIdentities, applicationUsers, providerSettings, securityAuditEvents } from "@/db/schema"
+import { InvalidEmailError, isLikelyInstitutionalEmailTypo, normalizeEmail } from "@/lib/email-identity"
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
+import { safeAuditMetadata } from "@/lib/security-policy"
 
 function clean(value: unknown, max = 500) {
   return String(value ?? "").trim().slice(0, max)
@@ -30,20 +32,68 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_USERS")
-    const payload = await request.json() as { action?: string; userId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string }
+    const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean }
     const db = getDb()
     const now = new Date().toISOString()
 
     if (payload.action === "authorize_user") {
-      const email = clean(payload.email, 320).toLowerCase()
+      const email = normalizeEmail(payload.email)
       const displayName = clean(payload.displayName, 160) || email
-      if (!/^\S+@\S+\.\S+$/.test(email) || !isApplicationRole(payload.role)) return Response.json({ error: "Enter a valid email and role." }, { status: 400 })
-      const [user] = await db.insert(applicationUsers).values({ email, displayName, role: payload.role, enabled: true, updatedAt: now }).onConflictDoUpdate({
-        target: applicationUsers.email,
-        set: { displayName, role: payload.role, enabled: true, updatedAt: now },
-      }).returning()
+      if (!isApplicationRole(payload.role)) return Response.json({ error: "Enter a valid email and role." }, { status: 400 })
+      const users = await db.select().from(applicationUsers)
+      const exactUser = users.find(user => normalizeEmail(user.email) === email)
+      const similarUser = users.find(user => isLikelyInstitutionalEmailTypo(email, user.email, displayName, user.displayName))
+      if (!exactUser && similarUser && payload.confirmSimilarEmail !== true) {
+        return Response.json({
+          error: "Possible similar authorized user found.",
+          code: "possible_similar_user",
+          enteredEmail: email,
+          similarUser: { id: similarUser.id, email: similarUser.email, displayName: similarUser.displayName },
+        }, { status: 409 })
+      }
+      const [user] = exactUser
+        ? await db.update(applicationUsers).set({ email, displayName, role: payload.role, enabled: true, updatedAt: now }).where(eq(applicationUsers.id, exactUser.id)).returning()
+        : await db.insert(applicationUsers).values({ email, displayName, role: payload.role, enabled: true, updatedAt: now }).returning()
       await writeSecurityAudit(context, { action: "user_authorized", entityType: "application_user", entityId: user.id, metadata: { role: user.role, enabled: user.enabled } })
       return Response.json({ user }, { status: 201 })
+    }
+
+    if (payload.action === "correct_pre_authorization" && Number.isInteger(payload.userId) && Number.isInteger(payload.correctUserId)) {
+      const duplicateId = payload.userId!
+      const correctUserId = payload.correctUserId!
+      if (payload.confirmation !== `CORRECT USER ${duplicateId}`) return Response.json({ error: `Type CORRECT USER ${duplicateId} to confirm.` }, { status: 409 })
+      if (duplicateId === context.userId || duplicateId === correctUserId) return Response.json({ error: "This user correction is not permitted." }, { status: 409 })
+      const [duplicate, correctUser, duplicateIdentities, actorEvents] = await Promise.all([
+        db.select().from(applicationUsers).where(eq(applicationUsers.id, duplicateId)).limit(1).then(rows => rows[0]),
+        db.select().from(applicationUsers).where(eq(applicationUsers.id, correctUserId)).limit(1).then(rows => rows[0]),
+        db.select({ id: applicationIdentities.id }).from(applicationIdentities).where(eq(applicationIdentities.applicationUserId, duplicateId)).limit(1),
+        db.select({ id: securityAuditEvents.id }).from(securityAuditEvents).where(eq(securityAuditEvents.actorUserId, duplicateId)).limit(1),
+      ])
+      if (!duplicate || !correctUser) return Response.json({ error: "The requested user record was not found." }, { status: 404 })
+      if (duplicate.enabled || duplicate.lastLoginAt || duplicateIdentities.length || actorEvents.length) return Response.json({ error: "Only a disabled, never-authenticated and unlinked pre-authorization can be corrected." }, { status: 409 })
+      if (!correctUser.enabled || duplicate.role !== correctUser.role || !isLikelyInstitutionalEmailTypo(duplicate.email, correctUser.email, duplicate.displayName, correctUser.displayName)) {
+        return Response.json({ error: "The proposed correction does not match a conservative institutional-email typo." }, { status: 409 })
+      }
+      const correctionEvent = db.insert(securityAuditEvents).values({
+        actorUserId: context.userId,
+        actorIdentity: context.externalIdentity,
+        actorName: context.displayName,
+        actorRole: context.role,
+        action: "user_pre_authorization_corrected",
+        entityType: "application_user",
+        entityId: String(duplicate.id),
+        metadataJson: safeAuditMetadata({
+          reason: `Institutional email was entered incorrectly as ${duplicate.email}.`,
+          incorrectUser: { id: duplicate.id, email: duplicate.email },
+          correctUser: { id: correctUser.id, email: correctUser.email },
+        }),
+        result: "success",
+        source: "application",
+        createdAt: now,
+      })
+      const deleteUser = db.delete(applicationUsers).where(and(eq(applicationUsers.id, duplicate.id), eq(applicationUsers.enabled, false)))
+      await db.batch([correctionEvent, deleteUser])
+      return Response.json({ corrected: true, deletedUserId: duplicate.id, correctUserId: correctUser.id })
     }
 
     if ((payload.action === "change_role" || payload.action === "set_user_status") && Number.isInteger(payload.userId)) {
@@ -108,6 +158,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (error instanceof InvalidEmailError) return Response.json({ error: error.message }, { status: 400 })
     return Response.json({ error: error instanceof Error ? error.message : "Unable to complete the administration action." }, { status: 500 })
   }
 }

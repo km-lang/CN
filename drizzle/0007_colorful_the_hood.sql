@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `idx_application_users_email_normalized` ON `application_users` (lower(trim("email")));

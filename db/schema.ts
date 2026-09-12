@@ -338,6 +338,7 @@ export const applicationUsers = sqliteTable("application_users", {
   lastLoginAt: text("last_login_at").notNull().default(""),
 }, (table) => [
   uniqueIndex("idx_application_users_email").on(table.email),
+  uniqueIndex("idx_application_users_email_normalized").on(sql`lower(trim(${table.email}))`),
   uniqueIndex("idx_application_users_external_identity").on(table.externalIdentity).where(sql`${table.externalIdentity} != ''`),
   index("idx_application_users_role_enabled").on(table.role, table.enabled),
 ]);
