@@ -42,6 +42,10 @@ type MockCleanupInventory = {
     liveProviderCredits: number
   }
 }
+type IntegrityResult = {
+  integrity: Array<{ integrity_check: string }>
+  foreignKeys: Array<Record<string, unknown>>
+}
 type MockCleanupResult = {
   removed: MockCleanupInventory["counts"]
   retained: MockCleanupInventory["retained"]
@@ -64,6 +68,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [confirmation, setConfirmation] = useState("")
   const [similarEmailWarning, setSimilarEmailWarning] = useState<SimilarEmailWarning | null>(null)
   const [cleanupPreview, setCleanupPreview] = useState<MockCleanupInventory | null>(null)
+  const [cleanupIntegrity, setCleanupIntegrity] = useState<IntegrityResult | null>(null)
   const [cleanupResult, setCleanupResult] = useState<MockCleanupResult | null>(null)
   const [cleanupConfirmation, setCleanupConfirmation] = useState("")
 
@@ -129,9 +134,10 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "preview_mock_cleanup" }),
       })
-      const result = await response.json() as { inventory?: MockCleanupInventory; error?: string }
+      const result = await response.json() as { inventory?: MockCleanupInventory; integrity?: IntegrityResult["integrity"]; foreignKeys?: IntegrityResult["foreignKeys"]; error?: string }
       if (!response.ok || !result.inventory) throw new Error(result.error || "Unable to preview the mock-data cleanup.")
       setCleanupPreview(result.inventory)
+      setCleanupIntegrity({ integrity: result.integrity ?? [], foreignKeys: result.foreignKeys ?? [] })
       setMessage(result.inventory.ambiguous.length
         ? "Cleanup is blocked until the ambiguous records are reviewed."
         : "Preview complete. No records have been deleted.")
@@ -184,6 +190,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
           <span>{cleanupPreview.counts.alumni} alumni · {cleanupPreview.counts.companies} companies · {cleanupPreview.counts.engagementOutreach} engagement/outreach · {cleanupPreview.counts.providerHistory + cleanupPreview.counts.providerSearches + cleanupPreview.counts.providerResults + cleanupPreview.counts.providerReviews + cleanupPreview.counts.fieldChanges} provider/history</span>
           <strong>Protected live evidence</strong>
           <span>{cleanupPreview.retained.liveDiscoveryResults} review results · {cleanupPreview.retained.liveSearchCredits} Search credits</span>
+          {cleanupIntegrity && <><strong>Database checks</strong><span>Quick check: {cleanupIntegrity.integrity.map(row => row.integrity_check).join(", ") || "unavailable"} · Foreign-key violations: {cleanupIntegrity.foreignKeys.length}</span></>}
           {cleanupPreview.ambiguous.length > 0 && <><strong>Ambiguous records</strong>{cleanupPreview.ambiguous.map(item => <span key={item}>{item}</span>)}</>}
         </div>
         {cleanupPreview.ambiguous.length === 0 && <div className="anonymize-confirm">

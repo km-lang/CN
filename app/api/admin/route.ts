@@ -129,7 +129,15 @@ export async function POST(request: Request) {
 
     if (payload.action === "preview_mock_cleanup") {
       const inventory = await mockCleanupInventory()
-      return Response.json({ inventory })
+      const [quickCheck, foreignKeys] = await Promise.all([
+        db.all<{ quick_check: string }>(sql.raw("PRAGMA quick_check")),
+        db.all<Record<string, unknown>>(sql.raw("PRAGMA foreign_key_check")),
+      ])
+      return Response.json({
+        inventory,
+        integrity: quickCheck.map(row => ({ integrity_check: row.quick_check })),
+        foreignKeys,
+      })
     }
 
     if (payload.action === "remove_mock_dataset") {
@@ -194,7 +202,7 @@ export async function POST(request: Request) {
           db.select({ id: externalDiscoverySearches.id }).from(externalDiscoverySearches).where(eq(externalDiscoverySearches.mode, "live")),
         )),
         db.select({ id: providerResponseHistory.id }).from(providerResponseHistory).where(eq(providerResponseHistory.mode, "mock")),
-        db.all<{ integrity_check: string }>(sql.raw("PRAGMA integrity_check")),
+        db.all<{ quick_check: string }>(sql.raw("PRAGMA quick_check")),
         db.all<Record<string, unknown>>(sql.raw("PRAGMA foreign_key_check")),
       ])
       return Response.json({
@@ -209,7 +217,7 @@ export async function POST(request: Request) {
           applicationUsers: finalUsers.length,
           applicationIdentities: finalIdentities.length,
           mockProviderHistory: finalMockHistory.length,
-          integrity,
+          integrity: integrity.map(row => ({ integrity_check: row.quick_check })),
           foreignKeys,
         },
       })
