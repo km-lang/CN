@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Activity, ShieldCheck, UserPlus } from "lucide-react"
+import { Activity, ShieldCheck, Trash2, UserPlus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,6 +15,45 @@ type AdminUser = { id: number; externalIdentity: string; displayName: string; em
 type AuditEvent = { id: number; actorName: string; actorRole: string; action: string; entityType: string; entityId: string; result: string; createdAt: string }
 type AdminData = { users: AdminUser[]; audit: AuditEvent[] }
 type SimilarEmailWarning = { enteredEmail: string; similarUser: { id: number; email: string; displayName: string } }
+type MockCleanupInventory = {
+  ambiguous: string[]
+  counts: {
+    alumni: number
+    companies: number
+    engagementOutreach: number
+    professionalSignals: number
+    birthdays: number
+    communicationPreferences: number
+    relationships: number
+    activityLog: number
+    providerHistory: number
+    providerSearches: number
+    providerResults: number
+    providerReviews: number
+    fieldChanges: number
+    imports: number
+    privacyControls: number
+    lifecycleRecords: number
+  }
+  retained: {
+    liveDiscoveryResults: number
+    liveSearchCredits: number
+    liveProviderHistory: number
+    liveProviderCredits: number
+  }
+}
+type MockCleanupResult = {
+  removed: MockCleanupInventory["counts"]
+  retained: MockCleanupInventory["retained"]
+  final: {
+    alumni: number
+    applicationUsers: number
+    applicationIdentities: number
+    mockProviderHistory: number
+    integrity: Array<{ integrity_check: string }>
+    foreignKeys: Array<Record<string, unknown>>
+  }
+}
 
 export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: string; lifecycle?: string }> }) {
   const [data, setData] = useState<AdminData>({ users: [], audit: [] })
@@ -24,6 +63,9 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [anonymizeId, setAnonymizeId] = useState<number | null>(null)
   const [confirmation, setConfirmation] = useState("")
   const [similarEmailWarning, setSimilarEmailWarning] = useState<SimilarEmailWarning | null>(null)
+  const [cleanupPreview, setCleanupPreview] = useState<MockCleanupInventory | null>(null)
+  const [cleanupResult, setCleanupResult] = useState<MockCleanupResult | null>(null)
+  const [cleanupConfirmation, setCleanupConfirmation] = useState("")
 
   const load = useCallback(async () => {
     const response = await fetch(apiPath("/api/admin"), { cache: "no-store" })
@@ -77,6 +119,52 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
     }
   }
 
+  async function previewMockCleanup() {
+    setLoading(true)
+    setMessage("")
+    setCleanupResult(null)
+    try {
+      const response = await fetch(apiPath("/api/admin"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "preview_mock_cleanup" }),
+      })
+      const result = await response.json() as { inventory?: MockCleanupInventory; error?: string }
+      if (!response.ok || !result.inventory) throw new Error(result.error || "Unable to preview the mock-data cleanup.")
+      setCleanupPreview(result.inventory)
+      setMessage(result.inventory.ambiguous.length
+        ? "Cleanup is blocked until the ambiguous records are reviewed."
+        : "Preview complete. No records have been deleted.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to preview the mock-data cleanup.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function removeMockDataset() {
+    setLoading(true)
+    setMessage("")
+    try {
+      const response = await fetch(apiPath("/api/admin"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "remove_mock_dataset", confirmation: cleanupConfirmation }),
+      })
+      const result = await response.json() as MockCleanupResult & { error?: string }
+      if (!response.ok) throw new Error(result.error || "Unable to remove the mock dataset.")
+      setCleanupResult(result)
+      setCleanupPreview(null)
+      setCleanupConfirmation("")
+      await load()
+      setMessage("Mock/demo business data removed. Security data and live PDL review evidence were retained.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to remove the mock dataset.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return <div className="admin-workspace">
     <section className="admin-heading"><div><p className="eyebrow">Security administration</p><h2>Users, roles and audit history</h2><span>Access is denied by default. Only active, authorized identities receive application data.</span></div><span className="security-chip"><ShieldCheck /> Server enforced</span></section>
     {message && <div className="enrichment-message"><Activity /><span>{message}</span></div>}
@@ -86,6 +174,25 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       <div className="admin-add-user"><Input placeholder="Display name" value={form.displayName} onChange={event => { setForm({ ...form, displayName: event.target.value }); setSimilarEmailWarning(null) }} /><Input type="email" placeholder="Institutional email" value={form.email} onChange={event => { setForm({ ...form, email: event.target.value }); setSimilarEmailWarning(null) }} /><Select value={form.role} onValueChange={role => setForm({ ...form, role: role as ApplicationRole })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem><SelectItem value="ADMIN">Admin</SelectItem></SelectContent></Select><Button disabled={loading || !form.email} onClick={() => void authorizeUser()}><UserPlus /> Authorize</Button></div>
       {similarEmailWarning && <div className="admin-similar-warning"><div><strong>Possible similar authorized user found:</strong><span>{similarEmailWarning.similarUser.email}</span><strong>You entered:</strong><span>{similarEmailWarning.enteredEmail}</span><small>Review the address carefully. This warning does not automatically block authorization.</small></div><div><Button variant="outline" disabled={loading} onClick={() => void authorizeUser(true)}>Continue anyway</Button><Button variant="ghost" disabled={loading} onClick={() => setSimilarEmailWarning(null)}>Cancel</Button></div></div>}
       <Table><TableHeader><TableRow><TableHead>User</TableHead><TableHead>Linked sign-in</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Last login</TableHead><TableHead>Action</TableHead></TableRow></TableHeader><TableBody>{data.users.map(user => <TableRow key={user.id}><TableCell><strong>{user.displayName}</strong><small className="review-status">{user.email}</small></TableCell><TableCell>{user.identities.length ? user.identities.map(identity => <span key={identity.id} className="identity-provider">{identity.provider === "google_workspace" ? "Institutional Google" : "ChatGPT recovery"}<small>{identity.verifiedEmail}</small></span>) : <span className="review-status">Pending first sign-in</span>}</TableCell><TableCell><Select value={user.role} onValueChange={role => void action({ action: "change_role", userId: user.id, role })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ADMIN">Admin</SelectItem><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem></SelectContent></Select></TableCell><TableCell><span className={`history-status ${user.enabled ? "history-success" : "history-blocked"}`}>{user.enabled ? "Active" : "Disabled"}</span></TableCell><TableCell>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "Not signed in"}</TableCell><TableCell><Button size="sm" variant="outline" disabled={loading} onClick={() => void action({ action: "set_user_status", userId: user.id, enabled: !user.enabled })}>{user.enabled ? "Disable" : "Enable"}</Button></TableCell></TableRow>)}</TableBody></Table>
+    </section>
+
+    <section className="panel admin-section">
+      <div className="panel-heading"><div><h2>Production data maintenance</h2><span>Remove only records classified through explicit mock, demo, seed or mock-provider markers. Live provider evidence and security records are excluded.</span></div><Button variant="outline" disabled={loading} onClick={() => void previewMockCleanup()}><Activity /> Preview cleanup</Button></div>
+      {cleanupPreview && <div className="admin-similar-warning">
+        <div>
+          <strong>Records identified for removal</strong>
+          <span>{cleanupPreview.counts.alumni} alumni · {cleanupPreview.counts.companies} companies · {cleanupPreview.counts.engagementOutreach} engagement/outreach · {cleanupPreview.counts.providerHistory + cleanupPreview.counts.providerSearches + cleanupPreview.counts.providerResults + cleanupPreview.counts.providerReviews + cleanupPreview.counts.fieldChanges} provider/history</span>
+          <strong>Protected live evidence</strong>
+          <span>{cleanupPreview.retained.liveDiscoveryResults} review results · {cleanupPreview.retained.liveSearchCredits} Search credits</span>
+          {cleanupPreview.ambiguous.length > 0 && <><strong>Ambiguous records</strong>{cleanupPreview.ambiguous.map(item => <span key={item}>{item}</span>)}</>}
+        </div>
+        {cleanupPreview.ambiguous.length === 0 && <div className="anonymize-confirm">
+          <Input value={cleanupConfirmation} onChange={event => setCleanupConfirmation(event.target.value)} placeholder="REMOVE MOCK DATASET" />
+          <Button variant="destructive" disabled={loading || cleanupConfirmation !== "REMOVE MOCK DATASET"} onClick={() => void removeMockDataset()}><Trash2 /> Remove mock data</Button>
+          <Button variant="ghost" onClick={() => { setCleanupPreview(null); setCleanupConfirmation("") }}>Cancel</Button>
+        </div>}
+      </div>}
+      {cleanupResult && <div className="admin-similar-warning"><div><strong>Cleanup completed</strong><span>{cleanupResult.removed.alumni} alumni removed · {cleanupResult.final.alumni} internal alumni remain</span><span>{cleanupResult.retained.liveDiscoveryResults} live review results retained · {cleanupResult.retained.liveSearchCredits} Search credits retained</span><span>Integrity: {cleanupResult.final.integrity.map(row => row.integrity_check).join(", ")} · Foreign-key violations: {cleanupResult.final.foreignKeys.length}</span></div></div>}
     </section>
 
     <section className="panel admin-section">
