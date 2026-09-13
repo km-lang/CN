@@ -101,8 +101,11 @@ test("mock cleanup 4: ambiguous orphan company data stops execution", () => {
 test("mock cleanup 5: production UI does not repopulate demo data after an empty response", () => {
   assert.doesNotMatch(page, /const alumniSeed|const companyPrioritySeed|Demonstration alumni dataset/);
   assert.doesNotMatch(engagements, /ensureDemoEngagements|engagement-demo|mock-seeded/);
+  assert.doesNotMatch(page, /useState\("Google"\)/);
+  assert.doesNotMatch(page, /Two recruiter conversations recorded|Summer placement participation confirmed/);
   assert.match(page, /setAlumni\(data\.alumni \?\? \[\]\)/);
   assert.match(page, /No alumni data imported/);
+  assert.match(page, /No companies are mapped yet/);
 });
 
 test("mock cleanup 6: deletion is Admin-only, typed, audited and uses D1-compatible integrity checks", () => {
