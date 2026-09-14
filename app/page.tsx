@@ -28,12 +28,15 @@ import {
 import { apiPath, appConfig } from "@/lib/app-config"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
+import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
+import { providerUsageLabel } from "@/lib/provider-usage"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
   enrichment: apiPath("/api/enrichment"),
   engagements: apiPath("/api/engagements"),
   discovery: apiPath("/api/discovery"),
+  signals: apiPath("/api/signals"),
   outreachRoute: apiPath("/api/outreach-route"),
 })
 
@@ -76,6 +79,8 @@ type Alumni = {
   phoneSource?: string
   emailRetrievedAt?: string
   phoneRetrievedAt?: string
+  professionalDataStatus?: string
+  professionalDataNote?: string
   verified: string
   status: OutreachStatus
   note: string
@@ -120,6 +125,12 @@ type ProviderHistory = {
   mode: "mock" | "live"
   status: string
   creditsUsed: number
+  providerReportedCredits?: number | null
+  usageState?: "provider_reported" | "reconciled_account_usage" | "reconciliation_required" | "provider_reported_zero" | "not_applicable"
+  reconciledCredits?: number | null
+  reconciliationSource?: string
+  reconciledBy?: string
+  reconciledAt?: string
   resultCount?: number
   requestSummary?: string
   responseSummary: string
@@ -164,6 +175,13 @@ type EngagementEvent = {
   eventDate: string
   source: string
   sourceDetectedDate: string
+  providerEventAt?: string
+  previousCompany?: string
+  previousRole?: string
+  newCompany?: string
+  newRole?: string
+  sourceConfidence?: string
+  sourceStatus?: string
   status: EngagementStatus
   assignedTo: string
   assignedAt: string
@@ -412,6 +430,7 @@ export default function Home() {
   const [providerModes, setProviderModes] = useState<Record<Provider, ProviderMode>>({ pdl: "mock", lusha: "mock" })
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ pdl: { used: 0, limit: 100, remaining: 100, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
   const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
+  const [usageReconciliationDrafts, setUsageReconciliationDrafts] = useState<Record<number, string>>({})
   const [creditDrafts, setCreditDrafts] = useState<Record<Provider, string>>({ pdl: "100", lusha: "100" })
   const [selectedForEnrichment, setSelectedForEnrichment] = useState<number[]>([])
   const [enriching, setEnriching] = useState(false)
@@ -426,6 +445,9 @@ export default function Home() {
   const [loadingPendingReview, setLoadingPendingReview] = useState(false)
   const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DirectoryFilters | null>(null)
   const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DirectoryFilters | null>(null)
+  const [pdlLiveMaximum, setPdlLiveMaximum] = useState(5)
+  const [discoveryRequestedCount, setDiscoveryRequestedCount] = useState<number | null>(null)
+  const [discoveryReturnedCount, setDiscoveryReturnedCount] = useState<number | null>(null)
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
@@ -434,6 +456,8 @@ export default function Home() {
   const [engagements, setEngagements] = useState<EngagementEvent[]>([])
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([])
   const [mailMode, setMailMode] = useState<"mock" | "live">("mock")
+  const [mailConfigured, setMailConfigured] = useState(false)
+  const [signalsStatus, setSignalsStatus] = useState<{ mode: string; configured: boolean; liveEnabled: boolean; entitlement: string; requiresManualEntitlementValidation: boolean } | null>(null)
   const [engagementFilter, setEngagementFilter] = useState("Needs Action")
   const [birthdayWindow, setBirthdayWindow] = useState("Next 7 Days")
   const [birthdayCompany, setBirthdayCompany] = useState("All companies")
@@ -512,9 +536,10 @@ export default function Home() {
     if (!session.canOperate) return
     try {
       const response = await fetch(`${API_ROUTES.discovery}?view=summary`, { cache: "no-store" })
-      const data = await response.json() as { pendingCount?: number; error?: string }
+      const data = await response.json() as { pendingCount?: number; liveMaximum?: number; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load pending external-review status.")
       setPendingDiscoveryCount(data.pendingCount ?? 0)
+      setPdlLiveMaximum(data.liveMaximum ?? 5)
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to load pending external-review status.")
     }
@@ -531,11 +556,12 @@ export default function Home() {
     try {
       setEngagementLoading(true)
       const response = await fetch(API_ROUTES.engagements, { cache: "no-store" })
-      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; mode?: "mock" | "live"; error?: string }
+      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; mode?: "mock" | "live"; mail?: { configured?: boolean }; error?: string }
       if (!response.ok || !data.events) throw new Error(data.error || "Unable to load the shared engagement queue.")
       setEngagements(data.events)
       setMessageTemplates(data.templates ?? [])
       setMailMode(data.mode ?? "mock")
+      setMailConfigured(Boolean(data.mail?.configured))
       setSelectedEngagement(current => current ? data.events?.find(event => event.id === current.id) ?? null : null)
       setEngagementMessage("")
     } catch (error) {
@@ -550,6 +576,23 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadEngagements(), 0)
     return () => window.clearTimeout(timer)
   }, [loadEngagements, session.canOperate])
+
+  const loadSignalsStatus = useCallback(async () => {
+    if (!session.canOperate) return
+    try {
+      const response = await fetch(API_ROUTES.signals, { cache: "no-store" })
+      const data = await response.json()
+      if (response.ok) setSignalsStatus(data)
+    } catch {
+      setSignalsStatus(null)
+    }
+  }, [session.canOperate])
+
+  useEffect(() => {
+    if (!session.canOperate) return
+    const timer = window.setTimeout(() => void loadSignalsStatus(), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadSignalsStatus, session.canOperate])
 
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
   const programmes = useMemo(() => [...new Set(alumni.map(person => person.programme))].sort(), [alumni])
@@ -581,7 +624,7 @@ export default function Home() {
   const lushaBothReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 6 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
   const birthdayReady = (event: EngagementEvent) => Boolean(event.alumnus?.email)
     && ["Confirmed internally", "Manually confirmed", "PDL sourced"].includes(event.birthday?.status ?? "")
-    && !["Do not contact", "Do not send birthday wishes", "Professional engagement only"].includes(event.preference)
+    && ["Standard engagement allowed", "Birthday engagement allowed"].includes(event.preference)
     && !["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status)
   const visibleEngagements = engagements.filter(event => {
     if (engagementFilter === "Professional Signals" && event.eventType !== "Professional Signal") return false
@@ -666,6 +709,21 @@ export default function Home() {
       setWorkspaceMessage("Privacy preference saved and audited.")
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save privacy preferences.")
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  async function updateProfessionalDataQuality(person: Alumni, status: string, note: string) {
+    setSyncing(true)
+    try {
+      const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_data_quality", id: person.id, professionalDataStatus: status, professionalDataNote: note }) })
+      const data = await response.json() as { alumnus?: Alumni; error?: string }
+      if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the professional data-quality review.")
+      replaceAlumnus({ ...data.alumnus, privacy: person.privacy })
+      setWorkspaceMessage("Professional data-quality status saved without overwriting profile fields.")
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save the professional data-quality review.")
     } finally {
       setSyncing(false)
     }
@@ -813,6 +871,23 @@ export default function Home() {
     }
   }
 
+  async function reconcileProviderUsage(item: ProviderHistory) {
+    const reconciledCredits = Number(usageReconciliationDrafts[item.id])
+    if (!Number.isInteger(reconciledCredits) || reconciledCredits < 0) {
+      setEnrichmentMessage("Enter the whole-number account usage delta observed for this operation.")
+      return
+    }
+    try {
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "reconcile_usage", historyId: item.id, reconciledCredits, reconciliationSource: "Lusha account dashboard reconciliation" }) })
+      const data = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to reconcile provider usage.")
+      setEnrichmentMessage(`${item.operation} reconciled to an observed account delta of ${reconciledCredits}.`)
+      await loadEnrichment()
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to reconcile provider usage.")
+    }
+  }
+
   async function validatePdlConnection() {
     setEnrichmentMessage("")
     try {
@@ -904,7 +979,7 @@ export default function Home() {
 
   async function sendMailPreview() {
     if (!mailPreview) return
-    const result = await postEngagement("send", mailPreview.event.id, { templateId: mailPreview.templateId, subject: mailPreview.subject, body: mailPreview.body })
+    const result = await postEngagement("send", mailPreview.event.id, { templateId: mailPreview.templateId, subject: mailPreview.subject, body: mailPreview.body, approved: true })
     if (result) {
       setMailPreview(null)
       setSelectedEngagement(null)
@@ -946,7 +1021,7 @@ export default function Home() {
 
   async function sendSelectedBirthdays() {
     if (!bulkPreview?.ready.length) return
-    const result = await postEngagement("bulk_send", undefined, { eventIds: bulkPreview.ready.map(item => item.eventId) })
+    const result = await postEngagement("bulk_send", undefined, { eventIds: bulkPreview.ready.map(item => item.eventId), approved: true })
     if (result) {
       setBulkPreview(null)
       setSelectedBirthdayIds([])
@@ -977,6 +1052,13 @@ export default function Home() {
   }
 
   function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
+    const requested = Number(discoveryLimit)
+    const validation = validateDiscoveryCount(requested, providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)
+    if (!validation.ok) {
+      setDiscoveryState("blocked")
+      setDiscoveryMessage(validation.message)
+      return
+    }
     if (providerModes.pdl === "live") {
       setPendingDiscoveryFilters(searchFilters)
       return
@@ -1027,7 +1109,7 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
       })
-      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; effectiveLimit?: number; error?: string; blocked?: boolean }
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; error?: string; blocked?: boolean }
       if (data.blocked) {
         setDiscoveryState("blocked")
         setDiscoveryMessage(data.error || "External search could not be run because the PDL application limit has been reached.")
@@ -1035,12 +1117,14 @@ export default function Home() {
       }
       if (!response.ok || !data.results || !data.counts) throw new Error(data.error || "Unable to search external professional data.")
       if (data.effectiveLimit) setDiscoveryLimit(String(data.effectiveLimit))
+      setDiscoveryRequestedCount(data.requestedCount ?? data.effectiveLimit ?? Number(discoveryLimit))
+      setDiscoveryReturnedCount(data.returnedCount ?? data.results.length)
       setDiscoveryResults(data.results)
       setDiscoveryCounts(data.counts)
       setSelectedDiscoveryIds([])
       setDiscoveryState(data.results.length ? "results" : "empty")
       setDiscoveryMessage(data.results.length
-        ? `${data.results.length} external profiles returned. ${data.creditsUsed ?? 0} PDL credits recorded.`
+        ? `${data.results.length} profiles returned from ${data.requestedCount ?? data.effectiveLimit ?? discoveryLimit} requested. ${data.creditsUsed ?? 0} PDL credits were reported by the provider.`
         : "No additional external alumni were found for these criteria.")
       await Promise.all([loadEnrichment(), loadPendingDiscoverySummary()])
     } catch (error) {
@@ -1336,7 +1420,7 @@ export default function Home() {
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <Button onClick={() => discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button>}</div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <div className="directory-discovery-action"><label><span>Results to retrieve</span><Input type="number" inputMode="numeric" min="1" max={maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="PDL profiles to retrieve" /></label><div className="result-presets">{[1, 5, 10, 20].map(value => <Button key={value} type="button" size="sm" variant="outline" disabled={value > maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} onClick={() => setDiscoveryLimit(String(value))}>{value}</Button>)}</div><Button onClick={() => discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>}</div>
               {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
@@ -1371,10 +1455,10 @@ export default function Home() {
                 <div><p className="eyebrow">External discovery</p><h2>{discoveryState === "blocked" ? "External search not run" : discoveryState === "empty" ? "No additional profiles found" : `${discoveryResults.length} PDL profiles found`}</h2><span>{discoveryState === "blocked" ? "The previous search state is retained below." : `Results are reviewed before any record enters ${appConfig.name}.`}</span></div>
                 <div className="fixed-criterion"><span>Fixed alumni criterion</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div>
               </div>
-              {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Company</span><strong>{lastDiscoveryFilters.company}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.batch || "Any year"}</strong></div><div><span>Results requested</span><strong>{discoveryLimit}</strong></div></div>}
+              {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Company</span><strong>{lastDiscoveryFilters.company}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.batch || "Any year"}</strong></div><div><span>Results requested / returned</span><strong>{discoveryRequestedCount ?? discoveryLimit} / {discoveryReturnedCount ?? discoveryResults.length}</strong></div></div>}
               <div className="discovery-controls">
                 <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
-                <div className="result-limit"><span>Results to retrieve</span><Select value={discoveryLimit} onValueChange={setDiscoveryLimit}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(providerModes.pdl === "live" ? ["5"] : ["5", "25", "50", "100"]).map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => discoverMoreAlumni()} disabled={discovering}>Run again</Button></div>
+                <div className="result-limit"><span>Results to retrieve</span><Input type="number" inputMode="numeric" min="1" max={maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="Custom PDL profile count" /><div className="result-presets">{[1, 5, 10, 20].map(value => <Button key={value} type="button" size="sm" variant={discoveryLimit === String(value) ? "default" : "outline"} disabled={value > maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} onClick={() => setDiscoveryLimit(String(value))}>{value}</Button>)}</div><small>Whole numbers only · maximum currently {maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)}</small><Button variant="outline" onClick={() => discoverMoreAlumni()} disabled={discovering}>Run again</Button></div>
               </div>
               <div className="credit-notice"><Activity /><span>External discovery may consume PDL credits based on the number of person records returned. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
@@ -1429,6 +1513,8 @@ export default function Home() {
               <div className="demo-user"><label>Signed-in owner</label><strong>{session.displayName}</strong><small>Actions use your authenticated identity</small></div>
             </section>
 
+            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "live" : "mock"}`}>{signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "LIVE · entitlement confirmed" : "Prepared · entitlement validation required"}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small></section>
+
             <section className="engagement-stats">
               <article><BellRing /><span>New professional signals<strong>{professionalEvents.filter(event => event.status === "New").length}</strong></span></article>
               <article><Cake /><span>Birthdays today<strong>{birthdaysToday.length}</strong></span></article>
@@ -1439,7 +1525,7 @@ export default function Home() {
             <section className="panel engagement-panel">
               <div className="engagement-filterbar">
                 <div className="engagement-filter-tabs">{["Needs Action", "Professional Signals", "Birthdays", "Assigned to Me", "Follow-ups", "Completed", "Skipped"].map(filter => <button key={filter} className={engagementFilter === filter ? "active" : ""} onClick={() => setEngagementFilter(filter)}>{filter}</button>)}</div>
-                <div className={`mail-mode mail-${mailMode}`}><Mail /> {mailMode === "mock" ? "Mock mail" : "Live mail"}</div>
+                <div className={`mail-mode mail-${mailMode}`}><Mail /> {mailMode === "mock" ? "Mock mail · sending disabled" : mailConfigured ? "Live mail · configured" : "Live mail · credentials missing"}</div>
               </div>
 
               {engagementFilter === "Birthdays" && <div className="birthday-filters">
@@ -1540,7 +1626,7 @@ export default function Home() {
 
             <section className="panel history-panel">
               <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canOperate && <Button variant="ghost" size="sm" onClick={() => void loadEnrichment()}>Refresh history</Button>}</div>
-              <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Credits</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistory.map(item => <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span>{item.resultCount ? <small className="review-status">{item.resultCount} results</small> : null}</TableCell><TableCell>{item.creditsUsed}</TableCell><TableCell className="response-cell">{item.requestSummary && <small>{item.requestSummary}</small>}{item.errorMessage || item.responseSummary}</TableCell></TableRow>)}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Credits</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistory.map(item => { const usage = providerUsageLabel(item); return <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span>{item.resultCount ? <small className="review-status">{item.resultCount} results</small> : null}</TableCell><TableCell><span className="stacked-cell"><strong>{usage.label}</strong><small>{usage.detail}</small>{item.reconciliationSource && <small>{item.reconciliationSource}</small>}{session.canAdminister && usage.label === "Reconciliation required" && <span className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => setUsageReconciliationDrafts(current => ({ ...current, [item.id]: event.target.value }))} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => void reconcileProviderUsage(item)}>Reconcile</Button></span>}</span></TableCell><TableCell className="response-cell">{item.requestSummary && <small>{item.requestSummary}</small>}{item.errorMessage || item.responseSummary}</TableCell></TableRow> })}</TableBody></Table>
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section>
           </TabsContent>
@@ -1553,6 +1639,7 @@ export default function Home() {
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             {selected.privacy?.generalContactStatus === "Do not contact" && <div className="do-not-contact-banner"><Ban /><div><strong>Do not contact</strong><span>All birthday, professional and outreach sends are blocked server-side for this alumnus.</span></div></div>}
+            {session.canOperate && <section className="profile-section data-quality-section"><h3>Professional data quality</h3><p className="section-help">Provider success does not prove freshness. Conflicts remain visible until a committee member verifies and approves any profile update.</p><Select value={selected.professionalDataStatus || "Needs assessment"} onValueChange={value => void updateProfessionalDataQuality(selected, value, selected.professionalDataNote || "")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Needs assessment", "Current", "Conflict — manual verification required", "Manually verified"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Textarea value={selected.professionalDataNote || ""} placeholder="Record conflicting sources and the manual verification needed." onChange={event => replaceAlumnus({ ...selected, professionalDataNote: event.target.value })} onBlur={event => void updateProfessionalDataQuality(selected, selected.professionalDataStatus || "Needs assessment", event.target.value)} /></section>}
             <details className="score-breakdown"><summary>Why this Placement Relevance score?</summary><div className="breakdown-list">{selectedBreakdown.items.map(item => <div key={item.label}><span>{item.label}<small>{item.weight}% weight</small></span><strong>{item.score}</strong><em>{(item.score * item.weight / 100).toFixed(1)}</em></div>)}</div><p>Weighted contributions are added and rounded to the nearest whole number.</p></details>
             <section className="profile-section"><h3>Assess alumnus</h3><p className="section-help">Choose qualitative evidence. {appConfig.name} converts each choice into an auditable score.</p><div className="assessment-grid">
               <label><span>Hiring influence</span><Select disabled={!session.canOperate} value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
@@ -1562,7 +1649,7 @@ export default function Home() {
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
             <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; setSelected(null); void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
             {session.canOperate && <section className="profile-section privacy-section"><h3>Privacy and contact preferences</h3><p className="section-help">Unknown is not affirmative consent. Send eligibility is checked again on the server.</p><div className="assessment-grid"><label><span>General contact</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional engagement</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday engagement</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Consent/source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Privacy note</span><Textarea value={selected.privacy?.notes || ""} onChange={event => replaceAlumnus({ ...selected, privacy: { ...(selected.privacy ?? { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" }), notes: event.target.value } })} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></section>}
-            {session.canOperate && <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setSelected(null); setEngagementFilter("Needs Action"); setActiveTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { setSelected(null); setActiveTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {item.creditsUsed} credits</small></p></div>)}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>}
+            {session.canOperate && <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setSelected(null); setEngagementFilter("Needs Action"); setActiveTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { setSelected(null); setActiveTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => { const usage = providerUsageLabel(item); return <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {usage.label === "—" ? usage.label : `${usage.label} credits`}</small></p></div> })}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>}
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last data check: {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
               <div><span>Current company</span><strong className={verificationTone(selected.verification.currentCompany)}>{selected.verification.currentCompany}</strong></div>
@@ -1581,7 +1668,7 @@ export default function Home() {
           {selectedEngagement && <>
             <DialogHeader><DialogTitle>{selectedEngagement.eventTitle}</DialogTitle><DialogDescription>{selectedEngagement.alumnus?.name} · {selectedEngagement.alumnus?.company} · {selectedEngagement.eventType}</DialogDescription></DialogHeader>
             <div className="engagement-dialog-scroll">
-              <section className="event-detail-summary"><div className={`event-icon event-${selectedEngagement.eventType.toLowerCase().replaceAll(" ", "-")}`}>{selectedEngagement.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</div><div><p>{selectedEngagement.eventDescription}</p><span>{displayEventDate(selectedEngagement.eventDate)} · Source: {selectedEngagement.source}</span></div><EngagementStatusBadge status={selectedEngagement.status} /></section>
+              <section className="event-detail-summary"><div className={`event-icon event-${selectedEngagement.eventType.toLowerCase().replaceAll(" ", "-")}`}>{selectedEngagement.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</div><div><p>{selectedEngagement.eventDescription}</p><span>{displayEventDate(selectedEngagement.eventDate)} · Source: {selectedEngagement.source}</span>{selectedEngagement.eventType === "Professional Signal" && <small>{selectedEngagement.previousRole || selectedEngagement.previousCompany ? `${selectedEngagement.previousRole || "Role unavailable"} at ${selectedEngagement.previousCompany || "company unavailable"}` : "Previous role/company unavailable"} → {selectedEngagement.newRole || selectedEngagement.newCompany ? `${selectedEngagement.newRole || "Role unavailable"} at ${selectedEngagement.newCompany || "company unavailable"}` : "New role/company unavailable"} · Provider event: {selectedEngagement.providerEventAt || "not reported"} · Confidence: {selectedEngagement.sourceConfidence || "unknown"}</small>}</div><EngagementStatusBadge status={selectedEngagement.status} /></section>
               {selectedEngagement.actionTakenBy && <div className="already-engaged"><CheckCircle2 /><div><strong>Action already taken</strong><span>{selectedEngagement.actionType} by {selectedEngagement.actionTakenBy} on {new Date(selectedEngagement.actionTakenAt).toLocaleString()} · {selectedEngagement.deliveryStatus}</span></div></div>}
               {selectedEngagement.assignedTo && <div className="assignment-note"><UserRoundCheck /><span>Assigned to <strong>{selectedEngagement.assignedTo}</strong>{selectedEngagement.assignedAt ? ` since ${new Date(selectedEngagement.assignedAt).toLocaleString()}` : ""}</span></div>}
 
@@ -1661,7 +1748,7 @@ export default function Home() {
       </Dialog>
 
       <Dialog open={Boolean(pendingDiscoveryFilters)} onOpenChange={open => { if (!open) setPendingDiscoveryFilters(null) }}>
-        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live PDL Person Search?</DialogTitle><DialogDescription>Confirm this controlled, credit-consuming search before it reaches People Data Labs.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>People Data Labs — LIVE</strong></div><div><span>Maximum results</span><strong>5</strong></div><div><span>Application credits remaining</span><strong>{providerUsage.pdl.remaining}</strong></div><div><span>Company filter</span><strong>{pendingDiscoveryFilters?.company ?? "Not selected"}</strong></div></div><div className="credit-notice"><Activity /><span>Education is fixed to the canonical IIM Lucknow school identity. PDL Search can charge one credit for each result returned. Results are review-only and will not be added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || pendingDiscoveryFilters.company === "All companies" || providerUsage.pdl.remaining < 1} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live PDL Person Search?</DialogTitle><DialogDescription>Confirm this controlled, credit-consuming search before it reaches People Data Labs.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>People Data Labs — LIVE</strong></div><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div><div><span>Company</span><strong>{pendingDiscoveryFilters?.company ?? "Not selected"}</strong></div><div><span>Role</span><strong>{pendingDiscoveryFilters?.role || "Any role"}</strong></div><div><span>Function</span><strong>{pendingDiscoveryFilters?.function ?? "Any function"}</strong></div><div><span>Seniority</span><strong>{pendingDiscoveryFilters?.seniority ?? "Any level"}</strong></div><div><span>Location</span><strong>{pendingDiscoveryFilters?.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{pendingDiscoveryFilters?.batch || "Any year"}</strong></div><div><span>Profiles requested</span><strong>{discoveryLimit}</strong></div><div><span>Application credits remaining</span><strong>{providerUsage.pdl.remaining}</strong></div><div><span>Maximum potential result usage</span><strong>{discoveryLimit}</strong></div></div><div className="credit-notice"><Activity /><span>Actual provider usage and the number of profiles returned will be recorded from the live response. The requested count is only a maximum. Results are review-only and will not be added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || pendingDiscoveryFilters.company === "All companies" || !validateDiscoveryCount(Number(discoveryLimit), providerUsage.pdl.remaining, pdlLiveMaximum).ok} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>

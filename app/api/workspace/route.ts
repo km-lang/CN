@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, importRuns } from "@/db/schema";
+import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns } from "@/db/schema";
 import type { ApplicationRole } from "@/lib/access-types";
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
@@ -135,6 +135,8 @@ function toApiAlumnus(row: typeof alumni.$inferSelect, role: ApplicationRole, pr
     phoneSource: row.phoneSource,
     emailRetrievedAt: row.emailRetrievedAt,
     phoneRetrievedAt: row.phoneRetrievedAt,
+    professionalDataStatus: row.professionalDataStatus,
+    professionalDataNote: operationalDetailsAllowed ? row.professionalDataNote : "Restricted for Developer role",
     verified: row.verified,
     status: row.status,
     note: operationalDetailsAllowed ? row.note : "Restricted for Developer role",
@@ -317,6 +319,8 @@ export async function PATCH(request: Request) {
       company?: string;
       priority?: string;
       privacy?: { generalContactStatus?: string; professionalEngagementStatus?: string; birthdayEngagementStatus?: string; consentSource?: string; notes?: string };
+      professionalDataStatus?: string;
+      professionalDataNote?: string;
     };
     const db = getDb();
     const now = new Date().toISOString();
@@ -350,6 +354,19 @@ export async function PATCH(request: Request) {
       await db.insert(activityLog).values({ action: "update", entityType: "company", entityId: company, actor, details: `Priority set to ${priority}` });
       await writeSecurityAudit(context, { action: "company_priority_changed", entityType: "company", entityId: company, metadata: { priority } });
       return Response.json({ company, priority });
+    }
+
+    if (payload.action === "update_data_quality" && Number.isInteger(payload.id)) {
+      const context = await authorizeRequest(request, "OPERATE_PCOM");
+      const actor = context.displayName;
+      const allowed = new Set(["Needs assessment", "Current", "Conflict — manual verification required", "Manually verified"]);
+      const professionalDataStatus = allowed.has(text(payload.professionalDataStatus)) ? text(payload.professionalDataStatus) : "Needs assessment";
+      const professionalDataNote = text(payload.professionalDataNote).slice(0, 1000);
+      const [updated] = await db.update(alumni).set({ professionalDataStatus, professionalDataNote, updatedBy: actor, updatedAt: now }).where(eq(alumni.id, payload.id!)).returning();
+      if (!updated) return Response.json({ error: "Alumnus not found." }, { status: 404 });
+      await db.insert(fieldChangeHistory).values({ alumnusId: updated.id, field: "professional_data_status", oldValue: "", newValue: professionalDataStatus, source: "Manual PCOM review", providerAction: "Data conflict review", initiatedBy: actor });
+      await writeSecurityAudit(context, { action: "professional_data_quality_changed", entityType: "alumnus", entityId: updated.id, metadata: { professionalDataStatus, noteRecorded: Boolean(professionalDataNote) } });
+      return Response.json({ alumnus: toApiAlumnus(updated, context.role) });
     }
 
     if (payload.action === "update_privacy" && Number.isInteger(payload.id) && payload.privacy) {

@@ -14,7 +14,7 @@ import {
   fieldChangeHistory,
   messageTemplates,
 } from "@/db/schema";
-import { createMailDraft, mailMode, sendMail } from "@/lib/mail-service";
+import { createMailDraft, mailConfiguration, mailMode, sendMail } from "@/lib/mail-service";
 import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
 
 const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Skipped"]);
@@ -45,6 +45,7 @@ async function loadWorkspace() {
   const privacyByAlumnus = new Map(privacyControls.map(item => [item.alumnusId, item]));
   return {
     mode: mailMode(),
+    mail: { mode: mailMode(), ...mailConfiguration() },
     templates,
     events: events.map(event => {
       const person = peopleById.get(event.alumnusId);
@@ -81,8 +82,9 @@ async function loadWorkspace() {
 
 function engagementPreference(eventType: string, privacy: typeof alumniPrivacyControls.$inferSelect | undefined, legacy = "Unknown") {
   if (privacy?.generalContactStatus === "Do not contact") return "Do not contact";
-  if (eventType === "Birthday" && ["Do not contact", "No birthday engagement", "Professional engagement only"].includes(privacy?.birthdayEngagementStatus ?? "")) return privacy!.birthdayEngagementStatus;
-  if (eventType === "Professional Signal" && ["Do not contact", "No professional engagement"].includes(privacy?.professionalEngagementStatus ?? "")) return privacy!.professionalEngagementStatus;
+  if (eventType === "Birthday" && privacy?.birthdayEngagementStatus && privacy.birthdayEngagementStatus !== "Unknown") return privacy.birthdayEngagementStatus;
+  if (eventType === "Professional Signal" && privacy?.professionalEngagementStatus && privacy.professionalEngagementStatus !== "Unknown") return privacy.professionalEngagementStatus;
+  if (privacy?.generalContactStatus && privacy.generalContactStatus !== "Unknown") return privacy.generalContactStatus;
   return legacy;
 }
 
@@ -124,6 +126,15 @@ async function validateSendEligibility(eventId: number, actor?: string) {
   if (event.eventType === "Professional Signal" && ["Do not contact", "No professional engagement"].includes(privacy?.professionalEngagementStatus ?? "")) {
     throw new Error("Professional engagement is not permitted for this alumnus.");
   }
+  const generalPreference = privacy?.generalContactStatus ?? "Unknown";
+  const professionalPreference = privacy?.professionalEngagementStatus ?? "Unknown";
+  const birthdayPreference = privacy?.birthdayEngagementStatus ?? "Unknown";
+  const explicitProfessionalPermission = ["Standard engagement allowed", "Professional engagement only"].includes(generalPreference)
+    || ["Standard engagement allowed", "Professional engagement only"].includes(professionalPreference);
+  const explicitBirthdayPermission = ["Standard engagement allowed", "Birthday engagement allowed"].includes(generalPreference)
+    || birthdayPreference === "Birthday engagement allowed";
+  if (event.eventType === "Professional Signal" && !explicitProfessionalPermission) throw new Error("Explicit professional communication permission is required; Unknown is not consent.");
+  if (event.eventType === "Birthday" && !explicitBirthdayPermission) throw new Error("Explicit birthday communication permission is required; Unknown is not consent.");
   if (event.eventType === "Birthday") {
     const [birthday] = await db.select().from(birthdayData).where(eq(birthdayData.alumnusId, person.id)).limit(1);
     const [preference] = await db.select().from(communicationPreferences).where(and(
@@ -140,32 +151,42 @@ async function validateSendEligibility(eventId: number, actor?: string) {
   }
 }
 
-async function sendOne(eventId: number, context: SecurityContext, templateId?: number, subject?: string, body?: string) {
+async function sendOne(eventId: number, context: SecurityContext, approved: boolean, templateId?: number, subject?: string, body?: string) {
   const db = getDb();
   const actor = context.displayName;
+  if (!approved) throw new Error("Human approval is required after preview and before sending.");
   await validateSendEligibility(eventId, actor);
   const { event, person, template, draft } = await buildDraft(eventId, templateId);
   const prepared = { ...draft, subject: subject?.trim() || draft.subject, body: body?.trim() || draft.body };
+  const purpose = event.eventType === "Birthday" ? "birthday" : "professional-congratulations";
+  const actionKey = `mail:${person.id}:${event.eventKey}:${template.templateKey}:v${template.version}`;
+  const approvedAt = new Date().toISOString();
   const [reserved] = await db.insert(engagementActions).values({
-    actionKey: `engagement-send:${event.id}`,
+    actionKey,
     eventId: event.id,
     alumnusId: person.id,
     actionType: event.eventType === "Birthday" ? "Birthday Email" : "Congratulations Email",
     channel: "Email",
     performedBy: actor,
     templateId: template.id,
+    templateVersion: template.version,
+    sender: mailConfiguration().sender,
+    recipient: person.email,
+    purpose,
+    approvedBy: actor,
+    approvedAt,
     subject: prepared.subject,
     messageSummary: prepared.body.slice(0, 500),
     deliveryStatus: "Sending",
   }).onConflictDoNothing().returning();
   if (!reserved) {
-    const [existing] = await db.select().from(engagementActions).where(eq(engagementActions.actionKey, `engagement-send:${event.id}`)).limit(1);
+    const [existing] = await db.select().from(engagementActions).where(eq(engagementActions.actionKey, actionKey)).limit(1);
     throw new Error(`Already engaged by ${existing?.performedBy || "another committee member"}${existing?.performedAt ? ` on ${new Date(existing.performedAt).toLocaleString()}` : ""}.`);
   }
   try {
     const result = await sendMail(prepared);
     const now = new Date().toISOString();
-    await db.update(engagementActions).set({ externalMessageId: result.messageId, deliveryStatus: result.deliveryStatus, performedAt: now }).where(eq(engagementActions.id, reserved.id));
+    await db.update(engagementActions).set({ externalMessageId: result.messageId, deliveryStatus: result.deliveryStatus, sender: result.sender, recipient: result.recipient, performedAt: now }).where(eq(engagementActions.id, reserved.id));
     await db.update(engagementEvents).set({
       status: "Action Taken",
       assignedTo: event.assignedTo || actor,
@@ -219,6 +240,7 @@ export async function POST(request: Request) {
       followUpRequired?: boolean;
       followUpDate?: string;
       birthMonthDay?: string;
+      approved?: boolean;
     };
     const actor = context.displayName;
     const db = getDb();
@@ -247,7 +269,7 @@ export async function POST(request: Request) {
       const sent = [];
       const excluded = [];
       for (const id of ids) {
-        try { sent.push(await sendOne(id, context, payload.templateId)); }
+        try { sent.push(await sendOne(id, context, payload.approved === true, payload.templateId)); }
         catch (error) { excluded.push({ eventId: id, reason: error instanceof Error ? error.message : "Unable to send" }); }
       }
       return Response.json({ sent, excluded, mode: mailMode() });
@@ -287,7 +309,7 @@ export async function POST(request: Request) {
       await audit(eventId, context, "draft_generated", `Draft prepared with ${item.template.name}.`);
       return Response.json({ template: item.template, draft: item.draft });
     } else if (payload.action === "send") {
-      const sent = await sendOne(eventId, context, payload.templateId, payload.subject, payload.body);
+      const sent = await sendOne(eventId, context, payload.approved === true, payload.templateId, payload.subject, payload.body);
       return Response.json({ sent, mode: mailMode() });
     } else if (payload.action === "manual_action") {
       if (terminalStatuses.has(event.status)) return Response.json({ error: "This event has already been completed." }, { status: 409 });

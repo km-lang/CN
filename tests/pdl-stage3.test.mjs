@@ -84,11 +84,11 @@ test("stage3 4: live education query uses the canonical exact IIM Lucknow school
   assert.doesNotMatch(serialized, /"IIM"|Indian Institute of Management"/);
 });
 
-test("stage3 5: live Person Search is hard-capped at five returned profiles", () => {
-  assert.equal(runtime.pdlLiveSearchMaximum(), 5);
-  const url = discovery.buildPdlSearchUrl({ ...search.defaultDirectoryFilters(), company: "Google" }, 5, "school-iim-lucknow");
+test("stage3 5: live Person Search respects the configured provider-safe maximum", () => {
+  assert.equal(runtime.pdlLiveSearchMaximum(), 99);
+  const url = discovery.buildPdlSearchUrl({ ...search.defaultDirectoryFilters(), company: "Google" }, 20, "school-iim-lucknow");
   assert.equal(url.origin + url.pathname, "https://api.peopledatalabs.com/v5/person/search");
-  assert.equal(url.searchParams.get("size"), "5");
+  assert.equal(url.searchParams.get("size"), "20");
 });
 
 test("stage3 6: School Cleaner resolves the fixed institution before paid search", async () => {
@@ -169,7 +169,7 @@ test("stage3 12: application limits and company filter block before a live provi
   assert.match(discoveryRoute, /filters\.company === "All companies"/);
   assert.match(discoveryRoute, /pdlRemainingCredits\(\)/);
   assert.match(discoveryRoute, /remaining < 1/);
-  assert.match(discoveryRoute, /Math\.min\(requestedLimit, remaining/);
+  assert.match(discoveryRoute, /validateDiscoveryCount\(requestedLimit, remaining, providerMaximum\)/);
 });
 
 test("stage3 13: zero results and provider failures remain distinct", () => {

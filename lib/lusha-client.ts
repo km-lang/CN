@@ -175,7 +175,7 @@ function firstMetric(body: Record<string, unknown>, keys: string[]) {
 }
 
 export async function getLushaAccountUsage(options: { fetcher?: Fetcher } = {}): Promise<LushaAccountUsage> {
-  const { body } = await lushaRequest("/account/usage", { method: "GET", headers: { "content-type": "application/json" } }, options)
+  const { body } = await lushaRequest("/v3/account/usage", { method: "GET", headers: { "content-type": "application/json" } }, options)
   return {
     used: firstMetric(body, ["used", "creditsUsed", "credits_used"]),
     remaining: firstMetric(body, ["remaining", "creditsRemaining", "credits_remaining", "balance"]),

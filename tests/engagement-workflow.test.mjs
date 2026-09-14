@@ -50,7 +50,7 @@ test("4. a sent message records action, actor, channel and delivery", () => {
 
 test("5. duplicate sends are prevented atomically", () => {
   assert.match(schema, /uniqueIndex\("idx_engagement_action_key"\)\.on\(table\.actionKey\)/);
-  assert.match(route, /engagement-send:\$\{event\.id\}/);
+  assert.match(route, /mail:\$\{person\.id\}:\$\{event\.eventKey\}:\$\{template\.templateKey\}:v\$\{template\.version\}/);
   assert.match(route, /onConflictDoNothing\(\)\.returning\(\)/);
 });
 

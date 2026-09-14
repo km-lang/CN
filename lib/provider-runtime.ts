@@ -9,6 +9,8 @@ type ProviderRuntimeEnvironment = {
   PDL_IIML_SCHOOL_ID?: string
   PDL_LIVE_SEARCH_MAX_RESULTS?: string
   PDL_LIVE_REFRESH_MAX_PROFILES?: string
+  LUSHA_SIGNALS_LIVE_ENABLED?: string
+  LUSHA_SIGNALS_ENTITLEMENT?: string
 }
 
 function runtimeEnvironment() {
@@ -46,9 +48,15 @@ function boundedInteger(value: string | undefined, fallback: number, maximum: nu
 }
 
 export function pdlLiveSearchMaximum() {
-  return boundedInteger(runtimeEnvironment().PDL_LIVE_SEARCH_MAX_RESULTS, 5, 5)
+  return boundedInteger(runtimeEnvironment().PDL_LIVE_SEARCH_MAX_RESULTS, 5, 100)
 }
 
 export function pdlLiveRefreshMaximum() {
   return boundedInteger(runtimeEnvironment().PDL_LIVE_REFRESH_MAX_PROFILES, 1, 1)
+}
+
+export function signalsRuntimeStatus() {
+  const values = runtimeEnvironment()
+  const entitlement = values.LUSHA_SIGNALS_ENTITLEMENT?.trim().toLowerCase() === "confirmed" ? "confirmed" : "unverified"
+  return { liveEnabled: enabled(values.LUSHA_SIGNALS_LIVE_ENABLED), entitlement } as const
 }

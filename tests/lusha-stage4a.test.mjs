@@ -107,7 +107,7 @@ test("stage4a 7: account validation uses the non-contact usage endpoint", async 
     calledUrl = String(url);
     return new Response(JSON.stringify({ data: { usage: { used: 7, remaining: 93, limit: 100 } } }), { status: 200, headers: { "content-type": "application/json" } });
   } });
-  assert.equal(calledUrl, "https://api.lusha.com/account/usage");
+  assert.equal(calledUrl, "https://api.lusha.com/v3/account/usage");
   assert.deepEqual(usage, { used: 7, remaining: 93, limit: 100 });
 });
 
@@ -133,7 +133,7 @@ test("stage4a 10: server rejects the legacy combined live path", () => {
 });
 
 test("stage4a 11: Lusha actions remain PCOM-operational and settings remain Admin-only", () => {
-  assert.match(route, /payload\.action === "validate_lusha" \? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"/);
+  assert.match(route, /requiredPermission = payload\.action === "validate_lusha" \? "MANAGE_PROVIDER_SETTINGS"/);
   assert.match(page, /disabled=\{!session\.canAdminister\}/);
   assert.match(page, /Only an Admin can change application credit limits/);
 });

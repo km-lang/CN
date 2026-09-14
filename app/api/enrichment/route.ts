@@ -4,6 +4,7 @@ import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHis
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
 import { getLushaAccountUsage, revealLushaEmail, searchLushaContact } from "@/lib/lusha-client";
 import { pdlLiveRefreshMaximum } from "@/lib/provider-runtime";
+import { providerUsageState } from "@/lib/provider-usage";
 import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const providers: ProviderName[] = ["pdl", "lusha"];
@@ -80,8 +81,9 @@ export async function PATCH(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const payload = await request.json() as { action?: string; alumniIds?: number[]; alumnusId?: number; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[]; reviewId?: number; fields?: string[]; confirmed?: boolean };
-    const context = await authorizeRequest(request, payload.action === "validate_lusha" ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM");
+    const payload = await request.json() as { action?: string; alumniIds?: number[]; alumnusId?: number; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[]; reviewId?: number; historyId?: number; fields?: string[]; confirmed?: boolean; reconciledCredits?: number; reconciliationSource?: string };
+    const requiredPermission = payload.action === "validate_lusha" ? "MANAGE_PROVIDER_SETTINGS" : payload.action === "reconcile_usage" ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM";
+    const context = await authorizeRequest(request, requiredPermission);
     const db = getDb();
     const actor = context.displayName;
 
@@ -90,6 +92,28 @@ export async function POST(request: Request) {
       const accountUsage = await getLushaAccountUsage();
       await writeSecurityAudit(context, { action: "lusha_connection_validated", entityType: "provider", entityId: "lusha", metadata: { endpoint: "account_usage", contactDataRequested: false } });
       return Response.json({ connected: true, accountUsage });
+    }
+
+    if (payload.action === "reconcile_usage") {
+      if (!Number.isInteger(payload.historyId) || !Number.isInteger(payload.reconciledCredits) || Number(payload.reconciledCredits) < 0 || !payload.reconciliationSource?.trim()) {
+        return Response.json({ error: "Choose a provider-history record, enter a whole observed account delta, and record its source." }, { status: 400 });
+      }
+      const [history] = await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.id, payload.historyId!)).limit(1);
+      if (!history || history.provider !== "lusha" || history.providerReportedCredits !== null || !["reconciliation_required", "not_applicable"].includes(history.usageState)) {
+        return Response.json({ error: "Only a Lusha operation without provider-reported usage can be reconciled." }, { status: 409 });
+      }
+      const reconciledCredits = Number(payload.reconciledCredits);
+      const now = new Date().toISOString();
+      await db.update(providerResponseHistory).set({
+        creditsUsed: reconciledCredits,
+        reconciledCredits,
+        usageState: "reconciled_account_usage",
+        reconciliationSource: payload.reconciliationSource.trim().slice(0, 240),
+        reconciledBy: actor,
+        reconciledAt: now,
+      }).where(eq(providerResponseHistory.id, history.id));
+      await writeSecurityAudit(context, { action: "provider_usage_reconciled", entityType: "provider_response", entityId: history.id, metadata: { provider: "lusha", operation: history.operation, reconciledCredits, source: payload.reconciliationSource.trim().slice(0, 240) } });
+      return Response.json({ reconciled: true, usage: await usageSnapshot() });
     }
 
     if (payload.action === "lusha_search_contact") {
@@ -103,11 +127,21 @@ export async function POST(request: Request) {
       const result = await searchLushaContact({ name: person.name, company: person.company, linkedinUrl: person.linkedinUrl });
       const recordedCredits = result.creditsUsed ?? 0;
       if (result.status === "success" && result.contactId) {
-        await db.update(alumni).set({ lushaPersonId: result.contactId, updatedBy: actor, updatedAt: new Date().toISOString() }).where(eq(alumni.id, person.id));
+        const companyConflict = Boolean(result.company && person.company && result.company.toLowerCase() !== person.company.toLowerCase());
+        const roleConflict = Boolean(result.jobTitle && person.title && result.jobTitle.toLowerCase() !== person.title.toLowerCase());
+        await db.update(alumni).set({
+          lushaPersonId: result.contactId,
+          ...(companyConflict || roleConflict ? {
+            professionalDataStatus: "Conflict — manual verification required",
+            professionalDataNote: `Internal/PDL: ${person.title} at ${person.company}. Lusha preview: ${result.jobTitle || "role not reported"} at ${result.company || "company not reported"}. No profile field was overwritten.`,
+          } : {}),
+          updatedBy: actor,
+          updatedAt: new Date().toISOString(),
+        }).where(eq(alumni.id, person.id));
       }
       await db.insert(providerResponseHistory).values({
         provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Contact Search Preview", mode: "live", status: result.status,
-        creditsUsed: recordedCredits, resultCount: result.status === "success" ? 1 : 0,
+        creditsUsed: recordedCredits, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0,
         requestSummary: `Identifier: ${identifier} · Requested fields: availability preview`,
         responseSummary: result.status === "success"
           ? `Stable Lusha contact ID found. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
@@ -144,7 +178,7 @@ export async function POST(request: Request) {
       }
       await db.insert(providerResponseHistory).values({
         provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Email Reveal", mode: "live", status: result.status,
-        creditsUsed: recordedCredits, resultCount: result.status === "success" ? 1 : 0,
+        creditsUsed: recordedCredits, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0,
         requestSummary: "Stable Lusha contact ID · Requested fields: email only",
         responseSummary: result.status === "success"
           ? `Email returned by Lusha. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
@@ -198,7 +232,7 @@ export async function POST(request: Request) {
         const result = await enrich("pdl", { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl, pdlPersonId: person.pdlPersonId });
         const [history] = await db.insert(providerResponseHistory).values({
           provider: "pdl", alumnusId: person.id, alumnusName: person.name, operation: "Person Enrichment", mode: enrichmentMode("pdl"), status: result.status,
-          creditsUsed: result.creditsUsed, resultCount: result.status === "success" ? 1 : 0, requestSummary: `${person.name} at ${person.company}`,
+          creditsUsed: result.creditsUsed, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0, requestSummary: `${person.name} at ${person.company}`,
           responseSummary: result.responseSummary, errorMessage: result.errorMessage ?? "", requestedBy: actor,
         }).returning();
         usage.pdl.used += result.creditsUsed;
