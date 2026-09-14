@@ -210,8 +210,6 @@ export async function POST(request: Request) {
         requestedCount: limit,
         resultCount: response.profiles.length,
         creditsUsed: response.creditsUsed,
-        providerReportedCredits: response.creditsUsed,
-        usageState: providerUsageState(response.creditsUsed),
         mode: discoveryMode(),
         initiatedBy: actor,
       }).returning();
@@ -255,6 +253,8 @@ export async function POST(request: Request) {
         mode: discoveryMode(),
         status: "success",
         creditsUsed: response.creditsUsed,
+        providerReportedCredits: response.creditsUsed,
+        usageState: providerUsageState(response.creditsUsed),
         resultCount: response.profiles.length,
         requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${limit}`,
         responseSummary: `${response.responseSummary}${response.creditType ? ` PDL reported ${response.creditsUsed} ${response.creditType} credit${response.creditsUsed === 1 ? "" : "s"}.` : ""}`,

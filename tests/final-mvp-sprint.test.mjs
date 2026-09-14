@@ -44,7 +44,13 @@ test("final sprint persists requested separately from returned and provider usag
   assert.match(schema, /requestedCount: integer\("requested_count"\)/)
   assert.match(discoveryRoute, /requestedCount: limit/)
   assert.match(discoveryRoute, /returnedCount: response\.profiles\.length/)
-  assert.match(discoveryRoute, /creditsUsed: response\.creditsUsed/)
+  const searchInsert = discoveryRoute.match(/db\.insert\(externalDiscoverySearches\)\.values\(\{([\s\S]*?)\}\)\.returning\(\)/)?.[1] ?? ""
+  const providerHistoryInsert = discoveryRoute.match(/db\.insert\(providerResponseHistory\)\.values\(\{\s*provider: "pdl",\s*alumnusName: "External alumni discovery",\s*searchId: search\.id,([\s\S]*?)\}\)/)?.[1] ?? ""
+  assert.match(searchInsert, /requestedCount: limit/)
+  assert.match(searchInsert, /resultCount: response\.profiles\.length/)
+  assert.doesNotMatch(searchInsert, /providerReportedCredits|usageState/)
+  assert.match(providerHistoryInsert, /providerReportedCredits: response\.creditsUsed/)
+  assert.match(providerHistoryInsert, /usageState: providerUsageState\(response\.creditsUsed\)/)
 })
 
 test("final sprint PDL confirmation lists active filters and actual-usage warning", () => {
@@ -127,7 +133,10 @@ test("final sprint Gmail adapter sends only through injected mock transport", as
     assert.equal(calls[1].url, "https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
     assert.equal(result.messageId, "gmail-message-1")
   } finally {
-    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
   }
 })
 
