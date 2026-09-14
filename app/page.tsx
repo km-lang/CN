@@ -404,6 +404,8 @@ export default function Home() {
   const [discovering, setDiscovering] = useState(false)
   const [discoveryMessage, setDiscoveryMessage] = useState("")
   const [discoveryState, setDiscoveryState] = useState<"idle" | "results" | "empty" | "blocked">("idle")
+  const [pendingDiscoveryCount, setPendingDiscoveryCount] = useState(0)
+  const [loadingPendingReview, setLoadingPendingReview] = useState(false)
   const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DirectoryFilters | null>(null)
   const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DirectoryFilters | null>(null)
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
@@ -484,6 +486,24 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadEnrichment(), 0)
     return () => window.clearTimeout(timer)
   }, [loadEnrichment])
+
+  const loadPendingDiscoverySummary = useCallback(async () => {
+    if (!session.canOperate) return
+    try {
+      const response = await fetch(`${API_ROUTES.discovery}?view=summary`, { cache: "no-store" })
+      const data = await response.json() as { pendingCount?: number; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to load pending external-review status.")
+      setPendingDiscoveryCount(data.pendingCount ?? 0)
+    } catch (error) {
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to load pending external-review status.")
+    }
+  }, [session.canOperate])
+
+  useEffect(() => {
+    if (!session.canOperate) return
+    const timer = window.setTimeout(() => void loadPendingDiscoverySummary(), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadPendingDiscoverySummary, session.canOperate])
 
   const loadEngagements = useCallback(async () => {
     if (!session.canOperate) return
@@ -847,6 +867,39 @@ export default function Home() {
     void runDiscovery(searchFilters)
   }
 
+  async function reviewPendingDiscoveryResults() {
+    setLoadingPendingReview(true)
+    setDiscoveryMessage("")
+    try {
+      const response = await fetch(`${API_ROUTES.discovery}?view=pending`, { cache: "no-store" })
+      const data = await response.json() as {
+        pendingCount?: number
+        results?: DiscoveryResult[]
+        counts?: DiscoveryCounts
+        filters?: DirectoryFilters
+        creditsUsed?: number
+        retrieval?: string
+        source?: { provider: string; mode: string; searchId: number }
+        error?: string
+      }
+      if (!response.ok || !data.results || !data.counts) throw new Error(data.error || "Unable to reopen stored external results.")
+      setPendingDiscoveryCount(data.pendingCount ?? data.results.length)
+      setDiscoveryResults(data.results)
+      setDiscoveryCounts(data.counts)
+      setSelectedDiscoveryIds([])
+      setLastDiscoveryFilters(data.filters ?? null)
+      setDiscoveryState(data.results.length ? "results" : "empty")
+      const provenance = data.source ? `${data.source.provider.toUpperCase()} ${data.source.mode.toUpperCase()}` : "external"
+      setDiscoveryMessage(data.results.length
+        ? `Loaded ${data.results.length} stored ${provenance} profile${data.results.length === 1 ? "" : "s"} for review. No provider call was made and 0 credits were used.`
+        : "There are no external alumni awaiting review.")
+    } catch (error) {
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to reopen stored external results.")
+    } finally {
+      setLoadingPendingReview(false)
+    }
+  }
+
   async function runDiscovery(searchFilters: DirectoryFilters) {
     setDiscovering(true)
     setDiscoveryMessage("")
@@ -872,7 +925,7 @@ export default function Home() {
       setDiscoveryMessage(data.results.length
         ? `${data.results.length} external profiles returned. ${data.creditsUsed ?? 0} PDL credits recorded.`
         : "No additional external alumni were found for these criteria.")
-      await loadEnrichment()
+      await Promise.all([loadEnrichment(), loadPendingDiscoverySummary()])
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to search external professional data.")
     } finally {
@@ -931,7 +984,7 @@ export default function Home() {
         : item))
       setSelectedDiscoveryIds([])
       setDiscoveryMessage(`${data.addedCount ?? data.added.length} alumn${data.added.length === 1 ? "us" : "i"} added. Contact enrichment is now available.`)
-      await loadWorkspace()
+      await Promise.all([loadWorkspace(), loadPendingDiscoverySummary()])
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to add the selected alumni.")
     } finally {
@@ -945,6 +998,7 @@ export default function Home() {
       setDiscoveryResults(current => current.map(item => item.id === resultId ? { ...item, reviewStatus: "Ignored", reviewNote: reason } : item))
       setIgnoreResult(null)
       setDiscoveryMessage(`External result ignored: ${reason}. The decision is saved for other committee members.`)
+      await loadPendingDiscoverySummary()
     }
   }
 
@@ -963,7 +1017,7 @@ export default function Home() {
       setDiscoveryMessage(data.changedFields?.length ? `${data.changedFields.length} professional fields updated and recorded in Change History.` : "No professional changes detected. The PDL interaction remains in Provider History.")
       setComparisonResult(null)
       setSelectedComparisonFields([])
-      await loadWorkspace()
+      await Promise.all([loadWorkspace(), loadPendingDiscoverySummary()])
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to apply the selected updates.")
     } finally {
@@ -982,7 +1036,7 @@ export default function Home() {
       setComparisonResult(null)
       setSelectedComparisonFields([])
       setDiscoveryMessage("The reviewed profile was added as a separate alumnus. Lusha enrichment is now available from the internal profile.")
-      await loadWorkspace()
+      await Promise.all([loadWorkspace(), loadPendingDiscoverySummary()])
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to keep this alumnus as a separate record.")
     } finally {
@@ -1164,6 +1218,7 @@ export default function Home() {
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
               <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <Button onClick={() => discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button>}</div>
+              {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
                 <Input list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />

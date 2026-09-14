@@ -18,6 +18,7 @@ after(async () => vite.close());
 
 const helper = await vite.ssrLoadModule("/lib/alumni-search.ts");
 const config = await vite.ssrLoadModule("/lib/app-config.ts");
+const policy = await vite.ssrLoadModule("/lib/security-policy.ts");
 const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const layoutSource = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
 const discoveryRoute = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8");
@@ -173,4 +174,39 @@ test("18. UI, metadata, assets and internal API calls consume centralized config
   assert.doesNotMatch(pageSource, /fetch\("\/api\//);
   assert.match(layoutSource, /metadataBase: new URL\(appConfig\.publicUrl\)/);
   assert.match(layoutSource, /assetPath\("\/favicon\.svg"\)/);
+});
+
+test("19. PCOM sees a pending-review entry point only when stored results exist", () => {
+  assert.equal(policy.hasPermission("PCOM", "OPERATE_PCOM"), true);
+  assert.match(pageSource, /session\.canOperate && pendingDiscoveryCount > 0/);
+  assert.match(pageSource, /external alumn\{pendingDiscoveryCount === 1 \? "us" : "i"\} awaiting review/);
+  assert.match(pageSource, /Review Results/);
+});
+
+test("20. reopening pending results is a stored database read with zero provider credits", () => {
+  const getHandler = discoveryRoute.match(/export async function GET\(request: Request\)[\s\S]*?\n}\n\nexport async function POST/)?.[0] ?? "";
+  assert.match(getHandler, /reviewStatus, DISCOVERY_REVIEW_STATUS\.pending/);
+  assert.match(getHandler, /creditsUsed: 0/);
+  assert.match(getHandler, /retrieval: "stored"/);
+  assert.doesNotMatch(getHandler, /searchExternalAlumni\(|cleanIimLucknowSchool\(|pdlRemainingCredits\(/);
+});
+
+test("21. Review Results uses GET while Discover More Alumni still requires live confirmation", () => {
+  const reviewHandler = pageSource.match(/async function reviewPendingDiscoveryResults\(\)[\s\S]*?\n  }\n\n  async function runDiscovery/)?.[0] ?? "";
+  assert.match(reviewHandler, /\?view=pending/);
+  assert.doesNotMatch(reviewHandler, /method: "POST"|action: "search"/);
+  assert.match(pageSource, /setPendingDiscoveryFilters\(searchFilters\)/);
+  assert.match(pageSource, /Run live PDL Person Search\?/);
+  assert.match(pageSource, /Confirm Live Search/);
+});
+
+test("22. pending-review API is available to PCOM operational permission", () => {
+  const getHandler = discoveryRoute.match(/export async function GET\(request: Request\)[\s\S]*?\n}/)?.[0] ?? "";
+  assert.match(getHandler, /authorizeRequest\(request, "OPERATE_PCOM"\)/);
+});
+
+test("23. pending-review navigation does not expose Admin-only provider controls", () => {
+  assert.equal(policy.hasPermission("PCOM", "MANAGE_PROVIDER_SETTINGS"), false);
+  assert.match(pageSource, /disabled=\{!session\.canAdminister\}/);
+  assert.match(enrichmentRoute, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/);
 });

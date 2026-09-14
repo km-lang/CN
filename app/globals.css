@@ -335,6 +335,12 @@ button { cursor: pointer; }
 .refresh-note span { font-size: .68rem; line-height: 1.45; }
 
 .discovery-panel { margin-top: 1rem; overflow: hidden; }
+.pending-review-banner { display: flex; align-items: center; gap: .75rem; margin: 0 1.35rem 1rem; padding: .8rem .9rem; border: 1px solid #cddbe4; border-radius: 12px; background: #f5f9fb; color: #213746; }
+.pending-review-banner > span:nth-child(2) { display: grid; gap: .18rem; flex: 1; }
+.pending-review-banner strong { font-size: .8rem; }
+.pending-review-banner small { color: #71818e; font-size: .7rem; }
+.pending-review-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: #e4edf4; color: #315b79; }
+.pending-review-icon svg { width: 17px; }
 .discovery-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.35rem; border-bottom: 1px solid #e3e8ec; }
 .discovery-header h2 { margin: .2rem 0; font-family: Georgia, serif; font-size: 1.45rem; }
 .discovery-header > div > span { color: #71818e; font-size: .78rem; }
@@ -688,7 +694,7 @@ button { cursor: pointer; }
   .enrichment-header { align-items: flex-start; flex-direction: column; }
   .batch-actions { justify-content: flex-start; }
   .manual-enrichment { grid-template-columns: 1fr; }
-  .discovery-header, .discovery-controls, .batch-approval { align-items: stretch; flex-direction: column; }
+  .discovery-header, .discovery-controls, .batch-approval, .pending-review-banner { align-items: stretch; flex-direction: column; }
   .fixed-criterion { min-width: 0; }
   .result-limit { flex-wrap: wrap; }
   .comparison-head, .comparison-row { grid-template-columns: 28px 1fr; }

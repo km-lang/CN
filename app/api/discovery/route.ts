@@ -74,8 +74,50 @@ export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "OPERATE_PCOM");
     const db = getDb();
-    const searches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10);
-    return Response.json({ mode: discoveryMode(), searches, configured: providerConfigured("pdl"), canonicalSchoolConfigured: Boolean(pdlIimlSchoolId()), liveMaximum: pdlLiveSearchMaximum() });
+    const view = new URL(request.url).searchParams.get("view") === "pending" ? "pending" : "summary";
+    const recentSearches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10);
+    const pendingResults = await db.select().from(externalDiscoveryResults)
+      .where(eq(externalDiscoveryResults.reviewStatus, DISCOVERY_REVIEW_STATUS.pending))
+      .orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id);
+
+    if (view === "summary") {
+      return Response.json({ pendingCount: pendingResults.length, mode: discoveryMode(), searches: recentSearches, configured: providerConfigured("pdl"), canonicalSchoolConfigured: Boolean(pdlIimlSchoolId()), liveMaximum: pdlLiveSearchMaximum() });
+    }
+
+    const searchIds = [...new Set(pendingResults.map(result => result.searchId))];
+    const searches = searchIds.length
+      ? await db.select().from(externalDiscoverySearches).where(inArray(externalDiscoverySearches.id, searchIds))
+      : [];
+    const latestSearch = searches.sort((left, right) => right.id - left.id)[0] ?? null;
+    let filters = defaultDirectoryFilters();
+    if (latestSearch) {
+      try {
+        filters = { ...filters, ...JSON.parse(latestSearch.filtersJson) } as DirectoryFilters;
+      } catch {
+        // Keep safe default filters when historical metadata is malformed.
+      }
+    }
+    const counts = {
+      existing: pendingResults.filter(result => result.matchStatus === "Already in database").length,
+      new: pendingResults.filter(result => result.matchStatus === "New").length,
+      possibleDuplicate: pendingResults.filter(result => result.matchStatus === "Possible duplicate").length,
+      needsReview: pendingResults.filter(result => result.matchStatus === "Needs review").length,
+    };
+
+    return Response.json({
+      pendingCount: pendingResults.length,
+      results: pendingResults,
+      counts,
+      filters,
+      creditsUsed: 0,
+      retrieval: "stored",
+      source: latestSearch ? { provider: latestSearch.provider, mode: latestSearch.mode, searchId: latestSearch.id, createdAt: latestSearch.createdAt } : null,
+      mode: discoveryMode(),
+      searches: recentSearches,
+      configured: providerConfigured("pdl"),
+      canonicalSchoolConfigured: Boolean(pdlIimlSchoolId()),
+      liveMaximum: pdlLiveSearchMaximum(),
+    });
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
