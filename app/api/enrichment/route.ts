@@ -4,7 +4,7 @@ import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHis
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
 import { getLushaAccountUsage, revealLushaEmail, searchLushaContact } from "@/lib/lusha-client";
 import { pdlLiveRefreshMaximum } from "@/lib/provider-runtime";
-import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
+import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const providers: ProviderName[] = ["pdl", "lusha"];
 const defaultLimits: Record<ProviderName, number> = { pdl: 100, lusha: 100 };
@@ -115,7 +115,7 @@ export async function POST(request: Request) {
         requestedBy: actor,
       });
       await writeSecurityAudit(context, { action: "lusha_contact_preview", entityType: "alumnus", entityId: person.id, metadata: { identifier, outcome: result.status, requestedFields: ["availability_preview"], creditsUsed: result.creditsUsed } });
-      return Response.json({
+      return authenticatedJsonResponse(context, {
         preview: {
           alumnusId: person.id, alumnusName: person.name, contactId: result.contactId,
           fullName: result.fullName, jobTitle: result.jobTitle, company: result.company,
@@ -152,7 +152,7 @@ export async function POST(request: Request) {
         requestedBy: actor,
       });
       await writeSecurityAudit(context, { action: "lusha_email_reveal", entityType: "alumnus", entityId: person.id, metadata: { requestedFields: ["email"], outcome: result.status, creditsUsed: result.creditsUsed } });
-      return Response.json({ result: { status: result.status, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
+      return authenticatedJsonResponse(context, { result: { status: result.status, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
     }
 
     if (payload.action === "apply_refresh" && Number.isInteger(payload.reviewId)) {

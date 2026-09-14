@@ -4,7 +4,7 @@ import { getDb } from "@/db"
 import { applicationIdentities, applicationUsers, securityAuditEvents } from "@/db/schema"
 import { type AccessSession, type ApplicationRole } from "@/lib/access-types"
 import type { IdentityProvider } from "@/lib/auth-config"
-import { APP_SESSION_COOKIE, cookieValue, type AppSessionClaims, verifyAppSessionToken } from "@/lib/auth-session"
+import { APP_SESSION_COOKIE, cookieValue, createAppSessionToken, sessionCookie, type AppSessionClaims, verifyAppSessionToken } from "@/lib/auth-session"
 import { tryNormalizeEmail } from "@/lib/email-identity"
 import { hasPermission, isApplicationRole, safeAuditMetadata, type Permission } from "@/lib/security-policy"
 
@@ -189,6 +189,17 @@ export async function authorizeRequest(request: Request, permission: Permission)
   const context = await authenticateRequest(request)
   if (!hasPermission(context.role, permission)) throw new AccessError("You do not have permission to perform this action.", 403, "insufficient_permission")
   return context
+}
+
+export async function authenticatedJsonResponse(context: SecurityContext, body: unknown, init?: ResponseInit) {
+  const token = await createAppSessionToken({
+    applicationUserId: context.userId,
+    applicationIdentityId: context.identityId,
+    provider: context.provider,
+  })
+  const response = Response.json(body, init)
+  response.headers.append("set-cookie", sessionCookie(token))
+  return response
 }
 
 export function toAccessSession(context: SecurityContext, signOutPath = "/auth/signout"): AccessSession {

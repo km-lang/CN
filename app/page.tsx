@@ -67,6 +67,7 @@ type Alumni = {
   phone: string
   linkedinUrl?: string
   pdlPersonId?: string
+  lushaPersonId?: string
   discoverySource?: string
   discoveryDate?: string
   lastPdlRefresh?: string
@@ -113,6 +114,7 @@ type ProviderUsage = Record<Provider, { used: number; limit: number; remaining: 
 type ProviderHistory = {
   id: number
   provider: Provider
+  alumnusId?: number | null
   alumnusName: string
   operation: string
   mode: "mock" | "live"
@@ -212,7 +214,8 @@ type LushaContactPreview = {
   phoneAvailable: boolean | null
   status: "success" | "no_match"
   creditsUsed: number | null
-  usageSource: "provider_response" | "unavailable"
+  usageSource: "provider_response" | "unavailable" | "stored"
+  resumedFromStoredContact?: boolean
 }
 
 const hiringOptions = [
@@ -723,7 +726,28 @@ export default function Home() {
 
   function prepareLushaEmail(person: Alumni) {
     setLushaTarget(person)
-    setLushaPreview(null)
+    const storedContactId = person.lushaPersonId?.trim() ?? ""
+    const completedPreview = providerHistory.find(item => item.provider === "lusha" && item.alumnusId === person.id && item.operation === "Contact Search Preview" && item.status === "success")
+    const completedEmailAvailability = completedPreview?.responseSummary.includes("Email availability: available.")
+      ? true
+      : completedPreview?.responseSummary.includes("Email availability: not available.")
+        ? false
+        : null
+    setLushaPreview(storedContactId ? {
+      alumnusId: person.id,
+      alumnusName: person.name,
+      contactId: storedContactId,
+      fullName: person.name,
+      jobTitle: "",
+      company: "",
+      professionalProfile: normalizeProfessionalProfileUrl(person.linkedinUrl),
+      emailAvailable: completedEmailAvailability,
+      phoneAvailable: null,
+      status: "success",
+      creditsUsed: 0,
+      usageSource: "stored",
+      resumedFromStoredContact: true,
+    } : null)
     setLushaRevealConfirmOpen(false)
     setEnrichmentMessage("")
   }
@@ -735,6 +759,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.enrichment, {
         method: "POST",
+        credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "lusha_search_contact", alumnusId: lushaTarget.id }),
       })
@@ -756,6 +781,7 @@ export default function Home() {
     try {
       const response = await fetch(API_ROUTES.enrichment, {
         method: "POST",
+        credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "lusha_reveal_email", alumnusId: lushaTarget.id, confirmed: true }),
       })
@@ -1626,7 +1652,7 @@ export default function Home() {
       <Dialog open={Boolean(lushaTarget) && !lushaRevealConfirmOpen} onOpenChange={open => { if (!open && !lushaRevealConfirmOpen) { setLushaTarget(null); setLushaPreview(null) } }}>
         <DialogContent className="refresh-confirm-dialog">
           {lushaTarget && !lushaPreview && <><DialogHeader><DialogTitle>Check Lusha contact availability?</DialogTitle><DialogDescription>This first V3 step searches for a stable Lusha contact ID and availability flags. It does not reveal an email or phone.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Preferred identifier</span><strong>{normalizeProfessionalProfileUrl(lushaTarget.linkedinUrl) ? "Professional profile URL" : "Name and current company"}</strong></div><div><span>Requested contact data</span><strong>Availability preview only</strong></div><div><span>Application capacity</span><strong>{providerUsage.lusha.remaining} credits remaining</strong></div></div><div className="credit-notice"><Activity /><span>Lusha V3 Search may incur request/result usage under your account plan. The app will record usage reported by Lusha; this application limit is not the Lusha account balance. No email or phone is revealed in this step.</span></div>{enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}<DialogFooter><Button variant="outline" onClick={() => setLushaTarget(null)}>Cancel</Button><Button disabled={enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => void searchLushaContactPreview()}>{enriching ? <LoaderCircle className="spin" /> : <Search />} Confirm Contact Search</Button></DialogFooter></>}
-          {lushaTarget && lushaPreview && <><DialogHeader><DialogTitle>Lusha contact preview</DialogTitle><DialogDescription>Review the non-contact match before deciding whether to reveal an email.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Internal alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Lusha match</span><strong>{lushaPreview.fullName || "No match returned"}</strong></div><div><span>Role</span><strong>{[lushaPreview.jobTitle, lushaPreview.company].filter(Boolean).join(" · ") || "Not reported"}</strong></div><div><span>Email availability</span><strong>{lushaPreview.emailAvailable === null ? "Not reported" : lushaPreview.emailAvailable ? "Available to reveal" : "Not available"}</strong></div><div><span>Phone availability</span><strong>{lushaPreview.phoneAvailable === null ? "Not reported (phone reveal disabled)" : lushaPreview.phoneAvailable ? "Available (phone reveal disabled)" : "Not available"}</strong></div><div><span>Search usage</span><strong>{lushaPreview.creditsUsed === null ? "Not returned · reconcile account usage" : `${lushaPreview.creditsUsed} credit${lushaPreview.creditsUsed === 1 ? "" : "s"} reported`}</strong></div></div><div className="credit-notice"><Activity /><span>Email reveal is a separate live provider call and may include request/result usage plus the email field. The actual charge is not hard-coded. Phone and bulk reveal remain disabled.</span></div><DialogFooter><Button variant="outline" onClick={() => { setLushaTarget(null); setLushaPreview(null) }}>Close</Button><Button disabled={lushaPreview.status !== "success" || lushaPreview.emailAvailable === false || enriching} onClick={() => setLushaRevealConfirmOpen(true)}><Mail /> Continue to Email Reveal</Button></DialogFooter></>}
+          {lushaTarget && lushaPreview && <><DialogHeader><DialogTitle>Lusha contact preview</DialogTitle><DialogDescription>{lushaPreview.resumedFromStoredContact ? "Resume from the previously completed contact match without running another Lusha Search." : "Review the non-contact match before deciding whether to reveal an email."}</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Internal alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Lusha match</span><strong>{lushaPreview.fullName || "No match returned"}</strong></div><div><span>Role</span><strong>{lushaPreview.resumedFromStoredContact ? "Previously reviewed match" : [lushaPreview.jobTitle, lushaPreview.company].filter(Boolean).join(" · ") || "Not reported"}</strong></div><div><span>Email availability</span><strong>{lushaPreview.resumedFromStoredContact ? lushaPreview.emailAvailable === true ? "Available in the completed preview" : lushaPreview.emailAvailable === false ? "Not available in the completed preview" : "Previously checked · not re-queried" : lushaPreview.emailAvailable === null ? "Not reported" : lushaPreview.emailAvailable ? "Available to reveal" : "Not available"}</strong></div><div><span>Phone availability</span><strong>{lushaPreview.resumedFromStoredContact ? "Not requested (phone reveal disabled)" : lushaPreview.phoneAvailable === null ? "Not reported (phone reveal disabled)" : lushaPreview.phoneAvailable ? "Available (phone reveal disabled)" : "Not available"}</strong></div><div><span>Search usage</span><strong>{lushaPreview.resumedFromStoredContact ? "Previously completed · 0 new Search calls" : lushaPreview.creditsUsed === null ? "Not returned · reconcile account usage" : `${lushaPreview.creditsUsed} credit${lushaPreview.creditsUsed === 1 ? "" : "s"} reported`}</strong></div></div><div className="credit-notice"><Activity /><span>{lushaPreview.resumedFromStoredContact ? "Corporate Network will reuse the saved stable Lusha contact ID. Continuing does not repeat Contact Search; only the separately confirmed email reveal can reach Lusha." : "Email reveal is a separate live provider call and may include request/result usage plus the email field. The actual charge is not hard-coded. Phone and bulk reveal remain disabled."}</span></div><DialogFooter><Button variant="outline" onClick={() => { setLushaTarget(null); setLushaPreview(null) }}>Close</Button><Button disabled={lushaPreview.status !== "success" || lushaPreview.emailAvailable === false || enriching} onClick={() => setLushaRevealConfirmOpen(true)}><Mail /> Continue to Email Reveal</Button></DialogFooter></>}
         </DialogContent>
       </Dialog>
 

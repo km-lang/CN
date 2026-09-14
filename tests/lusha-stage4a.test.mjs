@@ -146,7 +146,7 @@ test("stage4a 12: search persists stable ID and history without raw provider pay
 });
 
 test("stage4a 13: reveal stores only provider-sourced email and preserves profile provenance", () => {
-  const revealBlock = route.match(/if \(payload\.action === "lusha_reveal_email"\)[\s\S]*?return Response\.json\(\{ result:/)?.[0] ?? "";
+  const revealBlock = route.match(/if \(payload\.action === "lusha_reveal_email"\)[\s\S]*?return authenticatedJsonResponse\(context, \{ result:/)?.[0] ?? "";
   assert.match(revealBlock, /emailSource: "Lusha"/);
   assert.match(revealBlock, /emailVerification: "Unverified"/);
   assert.doesNotMatch(revealBlock, /phone:/);
