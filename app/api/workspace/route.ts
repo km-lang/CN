@@ -2,6 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, importRuns } from "@/db/schema";
 import type { ApplicationRole } from "@/lib/access-types";
+import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
 
 const allowedStatuses = new Set(["Not contacted", "Contacted", "Responded", "Meeting set"]);
@@ -26,7 +27,7 @@ function normalized(value: unknown) {
 function possibleManualMatches(record: ImportedRecord, people: (typeof alumni.$inferSelect)[]) {
   const name = normalized(record.name);
   const email = normalized(record.email);
-  const linkedin = normalized(record.linkedinUrl ?? record.linkedin_url);
+  const linkedin = normalized(normalizeProfessionalProfileUrl(record.linkedinUrl ?? record.linkedin_url));
   const company = normalized(record.company);
   const batch = number(record.batch ?? record.graduationYear ?? record.graduation_year);
   return people.filter(person => {
@@ -44,7 +45,7 @@ function normaliseManualRecord(record: ImportedRecord, actor: string, continueAs
   const company = text(record.company, "Not recorded");
   const batch = number(record.batch ?? record.graduationYear ?? record.graduation_year);
   const email = text(record.email).toLowerCase();
-  const linkedinUrl = text(record.linkedinUrl ?? record.linkedin_url);
+  const linkedinUrl = normalizeProfessionalProfileUrl(record.linkedinUrl ?? record.linkedin_url);
   if (!name) throw new Error("Name is required.");
   if (!email && !linkedinUrl && !(company !== "Not recorded" && batch >= 1980 && batch <= 2100)) {
     throw new Error("Add an email, professional-profile URL, or both company and graduation year to reduce duplicates.");
@@ -123,7 +124,7 @@ function toApiAlumnus(row: typeof alumni.$inferSelect, role: ApplicationRole, pr
     confidence: row.confidence,
     email: contactsAllowed ? row.email : maskEmail(row.email),
     phone: contactsAllowed ? row.phone : maskPhone(row.phone),
-    linkedinUrl: row.linkedinUrl,
+    linkedinUrl: normalizeProfessionalProfileUrl(row.linkedinUrl),
     pdlPersonId: row.pdlPersonId,
     lushaPersonId: row.lushaPersonId,
     discoverySource: row.discoverySource,
@@ -205,7 +206,7 @@ function normaliseRecord(record: ImportedRecord, filename: string, actor: string
     confidence: Math.min(100, Math.max(0, number(record.confidence, 50))),
     email: text(record.email).toLowerCase(),
     phone: text(record.phone),
-    linkedinUrl: text(record.linkedinUrl ?? record.linkedin_url),
+    linkedinUrl: normalizeProfessionalProfileUrl(record.linkedinUrl ?? record.linkedin_url),
     pdlPersonId: text(record.pdlPersonId ?? record.pdl_person_id),
     lushaPersonId: text(record.lushaPersonId ?? record.lusha_person_id),
     discoverySource: text(record.discoverySource ?? record.discovery_source, filename),

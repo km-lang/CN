@@ -1,5 +1,6 @@
 import { clean, normalizeFunction, normalizeSeniority } from "@/lib/alumni-search";
 import { pdlGet } from "@/lib/pdl-client";
+import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { providerConfigured, providerMode, providerSecret, type ProviderName } from "@/lib/provider-runtime";
 
 export type { ProviderName } from "@/lib/provider-runtime";
@@ -128,7 +129,7 @@ async function livePdl(input: EnrichmentInput): Promise<EnrichmentResult> {
   const company = stringValue(data.job_company_name ?? job.company_name ?? job.company);
   const title = stringValue(data.job_title ?? job.title);
   const location = stringValue(data.location_name ?? data.location);
-  const linkedinUrl = stringValue(data.linkedin_url);
+  const linkedinUrl = normalizeProfessionalProfileUrl(data.linkedin_url);
   const pdlPersonId = stringValue(data.id ?? body.id);
   const functionValue = normalizeFunction(stringValue(data.job_title_role ?? data.job_title_sub_role), title);
   const seniorityValue = normalizeSeniority(Array.isArray(data.job_title_levels) ? data.job_title_levels.join(" ") : stringValue(data.job_title_levels), title);
@@ -161,7 +162,7 @@ async function liveLusha(input: EnrichmentInput): Promise<EnrichmentResult> {
         firstName,
         lastName: surname.join(" "),
         companyName: input.company,
-        linkedinUrl: input.linkedinUrl || undefined,
+        linkedinUrl: normalizeProfessionalProfileUrl(input.linkedinUrl) || undefined,
       }],
       revealEmails,
       revealPhones,

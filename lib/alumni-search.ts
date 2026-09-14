@@ -1,3 +1,5 @@
+import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
+
 export const FIXED_ALUMNI_SCHOOL = "Indian Institute of Management Lucknow";
 
 export type DirectoryFilters = {
@@ -240,7 +242,7 @@ export function toDiscoveryProfile(record: Record<string, unknown>, index: numbe
     seniority: seniorityValue,
     location: clean(record.location_name ?? record.location) || "Location unavailable",
     graduationYear: findEducationYear(record.education, canonicalSchoolId),
-    linkedinUrl: clean(record.linkedin_url),
+    linkedinUrl: normalizeProfessionalProfileUrl(record.linkedin_url),
     matchConfidence: Math.min(95, 65 + completeness * 5),
   };
 }

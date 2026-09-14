@@ -21,6 +21,7 @@ import { discoveryMode, searchExternalAlumni } from "@/lib/pdl-discovery";
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status";
 import { cleanIimLucknowSchool, safePdlError } from "@/lib/pdl-client";
 import { pdlIimlSchoolId, pdlLiveSearchMaximum, providerConfigured } from "@/lib/provider-runtime";
+import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const allowedLimits = new Set([5, 25, 50, 100]);
@@ -220,7 +221,7 @@ export async function POST(request: Request) {
           seniority: item.profile.seniority,
           location: item.profile.location,
           graduationYear: item.profile.graduationYear,
-          linkedinUrl: item.profile.linkedinUrl,
+          linkedinUrl: normalizeProfessionalProfileUrl(item.profile.linkedinUrl),
           providerPersonId: item.profile.providerPersonId,
           matchStatus: item.matchStatus,
           matchConfidence: item.matchConfidence,
@@ -281,7 +282,7 @@ export async function POST(request: Request) {
           seniority: result.seniority,
           location: result.location,
           confidence: 65,
-          linkedinUrl: result.linkedinUrl,
+          linkedinUrl: normalizeProfessionalProfileUrl(result.linkedinUrl),
           pdlPersonId: result.providerPersonId,
           discoverySource: "PDL",
           discoveryDate: now,
@@ -312,7 +313,7 @@ export async function POST(request: Request) {
         function: result.function,
         seniority: result.seniority,
         location: result.location,
-        linkedinUrl: result.linkedinUrl,
+        linkedinUrl: normalizeProfessionalProfileUrl(result.linkedinUrl),
         graduationYear: result.graduationYear,
         pdlPersonId: result.providerPersonId,
       };
@@ -354,7 +355,7 @@ export async function POST(request: Request) {
         seniority: result.seniority,
         location: result.location,
         confidence: 65,
-        linkedinUrl: result.linkedinUrl,
+        linkedinUrl: normalizeProfessionalProfileUrl(result.linkedinUrl),
         pdlPersonId: result.providerPersonId,
         discoverySource: "PDL",
         discoveryDate: now,
