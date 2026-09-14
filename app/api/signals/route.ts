@@ -1,8 +1,9 @@
 import { inArray } from "drizzle-orm"
 import { getDb } from "@/db"
 import { alumni, engagementEvents, providerResponseHistory } from "@/db/schema"
-import { fetchLushaContactSignals, normalizeLushaSignals } from "@/lib/lusha-signals"
+import { defaultSignalsStartDate, fetchLushaContactSignals, normalizeLushaSignals, providerReportedSignalCredits } from "@/lib/lusha-signals"
 import { providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/provider-runtime"
+import { providerUsageState } from "@/lib/provider-usage"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
 
 export async function GET(request: Request) {
@@ -16,6 +17,8 @@ export async function GET(request: Request) {
       liveEnabled: runtime.liveEnabled,
       entitlement: runtime.entitlement,
       scope: ["promotion", "job/company change"],
+      startDate: defaultSignalsStartDate(),
+      maximumContactsPerRequest: 1,
       requiresManualEntitlementValidation: runtime.entitlement !== "confirmed",
     })
   } catch (error) {
@@ -34,17 +37,19 @@ export async function POST(request: Request) {
     if (providerMode("lusha") !== "live" || !providerConfigured("lusha") || !runtime.liveEnabled || runtime.entitlement !== "confirmed") {
       return Response.json({ error: "Lusha Signals is prepared but disabled until account entitlement and billing behavior are manually validated. No provider call was made." }, { status: 409 })
     }
-    const ids = [...new Set(payload.alumniIds?.filter(Number.isInteger) ?? [])].slice(0, 25)
-    if (!ids.length) return Response.json({ error: "Select at least one approved alumnus." }, { status: 400 })
+    const ids = [...new Set(payload.alumniIds?.filter(Number.isInteger) ?? [])]
+    if (ids.length !== 1) return Response.json({ error: "Select exactly one approved alumnus for a confirmed Signals check." }, { status: 400 })
     const db = getDb()
     const people = await db.select().from(alumni).where(inArray(alumni.id, ids))
     const eligible = people.filter(person => Boolean(person.lushaPersonId))
     if (!eligible.length) return Response.json({ error: "No selected alumnus has a stable Lusha contact ID." }, { status: 409 })
     const detectedAt = new Date().toISOString()
-    const body = await fetchLushaContactSignals(eligible.map(person => ({ alumnusId: person.id, lushaPersonId: person.lushaPersonId })))
+    const startDate = defaultSignalsStartDate()
+    const body = await fetchLushaContactSignals([{ alumnusId: eligible[0].id, lushaPersonId: eligible[0].lushaPersonId }], { startDate })
+    const providerReportedCredits = providerReportedSignalCredits(body)
     let created = 0
     for (const person of eligible) {
-      for (const signal of normalizeLushaSignals(person.id, body, detectedAt)) {
+      for (const signal of normalizeLushaSignals(person.id, body, detectedAt, person.lushaPersonId)) {
         const [inserted] = await db.insert(engagementEvents).values({
           eventKey: signal.eventKey,
           alumnusId: person.id,
@@ -77,16 +82,16 @@ export async function POST(request: Request) {
       operation: "Professional Signals Sync",
       mode: "live",
       status: "success",
-      creditsUsed: 0,
-      providerReportedCredits: null,
-      usageState: "reconciliation_required",
+      creditsUsed: providerReportedCredits ?? 0,
+      providerReportedCredits,
+      usageState: providerUsageState(providerReportedCredits),
       resultCount: created,
-      requestSummary: `Promotion and job/company-change signals for ${eligible.length} approved alumni`,
-      responseSummary: `${created} new professional signal${created === 1 ? "" : "s"} stored for human review. Alumni profile fields were not changed. Provider usage requires account reconciliation.`,
+      requestSummary: `Promotion and company-change signals since ${startDate} for one approved alumnus using the existing stable Lusha contact ID`,
+      responseSummary: `${created ? `${created} new professional signal${created === 1 ? "" : "s"} stored for human review.` : "No new professional signals found for the selected period."} Alumni profile fields were not changed. ${providerReportedCredits === null ? "Provider usage was not returned and requires reconciliation." : `Lusha reported ${providerReportedCredits} credit${providerReportedCredits === 1 ? "" : "s"} charged.`}`,
       requestedBy: context.displayName,
     })
     await writeSecurityAudit(context, { action: "professional_signals_synced", entityType: "engagement_event", metadata: { alumniRequested: eligible.length, eventsCreated: created, provider: "lusha" } })
-    return Response.json({ created, checked: eligible.length })
+    return Response.json({ created, checked: eligible.length, startDate, providerReportedCredits, usageState: providerUsageState(providerReportedCredits), message: created ? `${created} new professional signal${created === 1 ? "" : "s"} stored for human review.` : "No new professional signals found for the selected period." })
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied

@@ -80,22 +80,55 @@ test("final sprint reconciliation is Admin-only and centrally audited", () => {
   assert.equal(policy.hasPermission("PCOM", "MANAGE_PROVIDER_SETTINGS"), false)
 })
 
-test("final sprint promotion signal normalization is individual and review-first", () => {
-  const result = signals.normalizeLushaSignals(15, { results: [{ id: "s1", type: "promotion", previous: { company: "A", title: "Manager" }, current: { company: "A", title: "Director" }, occurredAt: "2026-09-10" }] }, "2026-09-14T00:00:00Z")
-  assert.equal(result[0].eventSubtype, "Promotion")
-  assert.equal(result[0].alumnusId, 15)
+test("final sprint Signals uses the documented contact endpoint and contract with the stable ID", async () => {
+  const previous = Object.fromEntries(["LUSHA_API_KEY", "LUSHA_SIGNALS_LIVE_ENABLED", "LUSHA_SIGNALS_ENTITLEMENT"].map(key => [key, process.env[key]]))
+  Object.assign(process.env, { LUSHA_API_KEY: "mock-key", LUSHA_SIGNALS_LIVE_ENABLED: "true", LUSHA_SIGNALS_ENTITLEMENT: "confirmed" })
+  const calls = []
+  try {
+    await signals.fetchLushaContactSignals([{ alumnusId: 15, lushaPersonId: "stable-115889" }], { startDate: "2026-03-14", fetcher: async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init.body)) })
+      return new Response(JSON.stringify({ contacts: { "stable-115889": { personId: "115889", promotion: [], companyChange: [] } }, creditCharged: 1 }), { status: 200, headers: { "content-type": "application/json" } })
+    } })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, "https://api.lusha.com/api/signals/contacts")
+    assert.deepEqual(calls[0].body, { contacts: [{ id: "stable-115889" }], signals: ["promotion", "companyChange"], startDate: "2026-03-14" })
+    assert.doesNotMatch(calls[0].url, /\/v3\/contacts\/signals|\/contacts\/search/)
+    assert.doesNotMatch(JSON.stringify(calls[0].body), /job_change|allSignals/)
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test("final sprint nested contact Signals normalize multiple promotion and company-change events", () => {
+  const body = { contacts: { "stable-115889": { personId: "115889", promotion: [
+    { id: "p1", previousCompanyName: "A", previousTitle: "Manager", currentCompanyName: "A", currentTitle: "Director", signalDate: "2026-09-10" },
+    { id: "p2", currentCompanyName: "A", currentTitle: "VP", signalDate: "2026-09-12" },
+  ], companyChange: [
+    { id: "c1", previousCompanyName: "Google", previousTitle: "Lead", currentCompanyName: "Magnite", currentTitle: "Country Manager", signalDate: "2026-08-01" },
+    { id: "c2", previousCompanyName: "Magnite", currentCompanyName: "Example", signalDate: "2026-09-01" },
+  ], hiring: [{ id: "excluded" }] } }, creditCharged: 1 }
+  const result = signals.normalizeLushaSignals(15, body, "2026-09-14T00:00:00Z", "stable-115889")
+  assert.equal(result.length, 4)
+  assert.deepEqual(result.map(item => item.eventSubtype), ["Promotion", "Promotion", "Company Change", "Company Change"])
   assert.equal(result[0].newRole, "Director")
+  assert.equal(result[2].previousCompany, "Google")
+  assert.equal(result[2].newCompany, "Magnite")
+  assert.equal(new Set(result.map(item => item.eventKey)).size, 4)
 })
 
-test("final sprint company-change signal normalization preserves before and after", () => {
-  const result = signals.normalizeLushaSignals(15, { data: [{ signalId: "s2", signalType: "job_change", from: { company: "Google", role: "Lead" }, to: { company: "Magnite", role: "Country Manager" }, eventDate: "2026-08-01" }] })
-  assert.equal(result[0].eventSubtype, "Company Change")
-  assert.equal(result[0].previousCompany, "Google")
-  assert.equal(result[0].newCompany, "Magnite")
+test("final sprint empty contact Signals response creates no fake events", () => {
+  assert.deepEqual(signals.normalizeLushaSignals(15, { contacts: { "stable-115889": { personId: "115889", promotion: [], companyChange: [] } } }, undefined, "stable-115889"), [])
 })
 
-test("final sprint unsupported company-level signals are ignored", () => {
-  assert.deepEqual(signals.normalizeLushaSignals(15, { results: [{ id: "x", type: "hiring_surge" }] }), [])
+test("final sprint Signals captures provider creditCharged without fabricating missing usage", () => {
+  assert.equal(signals.providerReportedSignalCredits({ creditCharged: 1 }), 1)
+  assert.equal(signals.providerReportedSignalCredits({ creditCharged: 0 }), 0)
+  assert.equal(signals.providerReportedSignalCredits({}), null)
+  assert.match(signalsRoute, /providerUsageState\(providerReportedCredits\)/)
+  assert.match(signalsRoute, /Provider usage was not returned and requires reconciliation/)
 })
 
 test("final sprint Signals sync is disabled before entitlement without a provider call", () => {
@@ -110,6 +143,31 @@ test("final sprint signals never silently overwrite alumni", () => {
   assert.match(signalsRoute, /status: "New"/)
   assert.match(engagementRoute, /signal_marked_incorrect/)
   assert.doesNotMatch(engagementRoute, /delete\(engagementEvents\)/)
+})
+
+test("final sprint Signals duplicate, empty-result, and workflow behavior remains review-first", () => {
+  assert.match(signalsRoute, /onConflictDoNothing\(\)/)
+  assert.match(signalsRoute, /No new professional signals found for the selected period/)
+  assert.match(page, /Mark Signal Incorrect/)
+  for (const status of ["New", "Viewed", "Acknowledged", "Action Planned", "Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"]) assert.match(`${page}\n${engagementRoute}`, new RegExp(status))
+  assert.match(engagementRoute, /event\.status === "New" \? "Viewed" : event\.status/)
+})
+
+test("final sprint one-contact confirmation is explicit, gated, and opening it makes no provider request", () => {
+  assert.match(page, /Check Professional Signals/)
+  assert.match(page, /Confirm One-Contact Signals Test/)
+  assert.match(page, /Cancel — No Provider Call/)
+  assert.match(page, /Opening this review does not call the provider/)
+  assert.match(page, /setSignalsConfirmOpen\(true\)/)
+  assert.match(page, /alumniIds: \[signalsTarget\.id\], confirmed: true/)
+  assert.match(signalsRoute, /ids\.length !== 1/)
+})
+
+test("final sprint Signals RBAC is enforced server-side", () => {
+  assert.match(signalsRoute, /authorizeRequest\(request, "OPERATE_PCOM"\)/)
+  assert.equal(policy.hasPermission("PCOM", "OPERATE_PCOM"), true)
+  assert.equal(policy.hasPermission("ADMIN", "OPERATE_PCOM"), true)
+  assert.equal(policy.hasPermission("DEVELOPER", "OPERATE_PCOM"), false)
 })
 
 test("final sprint Gmail adapter is independently gated and server-only", () => {

@@ -457,7 +457,10 @@ export default function Home() {
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([])
   const [mailMode, setMailMode] = useState<"mock" | "live">("mock")
   const [mailConfigured, setMailConfigured] = useState(false)
-  const [signalsStatus, setSignalsStatus] = useState<{ mode: string; configured: boolean; liveEnabled: boolean; entitlement: string; requiresManualEntitlementValidation: boolean } | null>(null)
+  const [signalsStatus, setSignalsStatus] = useState<{ mode: string; configured: boolean; liveEnabled: boolean; entitlement: string; startDate: string; requiresManualEntitlementValidation: boolean } | null>(null)
+  const [signalsConfirmOpen, setSignalsConfirmOpen] = useState(false)
+  const [signalsRunning, setSignalsRunning] = useState(false)
+  const [signalsMessage, setSignalsMessage] = useState("")
   const [engagementFilter, setEngagementFilter] = useState("Needs Action")
   const [birthdayWindow, setBirthdayWindow] = useState("Next 7 Days")
   const [birthdayCompany, setBirthdayCompany] = useState("All companies")
@@ -594,6 +597,31 @@ export default function Home() {
     return () => window.clearTimeout(timer)
   }, [loadSignalsStatus, session.canOperate])
 
+  async function runOneContactSignalsCheck() {
+    if (!signalsTarget) return
+    setSignalsRunning(true)
+    setSignalsMessage("")
+    try {
+      const response = await fetch(API_ROUTES.signals, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "sync", alumniIds: [signalsTarget.id], confirmed: true }),
+      })
+      const data = await response.json() as { message?: string; providerReportedCredits?: number | null; error?: string }
+      if (!response.ok) throw new Error(data.error || "Unable to check Professional Signals.")
+      const usage = data.providerReportedCredits === null || data.providerReportedCredits === undefined
+        ? " Provider usage was not returned; reconciliation is required."
+        : ` Lusha reported ${data.providerReportedCredits} credit${data.providerReportedCredits === 1 ? "" : "s"} charged.`
+      setSignalsMessage(`${data.message ?? "Professional Signals check complete."}${usage}`)
+      setSignalsConfirmOpen(false)
+      await Promise.all([loadEngagements(), loadEnrichment()])
+    } catch (error) {
+      setSignalsMessage(error instanceof Error ? error.message : "Unable to check Professional Signals.")
+    } finally {
+      setSignalsRunning(false)
+    }
+  }
+
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
   const programmes = useMemo(() => [...new Set(alumni.map(person => person.programme))].sort(), [alumni])
   const activeTargetCompany = companies.includes(targetCompany) ? targetCompany : companies[0] ?? ""
@@ -614,6 +642,7 @@ export default function Home() {
   const nextWeek = nextWeekDate.toISOString().slice(0, 10)
   const birthdayEvents = engagements.filter(event => event.eventType === "Birthday")
   const professionalEvents = engagements.filter(event => event.eventType === "Professional Signal")
+  const signalsTarget = alumni.find(person => person.name === "Sahil Bansal" && Boolean(person.lushaPersonId)) ?? null
   const birthdaysToday = birthdayEvents.filter(event => event.eventDate === today)
   const birthdaysNextWeek = birthdayEvents.filter(event => event.eventDate >= today && event.eventDate <= nextWeek)
   const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
@@ -1513,7 +1542,8 @@ export default function Home() {
               <div className="demo-user"><label>Signed-in owner</label><strong>{session.displayName}</strong><small>Actions use your authenticated identity</small></div>
             </section>
 
-            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "live" : "mock"}`}>{signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "LIVE · entitlement confirmed" : "Prepared · entitlement validation required"}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small></section>
+            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "live" : "mock"}`}>{signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "LIVE · entitlement confirmed" : "Prepared · entitlement validation required"}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small>{session.canOperate && <Button size="sm" disabled={!signalsTarget || !signalsStatus?.liveEnabled || signalsStatus.entitlement !== "confirmed"} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check Professional Signals</Button>}</section>
+            {signalsMessage && <div className="discovery-message">{signalsMessage}</div>}
 
             <section className="engagement-stats">
               <article><BellRing /><span>New professional signals<strong>{professionalEvents.filter(event => event.status === "New").length}</strong></span></article>
@@ -1662,6 +1692,14 @@ export default function Home() {
           </div></>}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={signalsConfirmOpen} onOpenChange={setSignalsConfirmOpen}>
+        <DialogContent className="signals-confirm-dialog">
+          <DialogHeader><DialogTitle>Check Professional Signals?</DialogTitle><DialogDescription>Confirm this one-contact, potentially credit-consuming Lusha request. Opening this review does not call the provider.</DialogDescription></DialogHeader>
+          <div className="refresh-confirm-summary"><div><span>Provider</span><strong>Lusha Professional Signals — LIVE</strong></div><div><span>Alumnus</span><strong>{signalsTarget?.name ?? "Approved alumnus unavailable"}</strong></div><div><span>Identity</span><strong>Existing stable Lusha contact ID</strong></div><div><span>Scope</span><strong>Promotion; Company/job change</strong></div><div><span>Excluded</span><strong>Company hiring, news, intent, job listings, and other company-level signals</strong></div><div><span>Date window</span><strong>{signalsStatus?.startDate ?? "Unavailable"} to today</strong></div><div><span>Expected usage</span><strong>Up to 1 contact-enrichment credit; actual usage comes from creditCharged</strong></div><div><span>Safety</span><strong>Human review only; no automatic profile update</strong></div></div>
+          <DialogFooter><Button variant="outline" onClick={() => setSignalsConfirmOpen(false)}>Cancel — No Provider Call</Button><Button disabled={signalsRunning || !signalsTarget || !signalsStatus?.liveEnabled || signalsStatus.entitlement !== "confirmed"} onClick={() => void runOneContactSignalsCheck()}>{signalsRunning ? <LoaderCircle className="spin" /> : <Sparkles />} Confirm One-Contact Signals Test</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(selectedEngagement)} onOpenChange={open => { if (!open) setSelectedEngagement(null) }}>
         <DialogContent className="engagement-dialog">
