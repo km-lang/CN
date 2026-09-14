@@ -137,7 +137,9 @@ test("14. filtering the internal dataset has no provider call", () => {
 test("15. external usage is attached to explicit buttons", () => {
   assert.match(pageSource, /onClick=\{\(\) => discoverMoreAlumni\(\)\}/);
   assert.match(pageSource, /Confirm Live Search/);
-  assert.equal(pageSource.includes('runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual"'), true);
+  assert.match(pageSource, /Prepare Email Reveal/);
+  assert.match(pageSource, /Confirm Contact Search/);
+  assert.match(pageSource, /Confirm Email-Only Reveal/);
 });
 
 test("16. application configuration preserves the current root-hosted defaults", () => {

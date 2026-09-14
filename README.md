@@ -123,7 +123,7 @@ The end-to-end discovery flow is:
 3. Keep **Indian Institute of Management Lucknow** as the fixed education criterion.
 4. Review results classified as New, Already in database, Possible duplicate, or Needs review.
 5. Manually approve clearly new records or compare possible matches. No external result is inserted automatically.
-6. After approval, selectively request an email, phone, or both from Lusha.
+6. After approval, run the controlled Lusha V3 contact preview, review availability, and separately confirm an email-only reveal. Phone and bulk reveal remain disabled for the initial live pilot.
 
 Company Intelligence reuses the same workflow through **Find More Alumni**. PDL comparisons never overwrite an existing profile silently. Selected updates are recorded in field-change history, while all provider calls are recorded in provider-response history.
 
@@ -157,18 +157,18 @@ PDL_API_KEY=
 LUSHA_API_KEY=
 ```
 
-Set `PDL_LIVE_ENABLED=true` only after the PDL key and canonical IIM Lucknow School Cleaner ID are configured. This does not activate Lusha. Keep `LUSHA_LIVE_ENABLED=false` until Stage 4. Stage 3 additionally caps a live Person Search at five returned profiles and a live Person Enrichment action at one profile. The application enforces adjustable monthly credit caps stored in D1; the default caps are 100 credits per provider per month.
+Set `PDL_LIVE_ENABLED=true` only after the PDL key and canonical IIM Lucknow School Cleaner ID are configured. This does not activate Lusha. Set `LUSHA_LIVE_ENABLED=true` separately only after its key and the controlled V3 preview/reveal workflow are ready. Stage 3 caps a live PDL Person Search at five returned profiles and a live Person Enrichment action at one profile. The application enforces adjustable monthly credit caps stored in D1; the default caps are 100 credits per provider per month.
 
 The Enrichment tab provides:
 
 - manual and selected-batch PDL profile/employment refresh with confirmation
 - review-and-apply of changed professional fields; no-change and no-match results remain visible
-- manual and selected-batch Lusha email/phone enrichment
-- batch enrichment for up to 25 alumni
+- Lusha V3 contact search using a professional-profile URL when available, returning a stable contact ID and availability preview without contact PII
+- a separate human confirmation before an email-only reveal; live phone and bulk reveal are disabled during the controlled pilot
 - monthly credit-limit controls and usage meters
 - sanitized provider-response history
 
-The live discovery adapter uses the PDL v5 Person Search API with the canonical school ID in `education.school.id`, while existing-profile refresh uses the PDL v5 Person Enrichment endpoint and its persistent PDL person ID when available. The live Lusha adapter targets the v3 Search and Enrich endpoint but remains independently gated. Provider errors are normalized and saved to response history without saving API secrets or raw provider payloads.
+The live discovery adapter uses the PDL v5 Person Search API with the canonical school ID in `education.school.id`, while existing-profile refresh uses the PDL v5 Person Enrichment endpoint and its persistent PDL person ID when available. The live Lusha adapter uses the V3 two-step `POST /v3/contacts/search` then `POST /v3/contacts/enrich` workflow and remains independently gated. Its application limit is separate from the Lusha account balance. Provider-reported per-call usage is recorded when available; otherwise the history is marked for account-usage reconciliation. Provider errors are normalized and saved without API secrets or raw provider payloads.
 
 ## Local setup
 

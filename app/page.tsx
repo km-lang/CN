@@ -200,6 +200,20 @@ type ManualForm = { name: string; programme: string; batch: string; company: str
 type ManualMatch = { id: number; name: string; programme: string; batch: number; company: string; title: string }
 type RefreshField = { field: string; label: string; oldValue: string; newValue: string }
 type RefreshResult = { alumnusId: number; alumnusName: string; status: string; reviewStatus: string; reviewId?: number; creditsUsed: number; responseSummary: string; fields: RefreshField[] }
+type LushaContactPreview = {
+  alumnusId: number
+  alumnusName: string
+  contactId: string
+  fullName: string
+  jobTitle: string
+  company: string
+  professionalProfile: string
+  emailAvailable: boolean | null
+  phoneAvailable: boolean | null
+  status: "success" | "no_match"
+  creditsUsed: number | null
+  usageSource: "provider_response" | "unavailable"
+}
 
 const hiringOptions = [
   ["Direct hiring decision-maker", 100], ["Strong hiring influence", 80],
@@ -445,6 +459,9 @@ export default function Home() {
   const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false)
   const [refreshResults, setRefreshResults] = useState<RefreshResult[]>([])
   const [refreshSelections, setRefreshSelections] = useState<Record<number, string[]>>({})
+  const [lushaTarget, setLushaTarget] = useState<Alumni | null>(null)
+  const [lushaPreview, setLushaPreview] = useState<LushaContactPreview | null>(null)
+  const [lushaRevealConfirmOpen, setLushaRevealConfirmOpen] = useState(false)
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -556,7 +573,7 @@ export default function Home() {
   const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
   const followUpsDue = engagements.filter(event => event.status === "Follow-up Due")
   const pdlSelectionReady = selectedForEnrichment.length > 0 && (providerModes.pdl === "mock" || selectedForEnrichment.length === 1) && providerUsage.pdl.remaining >= selectedForEnrichment.length && (providerModes.pdl === "mock" || providerUsage.pdl.configured)
-  const lushaEmailReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
+  const lushaEmailReady = selectedForEnrichment.length === 1 && providerUsage.lusha.remaining >= 1 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
   const lushaPhoneReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 5 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
   const lushaBothReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 6 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
   const birthdayReady = (event: EngagementEvent) => Boolean(event.alumnus?.email)
@@ -704,6 +721,58 @@ export default function Home() {
     }
   }
 
+  function prepareLushaEmail(person: Alumni) {
+    setLushaTarget(person)
+    setLushaPreview(null)
+    setLushaRevealConfirmOpen(false)
+    setEnrichmentMessage("")
+  }
+
+  async function searchLushaContactPreview() {
+    if (!lushaTarget) return
+    setEnriching(true)
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.enrichment, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "lusha_search_contact", alumnusId: lushaTarget.id }),
+      })
+      const data = await response.json() as { preview?: LushaContactPreview; error?: string }
+      if (!response.ok || !data.preview) throw new Error(data.error || "Unable to retrieve the Lusha contact preview.")
+      setLushaPreview(data.preview)
+      await loadEnrichment()
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to retrieve the Lusha contact preview.")
+    } finally {
+      setEnriching(false)
+    }
+  }
+
+  async function revealLushaEmail() {
+    if (!lushaTarget || !lushaPreview?.contactId) return
+    setEnriching(true)
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.enrichment, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "lusha_reveal_email", alumnusId: lushaTarget.id, confirmed: true }),
+      })
+      const data = await response.json() as { result?: { status: string; creditsUsed: number | null }; error?: string }
+      if (!response.ok || !data.result) throw new Error(data.error || "Unable to reveal the Lusha email.")
+      setEnrichmentMessage(data.result.status === "success" ? "Lusha returned an email. The provider-sourced value and actual reported usage are recorded." : "Lusha did not return an email. The provider outcome and reported usage are recorded.")
+      setLushaRevealConfirmOpen(false)
+      setLushaTarget(null)
+      setLushaPreview(null)
+      await Promise.all([loadWorkspace(), loadEnrichment(), loadEngagements()])
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to reveal the Lusha email.")
+    } finally {
+      setEnriching(false)
+    }
+  }
+
   async function saveCreditLimit(provider: Provider) {
     const monthlyCreditLimit = Number(creditDrafts[provider])
     if (!Number.isInteger(monthlyCreditLimit) || monthlyCreditLimit < 0) { setEnrichmentMessage("Enter a whole-number credit limit."); return }
@@ -728,6 +797,22 @@ export default function Home() {
       await loadEnrichment()
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to validate PDL connectivity.")
+    }
+  }
+
+  async function validateLushaConnection() {
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "validate_lusha" }) })
+      const data = await response.json() as { connected?: boolean; accountUsage?: { used: number | null; remaining: number | null; limit: number | null }; error?: string }
+      if (!response.ok || !data.connected) throw new Error(data.error || "Unable to validate Lusha.")
+      const usage = data.accountUsage
+      const details = usage && (usage.used !== null || usage.remaining !== null || usage.limit !== null)
+        ? ` Account usage reported: ${usage.used ?? "unknown"} used, ${usage.remaining ?? "unknown"} remaining, ${usage.limit ?? "unknown"} limit.`
+        : " Authentication succeeded; this account response did not expose a normalized balance."
+      setEnrichmentMessage(`Lusha authenticated through the non-contact account usage endpoint.${details}`)
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to validate Lusha.")
     }
   }
 
@@ -846,6 +931,11 @@ export default function Home() {
 
   async function getBirthdayEmail(event: EngagementEvent) {
     if (!event.alumnus) return
+    if (providerModes.lusha === "live") {
+      const person = alumni.find(item => item.id === event.alumnus?.id)
+      if (person) prepareLushaEmail(person)
+      return
+    }
     await runEnrichment([event.alumnus.id], ["lusha"], "manual", ["email"])
     await Promise.all([loadWorkspace(), loadEngagements()])
     setEngagementMessage("Lusha email enrichment completed. Review the updated contact before sending.")
@@ -1281,7 +1371,7 @@ export default function Home() {
                       {canAdd && <Button size="sm" onClick={() => void approveDiscoveryResults([result.id])}><Plus /> Add</Button>}
                       {result.reviewStatus === "Pending review" && (result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate") && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><GitCompare /> Compare</Button>}
                       {result.reviewStatus === "Pending review" && result.matchStatus === "Needs review" && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><Eye /> Review</Button>}
-                      {added && <><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([result.linkedInternalAlumnusId!], ["lusha"], "manual", ["email", "phone"])}>Get Both Contacts</Button></>}
+                      {added && (() => { const person = alumni.find(item => item.id === result.linkedInternalAlumnusId); return person ? providerModes.lusha === "live" ? <Button size="sm" variant="outline" onClick={() => prepareLushaEmail(person)}>Prepare Email Reveal</Button> : <><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email", "phone"])}>Get Both Contacts</Button></> : null })()}
                       {result.reviewStatus === "Pending review" && <Button size="sm" variant="ghost" onClick={() => { setIgnoreResult(result); setIgnoreReason("Wrong person") }}><XCircle /> Ignore</Button>}
                     </div></TableCell>
                   </TableRow>
@@ -1404,19 +1494,20 @@ export default function Home() {
                 const percent = usage.limit ? Math.min(100, usage.used / usage.limit * 100) : 100
                 return <article className="panel provider-card" key={provider}>
                   <div className="provider-title"><span>{provider === "pdl" ? "PDL" : "LU"}</span><div><h3>{provider === "pdl" ? "People Data Labs" : "Lusha"}</h3><small>{provider === "pdl" ? "Profile discovery and employment refresh" : "Email and phone enrichment"}</small></div></div>
-                  <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{provider === "pdl" ? "People Data Labs" : "Lusha"} — {providerModes[provider].toUpperCase()}{providerModes[provider] === "live" ? usage.configured ? " · key configured" : " · key missing" : ""}</span><strong>{usage.remaining} credits remaining</strong></div>
+                  <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{provider === "pdl" ? "People Data Labs" : "Lusha"} — {providerModes[provider].toUpperCase()}{providerModes[provider] === "live" ? usage.configured ? " · key configured" : " · key missing" : ""}</span><strong>{usage.remaining} app credits remaining</strong></div>
                   <div className="credit-meter"><i style={{ width: `${percent}%` }} /></div>
                   <div className="credit-numbers"><span>{usage.used} used this month</span><span>{usage.limit} app limit</span></div>
                   <div className="credit-limit"><Input type="number" min="0" value={creditDrafts[provider]} disabled={!session.canAdminister} onChange={event => setCreditDrafts(current => ({ ...current, [provider]: event.target.value }))} aria-label={`${provider} monthly credit limit`} />{session.canAdminister && <Button variant="outline" onClick={() => void saveCreditLimit(provider)}>Save limit</Button>}</div>
                   {provider === "pdl" && session.canAdminister && providerModes.pdl === "live" && <Button variant="outline" onClick={() => void validatePdlConnection()}>Validate PDL connection</Button>}
+                  {provider === "lusha" && session.canAdminister && providerModes.lusha === "live" && <Button variant="outline" onClick={() => void validateLushaConnection()}>Validate Lusha connection</Button>}
                   {!session.canAdminister && <small className="role-restriction">Only an Admin can change application credit limits.</small>}
-                  <p>{provider === "pdl" ? "A successful match is counted as 1 PDL credit." : "Usage estimate: 1 credit per email and 5 per phone. Actual usage is recorded from each result."}</p>
+                  <p>{provider === "pdl" ? "A successful match is counted as 1 PDL credit." : "This is Corporate Network's application limit, not the Lusha account balance. V3 requests may include request/result usage plus selected reveal fields. Provider-reported usage is recorded; unavailable per-call usage is flagged for account reconciliation."}</p>
                 </article>
               })}
             </section>
 
             <section className="panel batch-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? providerModes.pdl === "live" ? "Select one approved alumnus for live PDL refresh" : "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. PDL refreshes profiles; Lusha retrieves contact details. No action runs without selection and confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button><Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaEmailReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve emails through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaPhoneReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve phones through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !lushaBothReady ? "Lusha is unavailable or its application limit is insufficient" : "Retrieve email and phone through Lusha"} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</div>
+              <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? providerModes.pdl === "live" ? "Select one approved alumnus for controlled provider actions" : "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. PDL refresh and Lusha email preparation remain separate. No live action runs without confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button>{providerModes.lusha === "live" ? <Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select one alumnus" : !lushaEmailReady ? "Select exactly one alumnus and confirm Lusha is configured with application capacity" : "Start the controlled Lusha V3 email workflow"} onClick={() => { const person = alumni.find(item => item.id === selectedForEnrichment[0]); if (person) prepareLushaEmail(person) }}><Mail /> Prepare Email Reveal</Button> : <><Button variant="outline" disabled={!lushaEmailReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div>}</div>
               {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
               <Table><TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label={providerModes.pdl === "live" ? "Select first alumnus" : "Select first 25 alumni"} checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(providerModes.pdl === "live" ? 1 : 25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, providerModes.pdl === "live" ? 1 : 25).map(person => person.id) : [])} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} />}</TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
             </section>
@@ -1453,7 +1544,7 @@ export default function Home() {
               <div><span>Email · {selected.email || "Not enriched"}</span><strong className={verificationTone(selected.verification.email)}>{contactDataLabel(selected, "email").status} · {contactDataLabel(selected, "email").detail}</strong></div>
               <div><span>Phone · {selected.phone || "Not enriched"}</span><strong className={verificationTone(selected.verification.phone)}>{contactDataLabel(selected, "phone").status} · {contactDataLabel(selected, "phone").detail}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">{session.canViewContacts ? "“Lusha sourced” means the provider returned the contact. It does not mean independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful PDL return may consume a credit even when no information changes.</span></div>{session.canOperate && <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.pdl.remaining < 1 || (providerModes.pdl === "live" && !providerUsage.pdl.configured)} onClick={() => compareRefreshWithPdl(selected)}>Refresh Profile via PDL</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1 || (providerModes.lusha === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 5 || (providerModes.lusha === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button disabled={enriching || providerUsage.lusha.remaining < 6 || (providerModes.lusha === "live" && !providerUsage.lusha.configured)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></div>}</section>
+            </div><p className="verified-copy">{session.canViewContacts ? "“Lusha sourced” means the provider returned the contact. It does not mean independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastPdlRefresh ? new Date(selected.lastPdlRefresh).toLocaleString() : "Not refreshed yet"}. A successful PDL return may consume a credit even when no information changes.</span></div>{session.canOperate && <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.pdl.remaining < 1 || (providerModes.pdl === "live" && !providerUsage.pdl.configured)} onClick={() => compareRefreshWithPdl(selected)}>Refresh Profile via PDL</Button>{providerModes.lusha === "live" ? <Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaEmail(selected)}>Prepare Email Reveal</Button> : <><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 1} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" disabled={enriching || providerUsage.lusha.remaining < 5} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button disabled={enriching || providerUsage.lusha.remaining < 6} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div>}</section>
             {session.canOperate && <section className="profile-section"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>}
           </div></>}
         </SheetContent>
@@ -1521,7 +1612,7 @@ export default function Home() {
 
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
         <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? `The record is now in ${appConfig.name}. Provider actions remain optional.` : "Enter what is known. Name plus an email, profile URL, or company and graduation year is required."}</DialogDescription></DialogHeader>
-          {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via PDL</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></div></div> : <div className="manual-form">
+          {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via PDL</Button>{providerModes.lusha === "live" ? <Button variant="outline" onClick={() => { setManualOpen(false); prepareLushaEmail(manualSaved) }}>Prepare Email Reveal</Button> : <><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></>}</div></div> : <div className="manual-form">
             <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Input value={manualForm.programme} onChange={event => updateManualField("programme", event.target.value)} /></label><label><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
             <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
             <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML / PlaceCom relationship</span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
@@ -1530,6 +1621,17 @@ export default function Home() {
           </div>}
           <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); setSelected(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && <Button variant="outline" onClick={() => void saveManualAlumnus(true)}>Continue as New</Button>}<Button disabled={manualLoading} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add</Button></>}</DialogFooter>
         </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(lushaTarget) && !lushaRevealConfirmOpen} onOpenChange={open => { if (!open && !lushaRevealConfirmOpen) { setLushaTarget(null); setLushaPreview(null) } }}>
+        <DialogContent className="refresh-confirm-dialog">
+          {lushaTarget && !lushaPreview && <><DialogHeader><DialogTitle>Check Lusha contact availability?</DialogTitle><DialogDescription>This first V3 step searches for a stable Lusha contact ID and availability flags. It does not reveal an email or phone.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Preferred identifier</span><strong>{normalizeProfessionalProfileUrl(lushaTarget.linkedinUrl) ? "Professional profile URL" : "Name and current company"}</strong></div><div><span>Requested contact data</span><strong>Availability preview only</strong></div><div><span>Application capacity</span><strong>{providerUsage.lusha.remaining} credits remaining</strong></div></div><div className="credit-notice"><Activity /><span>Lusha V3 Search may incur request/result usage under your account plan. The app will record usage reported by Lusha; this application limit is not the Lusha account balance. No email or phone is revealed in this step.</span></div>{enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}<DialogFooter><Button variant="outline" onClick={() => setLushaTarget(null)}>Cancel</Button><Button disabled={enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => void searchLushaContactPreview()}>{enriching ? <LoaderCircle className="spin" /> : <Search />} Confirm Contact Search</Button></DialogFooter></>}
+          {lushaTarget && lushaPreview && <><DialogHeader><DialogTitle>Lusha contact preview</DialogTitle><DialogDescription>Review the non-contact match before deciding whether to reveal an email.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Internal alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Lusha match</span><strong>{lushaPreview.fullName || "No match returned"}</strong></div><div><span>Role</span><strong>{[lushaPreview.jobTitle, lushaPreview.company].filter(Boolean).join(" · ") || "Not reported"}</strong></div><div><span>Email availability</span><strong>{lushaPreview.emailAvailable === null ? "Not reported" : lushaPreview.emailAvailable ? "Available to reveal" : "Not available"}</strong></div><div><span>Phone availability</span><strong>{lushaPreview.phoneAvailable === null ? "Not reported (phone reveal disabled)" : lushaPreview.phoneAvailable ? "Available (phone reveal disabled)" : "Not available"}</strong></div><div><span>Search usage</span><strong>{lushaPreview.creditsUsed === null ? "Not returned · reconcile account usage" : `${lushaPreview.creditsUsed} credit${lushaPreview.creditsUsed === 1 ? "" : "s"} reported`}</strong></div></div><div className="credit-notice"><Activity /><span>Email reveal is a separate live provider call and may include request/result usage plus the email field. The actual charge is not hard-coded. Phone and bulk reveal remain disabled.</span></div><DialogFooter><Button variant="outline" onClick={() => { setLushaTarget(null); setLushaPreview(null) }}>Close</Button><Button disabled={lushaPreview.status !== "success" || lushaPreview.emailAvailable === false || enriching} onClick={() => setLushaRevealConfirmOpen(true)}><Mail /> Continue to Email Reveal</Button></DialogFooter></>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={lushaRevealConfirmOpen} onOpenChange={setLushaRevealConfirmOpen}>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Reveal email through Lusha?</DialogTitle><DialogDescription>This is the final human confirmation before a live email-only contact reveal.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Alumnus</span><strong>{lushaTarget?.name ?? "Not selected"}</strong></div><div><span>Lusha contact</span><strong>{lushaPreview?.fullName || "Stable contact ID matched"}</strong></div><div><span>Requested field</span><strong>Email only</strong></div><div><span>Phone</span><strong>Not requested</strong></div></div><div className="credit-notice"><Activity /><span>This live call may consume request/result usage plus email reveal usage. Corporate Network records provider-reported actual usage; if Lusha omits per-call metadata, the history will require reconciliation against the Lusha account usage view.</span></div><DialogFooter><Button variant="outline" onClick={() => setLushaRevealConfirmOpen(false)}>Cancel</Button><Button disabled={enriching || !lushaPreview?.contactId || lushaPreview.emailAvailable === false} onClick={() => void revealLushaEmail()}>{enriching ? <LoaderCircle className="spin" /> : <Mail />} Confirm Email-Only Reveal</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={Boolean(pendingDiscoveryFilters)} onOpenChange={open => { if (!open) setPendingDiscoveryFilters(null) }}>

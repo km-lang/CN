@@ -2,6 +2,7 @@ import { desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
+import { getLushaAccountUsage, revealLushaEmail, searchLushaContact } from "@/lib/lusha-client";
 import { pdlLiveRefreshMaximum } from "@/lib/provider-runtime";
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
@@ -79,10 +80,80 @@ export async function PATCH(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const context = await authorizeRequest(request, "OPERATE_PCOM");
-    const payload = await request.json() as { action?: string; alumniIds?: number[]; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[]; reviewId?: number; fields?: string[] };
+    const payload = await request.json() as { action?: string; alumniIds?: number[]; alumnusId?: number; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[]; reviewId?: number; fields?: string[]; confirmed?: boolean };
+    const context = await authorizeRequest(request, payload.action === "validate_lusha" ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM");
     const db = getDb();
     const actor = context.displayName;
+
+    if (payload.action === "validate_lusha") {
+      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE and its server-side API key must both be configured." }, { status: 409 });
+      const accountUsage = await getLushaAccountUsage();
+      await writeSecurityAudit(context, { action: "lusha_connection_validated", entityType: "provider", entityId: "lusha", metadata: { endpoint: "account_usage", contactDataRequested: false } });
+      return Response.json({ connected: true, accountUsage });
+    }
+
+    if (payload.action === "lusha_search_contact") {
+      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE is not available." }, { status: 409 });
+      if (!Number.isInteger(payload.alumnusId)) return Response.json({ error: "Select one approved alumnus." }, { status: 400 });
+      const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
+      if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
+      const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);
+      if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
+      const identifier = person.linkedinUrl ? "professional profile" : "name and current company";
+      const result = await searchLushaContact({ name: person.name, company: person.company, linkedinUrl: person.linkedinUrl });
+      const recordedCredits = result.creditsUsed ?? 0;
+      if (result.status === "success" && result.contactId) {
+        await db.update(alumni).set({ lushaPersonId: result.contactId, updatedBy: actor, updatedAt: new Date().toISOString() }).where(eq(alumni.id, person.id));
+      }
+      await db.insert(providerResponseHistory).values({
+        provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Contact Search Preview", mode: "live", status: result.status,
+        creditsUsed: recordedCredits, resultCount: result.status === "success" ? 1 : 0,
+        requestSummary: `Identifier: ${identifier} · Requested fields: availability preview`,
+        responseSummary: result.status === "success"
+          ? `Stable Lusha contact ID found. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
+          : `No Lusha contact match. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`,
+        requestedBy: actor,
+      });
+      await writeSecurityAudit(context, { action: "lusha_contact_preview", entityType: "alumnus", entityId: person.id, metadata: { identifier, outcome: result.status, requestedFields: ["availability_preview"], creditsUsed: result.creditsUsed } });
+      return Response.json({
+        preview: {
+          alumnusId: person.id, alumnusName: person.name, contactId: result.contactId,
+          fullName: result.fullName, jobTitle: result.jobTitle, company: result.company,
+          professionalProfile: result.linkedinUrl, emailAvailable: result.emailAvailable,
+          phoneAvailable: result.phoneAvailable, status: result.status,
+          creditsUsed: result.creditsUsed, usageSource: result.usageSource,
+        },
+        usage: await usageSnapshot(),
+      });
+    }
+
+    if (payload.action === "lusha_reveal_email") {
+      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE is not available." }, { status: 409 });
+      if (!Number.isInteger(payload.alumnusId) || payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before a Lusha email reveal." }, { status: 400 });
+      const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
+      if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
+      const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);
+      if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
+      if (!person.lushaPersonId) return Response.json({ error: "Run the Lusha contact preview first so a stable contact ID can be confirmed." }, { status: 409 });
+      const result = await revealLushaEmail(person.lushaPersonId);
+      const recordedCredits = result.creditsUsed ?? 0;
+      if (result.status === "success" && result.email) {
+        const now = new Date().toISOString();
+        if (result.email !== person.email) await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field: "email", oldValue: person.email, newValue: result.email, source: "Lusha", providerAction: "Email Reveal", creditsCharged: recordedCredits, initiatedBy: actor });
+        await db.update(alumni).set({ email: result.email, emailVerification: "Unverified", emailSource: "Lusha", emailRetrievedAt: now, lastLushaEnrichment: now, updatedBy: actor, updatedAt: now }).where(eq(alumni.id, person.id));
+      }
+      await db.insert(providerResponseHistory).values({
+        provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Email Reveal", mode: "live", status: result.status,
+        creditsUsed: recordedCredits, resultCount: result.status === "success" ? 1 : 0,
+        requestSummary: "Stable Lusha contact ID · Requested fields: email only",
+        responseSummary: result.status === "success"
+          ? `Email returned by Lusha. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
+          : `No email was returned. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`,
+        requestedBy: actor,
+      });
+      await writeSecurityAudit(context, { action: "lusha_email_reveal", entityType: "alumnus", entityId: person.id, metadata: { requestedFields: ["email"], outcome: result.status, creditsUsed: result.creditsUsed } });
+      return Response.json({ result: { status: result.status, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
+    }
 
     if (payload.action === "apply_refresh" && Number.isInteger(payload.reviewId)) {
       const [review] = await db.select().from(providerRefreshReviews).where(eq(providerRefreshReviews.id, payload.reviewId!)).limit(1);
@@ -161,6 +232,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Select 1 to 25 alumni and at least one provider." }, { status: 400 });
     }
     if (requestedProviders.includes("pdl")) return Response.json({ error: "Use Refresh Profiles for PDL professional data checks." }, { status: 400 });
+    if (requestedProviders.includes("lusha") && enrichmentMode("lusha") === "live") return Response.json({ error: "Use the controlled Lusha contact preview and email-only confirmation workflow in LIVE mode." }, { status: 409 });
     const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
     const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
     const results = [];

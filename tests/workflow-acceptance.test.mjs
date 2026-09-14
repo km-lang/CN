@@ -58,13 +58,13 @@ test("acceptance 8: Lusha is not offered before a new discovery result is added"
   assert.match(page, /DISCOVERY_REVIEW_STATUS\.added/);
   assert.match(page, /DISCOVERY_REVIEW_STATUS\.addedSeparate/);
   assert.match(page, /DISCOVERY_REVIEW_STATUS\.legacyAdded/);
-  assert.match(page, /\{added && <>/);
+  assert.match(page, /\{added && \(\(\) =>/);
 });
 
-test("acceptance 9: added discovery results expose deliberate channel-specific Lusha actions", () => {
-  assert.match(page, />Get Email<\/Button>/);
-  assert.match(page, />Get Phone<\/Button>/);
-  assert.match(page, />Get Both Contacts<\/Button>/);
+test("acceptance 9: added discovery results expose controlled live Lusha email preparation", () => {
+  assert.match(page, /Prepare Email Reveal/);
+  assert.match(page, /providerModes\.lusha === "live"/);
+  assert.match(page, /Confirm Email-Only Reveal/);
 });
 
 test("acceptance 10: zero results and blocked searches are different user-visible states", () => {
@@ -93,16 +93,15 @@ test("acceptance 13: manual add records its source and consumes no provider cred
 
 test("acceptance 14: all enrichment actions are disabled with zero selection", () => {
   assert.match(page, /const pdlSelectionReady = selectedForEnrichment\.length > 0/);
-  assert.match(page, /const lushaEmailReady = selectedForEnrichment\.length > 0/);
+  assert.match(page, /const lushaEmailReady = selectedForEnrichment\.length === 1/);
   assert.match(page, /disabled=\{!pdlSelectionReady \|\| enriching\}/);
-  assert.match(page, /disabled=\{!lushaBothReady \|\| enriching\}/);
+  assert.match(page, /disabled=\{!lushaEmailReady \|\| enriching\}/);
 });
 
-test("acceptance 15: selected alumni expose one PDL action and three Lusha actions", () => {
+test("acceptance 15: selected alumni expose separate PDL and controlled Lusha live actions", () => {
   assert.match(page, /> Refresh Profiles<\/Button>/);
-  assert.match(page, />Get Emails<\/Button>/);
-  assert.match(page, />Get Phones<\/Button>/);
-  assert.match(page, /Get Both Contacts<\/Button>/);
+  assert.match(page, /Prepare Email Reveal/);
+  assert.match(page, /Phone and bulk reveal remain disabled/);
 });
 
 test("acceptance 16: changed PDL values are reviewed before apply and then audited", () => {

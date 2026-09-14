@@ -232,7 +232,7 @@ test("stage3 17: no PDL path automatically invokes Lusha", () => {
 
 test("stage3 18: live PDL calls remain PCOM/Admin-only and Admin alone manages limits", () => {
   assert.match(discoveryRoute, /authorizeRequest\(request, payload\.action === "validate_pdl" \? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"\)/);
-  assert.match(enrichmentRoute, /authorizeRequest\(request, "OPERATE_PCOM"\)/);
+  assert.match(enrichmentRoute, /"MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"/);
   assert.match(enrichmentRoute, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/);
   assert.match(enrichmentRoute, /pdlLiveRefreshMaximum\(\)/);
   assert.match(page, /People Data Labs — \{providerModes\.pdl\.toUpperCase\(\)\}/);
