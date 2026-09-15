@@ -1,6 +1,6 @@
 import { providerSecret, signalsRuntimeStatus } from "@/lib/provider-runtime"
 
-export const LUSHA_CONTACT_SIGNALS_ENDPOINT = "https://api.lusha.com/api/signals/contacts"
+export const LUSHA_CONTACT_SIGNALS_ENDPOINT = "https://api.lusha.com/v3/contacts/signals"
 export const CONTACT_SIGNAL_TYPES = ["promotion", "companyChange"] as const
 
 export type NormalizedProfessionalSignal = {
@@ -41,15 +41,16 @@ export function defaultSignalsStartDate(now = new Date()) {
 }
 
 export function providerReportedSignalCredits(body: Record<string, unknown>) {
-  return typeof body.creditCharged === "number" && Number.isInteger(body.creditCharged) && body.creditCharged >= 0
-    ? body.creditCharged
+  const creditsCharged = record(body.billing).creditsCharged
+  return typeof creditsCharged === "number" && Number.isInteger(creditsCharged) && creditsCharged >= 0
+    ? creditsCharged
     : null
 }
 
 export function normalizeLushaSignals(alumnusId: number, body: Record<string, unknown>, detectedAt = new Date().toISOString(), lushaPersonId = "") {
-  const contacts = record(body.contacts)
-  const contact = record(lushaPersonId ? contacts[lushaPersonId] : Object.values(contacts)[0])
-  const providerPersonId = text(contact.personId) || lushaPersonId
+  const results = array(body.results)
+  const contact = record(lushaPersonId ? results.find(value => text(record(value).id) === lushaPersonId) : results[0])
+  const providerPersonId = text(contact.id) || lushaPersonId
   const normalized: NormalizedProfessionalSignal[] = []
   const signalGroups: Array<{ subtype: "Promotion" | "Company Change"; values: unknown[] }> = [
     { subtype: "Promotion", values: array(contact.promotion) },
@@ -107,7 +108,7 @@ export async function fetchLushaContactSignals(inputs: SignalInput[], options: {
     response = await (options.fetcher ?? fetch)(LUSHA_CONTACT_SIGNALS_ENDPOINT, {
       method: "POST",
       headers: { api_key: key, accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ contacts: [{ id: inputs[0].lushaPersonId }], signals: [...CONTACT_SIGNAL_TYPES], startDate: options.startDate ?? defaultSignalsStartDate() }),
+      body: JSON.stringify({ ids: [inputs[0].lushaPersonId], signalTypes: [...CONTACT_SIGNAL_TYPES], startDate: options.startDate ?? defaultSignalsStartDate() }),
       signal: AbortSignal.timeout(15_000),
     })
   } catch (error) {
@@ -116,6 +117,6 @@ export async function fetchLushaContactSignals(inputs: SignalInput[], options: {
   }
   const body = await response.json().catch(() => ({})) as Record<string, unknown>
   if (!response.ok) throw new Error(providerError(response.status))
-  if (!("contacts" in body) || !body.contacts || typeof body.contacts !== "object" || Array.isArray(body.contacts)) throw new Error("Lusha Professional Signals returned a malformed response.")
+  if (!Array.isArray(body.results)) throw new Error("Lusha Professional Signals returned a malformed response.")
   return body
 }

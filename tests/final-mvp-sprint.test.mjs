@@ -90,12 +90,12 @@ test("final sprint Signals uses the documented contact endpoint and contract wit
   try {
     await signals.fetchLushaContactSignals([{ alumnusId: 15, lushaPersonId: "stable-115889" }], { startDate: "2026-03-14", fetcher: async (url, init) => {
       calls.push({ url: String(url), body: JSON.parse(String(init.body)) })
-      return new Response(JSON.stringify({ contacts: { "stable-115889": { personId: "115889", promotion: [], companyChange: [] } }, creditCharged: 1 }), { status: 200, headers: { "content-type": "application/json" } })
+      return new Response(JSON.stringify({ results: [{ id: "stable-115889", promotion: [], companyChange: [] }], billing: { creditsCharged: 1, resultsReturned: 1 } }), { status: 200, headers: { "content-type": "application/json" } })
     } })
     assert.equal(calls.length, 1)
-    assert.equal(calls[0].url, "https://api.lusha.com/api/signals/contacts")
-    assert.deepEqual(calls[0].body, { contacts: [{ id: "stable-115889" }], signals: ["promotion", "companyChange"], startDate: "2026-03-14" })
-    assert.doesNotMatch(calls[0].url, /\/v3\/contacts\/signals|\/contacts\/search/)
+    assert.equal(calls[0].url, "https://api.lusha.com/v3/contacts/signals")
+    assert.deepEqual(calls[0].body, { ids: ["stable-115889"], signalTypes: ["promotion", "companyChange"], startDate: "2026-03-14" })
+    assert.doesNotMatch(calls[0].url, /\/api\/signals\/contacts|\/contacts\/search/)
     assert.doesNotMatch(JSON.stringify(calls[0].body), /job_change|allSignals/)
   } finally {
     for (const [key, value] of Object.entries(previous)) {
@@ -106,13 +106,13 @@ test("final sprint Signals uses the documented contact endpoint and contract wit
 })
 
 test("final sprint nested contact Signals normalize multiple promotion and company-change events", () => {
-  const body = { contacts: { "stable-115889": { personId: "115889", promotion: [
+  const body = { results: [{ id: "stable-115889", promotion: [
     { id: "p1", previousCompanyName: "A", previousTitle: "Manager", currentCompanyName: "A", currentTitle: "Director", signalDate: "2026-09-10" },
     { id: "p2", currentCompanyName: "A", currentTitle: "VP", signalDate: "2026-09-12" },
   ], companyChange: [
     { id: "c1", previousCompanyName: "Google", previousTitle: "Lead", currentCompanyName: "Magnite", currentTitle: "Country Manager", signalDate: "2026-08-01" },
     { id: "c2", previousCompanyName: "Magnite", currentCompanyName: "Example", signalDate: "2026-09-01" },
-  ], hiring: [{ id: "excluded" }] } }, creditCharged: 1 }
+  ], hiring: [{ id: "excluded" }] }], billing: { creditsCharged: 1, resultsReturned: 1 } }
   const result = signals.normalizeLushaSignals(15, body, "2026-09-14T00:00:00Z", "stable-115889")
   assert.equal(result.length, 4)
   assert.deepEqual(result.map(item => item.eventSubtype), ["Promotion", "Promotion", "Company Change", "Company Change"])
@@ -123,12 +123,12 @@ test("final sprint nested contact Signals normalize multiple promotion and compa
 })
 
 test("final sprint empty contact Signals response creates no fake events", () => {
-  assert.deepEqual(signals.normalizeLushaSignals(15, { contacts: { "stable-115889": { personId: "115889", promotion: [], companyChange: [] } } }, undefined, "stable-115889"), [])
+  assert.deepEqual(signals.normalizeLushaSignals(15, { results: [{ id: "stable-115889", promotion: [], companyChange: [] }] }, undefined, "stable-115889"), [])
 })
 
-test("final sprint Signals captures provider creditCharged without fabricating missing usage", () => {
-  assert.equal(signals.providerReportedSignalCredits({ creditCharged: 1 }), 1)
-  assert.equal(signals.providerReportedSignalCredits({ creditCharged: 0 }), 0)
+test("final sprint Signals captures V3 billing creditsCharged without fabricating missing usage", () => {
+  assert.equal(signals.providerReportedSignalCredits({ billing: { creditsCharged: 1, resultsReturned: 1 } }), 1)
+  assert.equal(signals.providerReportedSignalCredits({ billing: { creditsCharged: 0, resultsReturned: 0 } }), 0)
   assert.equal(signals.providerReportedSignalCredits({}), null)
   assert.match(signalsRoute, /providerUsageState\(providerReportedCredits\)/)
   assert.match(signalsRoute, /Provider usage was not returned and requires reconciliation/)
