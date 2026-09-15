@@ -206,7 +206,7 @@ type EngagementEvent = {
   activity: EngagementActivity[]
 }
 type MessageTemplate = { id: number; templateKey: string; name: string; eventType: string; subject: string; body: string }
-type MailPreview = { event: EngagementEvent; templateId: number; recipient: string; subject: string; body: string }
+type MailPreview = { event: EngagementEvent; templateId: number; recipient: string; subject: string; body: string; readiness: { communicationStatus: string; purpose: string; duplicateStatus: string; provider: string; mode: "mock" | "live"; sender: string } }
 type BulkPreview = { ready: Array<{ eventId: number; alumnusName: string; templateId: number; recipient: string; subject: string; body: string }>; excluded: Array<{ eventId: number; alumnusName: string; reason: string }> }
 type RouteRecommendation = {
   routeType: "Direct" | "Warm" | "No eligible route"
@@ -457,7 +457,8 @@ export default function Home() {
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([])
   const [mailMode, setMailMode] = useState<"mock" | "live">("mock")
   const [mailConfigured, setMailConfigured] = useState(false)
-  const [signalsStatus, setSignalsStatus] = useState<{ mode: string; configured: boolean; liveEnabled: boolean; entitlement: string; startDate: string; requiresManualEntitlementValidation: boolean } | null>(null)
+  const [signalsStatus, setSignalsStatus] = useState<{ mode: string; configured: boolean; liveEnabled: boolean; entitlement: "unknown" | "confirmed" | "not_entitled"; startDate: string; requiresManualEntitlementValidation: boolean } | null>(null)
+  const [signalsAlumnusId, setSignalsAlumnusId] = useState<number | null>(null)
   const [signalsConfirmOpen, setSignalsConfirmOpen] = useState(false)
   const [signalsRunning, setSignalsRunning] = useState(false)
   const [signalsMessage, setSignalsMessage] = useState("")
@@ -470,6 +471,7 @@ export default function Home() {
   const [engagementLoading, setEngagementLoading] = useState(false)
   const [engagementMessage, setEngagementMessage] = useState("")
   const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
+  const [mailSendConfirmOpen, setMailSendConfirmOpen] = useState(false)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [responseType, setResponseType] = useState("Positive")
   const [responseNotes, setResponseNotes] = useState("")
@@ -642,7 +644,8 @@ export default function Home() {
   const nextWeek = nextWeekDate.toISOString().slice(0, 10)
   const birthdayEvents = engagements.filter(event => event.eventType === "Birthday")
   const professionalEvents = engagements.filter(event => event.eventType === "Professional Signal")
-  const signalsTarget = alumni.find(person => person.name === "Sahil Bansal" && Boolean(person.lushaPersonId)) ?? null
+  const signalsTarget = alumni.find(person => person.id === signalsAlumnusId) ?? null
+  const signalsActive = Boolean(signalsStatus?.liveEnabled && signalsStatus.entitlement === "confirmed")
   const birthdaysToday = birthdayEvents.filter(event => event.eventDate === today)
   const birthdaysNextWeek = birthdayEvents.filter(event => event.eventDate >= today && event.eventDate <= nextWeek)
   const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
@@ -995,9 +998,9 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "preview", eventId: event.id, templateId: template?.id }),
       })
-      const data = await response.json() as { template?: MessageTemplate; draft?: { recipient: string; subject: string; body: string }; error?: string }
-      if (!response.ok || !data.template || !data.draft) throw new Error(data.error || "Unable to prepare the email draft.")
-      setMailPreview({ event, templateId: data.template.id, ...data.draft })
+      const data = await response.json() as { template?: MessageTemplate; draft?: { recipient: string; subject: string; body: string }; readiness?: MailPreview["readiness"]; error?: string }
+      if (!response.ok || !data.template || !data.draft || !data.readiness) throw new Error(data.error || "Unable to prepare the email draft.")
+      setMailPreview({ event, templateId: data.template.id, ...data.draft, readiness: data.readiness })
       await loadEngagements()
     } catch (error) {
       setEngagementMessage(error instanceof Error ? error.message : "Unable to prepare the email draft.")
@@ -1011,6 +1014,7 @@ export default function Home() {
     const result = await postEngagement("send", mailPreview.event.id, { templateId: mailPreview.templateId, subject: mailPreview.subject, body: mailPreview.body, approved: true })
     if (result) {
       setMailPreview(null)
+      setMailSendConfirmOpen(false)
       setSelectedEngagement(null)
       setEngagementMessage(mailMode === "mock" ? "Mock email sent. The shared engagement history has been updated." : "Email sent and recorded in the shared engagement history.")
       await loadWorkspace()
@@ -1542,7 +1546,7 @@ export default function Home() {
               <div className="demo-user"><label>Signed-in owner</label><strong>{session.displayName}</strong><small>Actions use your authenticated identity</small></div>
             </section>
 
-            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "live" : "mock"}`}>{signalsStatus?.liveEnabled && signalsStatus?.entitlement === "confirmed" ? "LIVE · entitlement confirmed" : "Prepared · entitlement validation required"}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small>{session.canOperate && <Button size="sm" disabled={!signalsTarget || !signalsStatus?.liveEnabled || signalsStatus.entitlement !== "confirmed"} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check Professional Signals</Button>}</section>
+            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsActive ? "LIVE · entitlement confirmed" : signalsStatus?.entitlement === "not_entitled" ? "OFF · account not entitled" : "Professional Signals are prepared but not activated."}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small>{session.canOperate && <div className="signals-selector"><Select value={signalsAlumnusId ? String(signalsAlumnusId) : ""} onValueChange={value => setSignalsAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select approved alumnus" /></SelectTrigger><SelectContent>{alumni.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.lushaPersonId ? "Stable Lusha ID available" : "Lusha ID required"}</SelectItem>)}</SelectContent></Select>{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}{signalsActive && <Button size="sm" disabled={!signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check Professional Signals</Button>}</div>}</section>
             {signalsMessage && <div className="discovery-message">{signalsMessage}</div>}
 
             <section className="engagement-stats">
@@ -1734,7 +1738,15 @@ export default function Home() {
         <DialogContent className="mail-dialog">
           {mailPreview && <><DialogHeader><DialogTitle>Review email before sending</DialogTitle><DialogDescription>No message is sent until you approve it. {mailMode === "mock" ? "This demonstration uses the mock mail service." : "This message will use the approved institute mail service."}</DialogDescription></DialogHeader>
             <div className="mail-form"><label><span>Recipient</span><Input value={mailPreview.recipient} readOnly /></label><label><span>Approved template</span><Select value={String(mailPreview.templateId)} onValueChange={value => switchMailTemplate(Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{messageTemplates.filter(item => item.eventType === mailPreview.event.eventType).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></label><label><span>Subject</span><Input value={mailPreview.subject} onChange={event => setMailPreview({ ...mailPreview, subject: event.target.value })} /></label><label><span>Message</span><Textarea value={mailPreview.body} onChange={event => setMailPreview({ ...mailPreview, body: event.target.value })} rows={9} /></label></div>
-            <DialogFooter><Button variant="outline" onClick={() => setMailPreview(null)}>Cancel</Button><Button disabled={engagementLoading} onClick={() => void sendMailPreview()}>{engagementLoading ? <LoaderCircle className="spin" /> : <Send />} Approve & Send</Button></DialogFooter></>}
+            <DialogFooter><Button variant="outline" onClick={() => setMailPreview(null)}>Cancel</Button><Button disabled={engagementLoading || !mailPreview.subject.trim() || !mailPreview.body.trim()} onClick={() => setMailSendConfirmOpen(true)}><Eye /> Continue to Final Confirmation</Button></DialogFooter></>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={mailSendConfirmOpen} onOpenChange={setMailSendConfirmOpen}>
+        <DialogContent className="mail-dialog">
+          {mailPreview && <><DialogHeader><DialogTitle>Final email confirmation</DialogTitle><DialogDescription>Opening this confirmation makes zero mail calls. Sending occurs only after the explicit final approval below.</DialogDescription></DialogHeader>
+            <div className="refresh-confirm-summary"><div><span>From</span><strong>{mailPreview.readiness.sender}</strong></div><div><span>To</span><strong>{mailPreview.recipient}</strong></div><div><span>Subject</span><strong>{mailPreview.subject}</strong></div><div><span>Purpose / event</span><strong>{mailPreview.readiness.purpose} · {mailPreview.event.eventTitle}</strong></div><div><span>Communication status</span><strong>{mailPreview.readiness.communicationStatus}</strong></div><div><span>Duplicate-send status</span><strong>{mailPreview.readiness.duplicateStatus}</strong></div><div><span>Mail provider</span><strong>{mailPreview.readiness.provider}</strong></div><div><span>Mode</span><strong>{mailPreview.readiness.mode.toUpperCase()}</strong></div></div>
+            <DialogFooter><Button variant="outline" onClick={() => setMailSendConfirmOpen(false)}>Back to Draft</Button><Button disabled={engagementLoading} onClick={() => void sendMailPreview()}>{engagementLoading ? <LoaderCircle className="spin" /> : <Send />} Approve and Send One Email</Button></DialogFooter></>}
         </DialogContent>
       </Dialog>
 

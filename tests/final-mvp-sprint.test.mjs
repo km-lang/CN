@@ -11,12 +11,15 @@ after(async () => vite.close())
 const limits = await vite.ssrLoadModule("/lib/discovery-limit.ts")
 const usage = await vite.ssrLoadModule("/lib/provider-usage.ts")
 const signals = await vite.ssrLoadModule("/lib/lusha-signals.ts")
+const signalsRuntimeModule = await vite.ssrLoadModule("/lib/provider-runtime.ts")
 const mail = await vite.ssrLoadModule("/lib/mail-service.ts")
 const policy = await vite.ssrLoadModule("/lib/security-policy.ts")
 const discoveryRoute = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
 const enrichmentRoute = await readFile(new URL("../app/api/enrichment/route.ts", import.meta.url), "utf8")
 const signalsRoute = await readFile(new URL("../app/api/signals/route.ts", import.meta.url), "utf8")
 const engagementRoute = await readFile(new URL("../app/api/engagements/route.ts", import.meta.url), "utf8")
+const adminRoute = await readFile(new URL("../app/api/admin/route.ts", import.meta.url), "utf8")
+const adminPanel = await readFile(new URL("../app/admin-panel.tsx", import.meta.url), "utf8")
 const workspaceRoute = await readFile(new URL("../app/api/workspace/route.ts", import.meta.url), "utf8")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
 const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8")
@@ -135,7 +138,7 @@ test("final sprint Signals sync is disabled before entitlement without a provide
   assert.match(signalsRoute, /runtime\.entitlement !== "confirmed"/)
   assert.match(signalsRoute, /No provider call was made/)
   assert.match(envExample, /LUSHA_SIGNALS_LIVE_ENABLED=false/)
-  assert.match(envExample, /LUSHA_SIGNALS_ENTITLEMENT=unverified/)
+  assert.match(envExample, /LUSHA_SIGNALS_ENTITLEMENT=unknown/)
 })
 
 test("final sprint signals never silently overwrite alumni", () => {
@@ -170,6 +173,85 @@ test("final sprint Signals RBAC is enforced server-side", () => {
   assert.equal(policy.hasPermission("DEVELOPER", "OPERATE_PCOM"), false)
 })
 
+test("final readiness Signals gate and all entitlement states remain independent", () => {
+  const previous = Object.fromEntries(["LUSHA_LIVE_ENABLED", "LUSHA_SIGNALS_LIVE_ENABLED", "LUSHA_SIGNALS_ENTITLEMENT"].map(key => [key, process.env[key]]))
+  try {
+    Object.assign(process.env, { LUSHA_LIVE_ENABLED: "true", LUSHA_SIGNALS_LIVE_ENABLED: "false", LUSHA_SIGNALS_ENTITLEMENT: "unknown" })
+    assert.equal(signalsRuntime().liveEnabled, false)
+    assert.equal(signalsRuntime().entitlement, "unknown")
+    process.env.LUSHA_SIGNALS_ENTITLEMENT = "confirmed"
+    assert.equal(signalsRuntime().entitlement, "confirmed")
+    process.env.LUSHA_SIGNALS_ENTITLEMENT = "not_entitled"
+    assert.equal(signalsRuntime().entitlement, "not_entitled")
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+function signalsRuntime() {
+  return signalsRuntimeModule.signalsRuntimeStatus()
+}
+
+test("final readiness supports any selected alumnus and reports missing stable identity", () => {
+  assert.match(page, /Select approved alumnus/)
+  assert.match(page, /Stable Lusha ID available/)
+  assert.match(page, /Lusha contact identity required before Professional Signals can be checked/)
+  assert.doesNotMatch(page, /person\.name === "Sahil Bansal"/)
+  assert.match(page, /signalsActive && <Button/)
+})
+
+test("final readiness Admin alone sees component-level operational status", () => {
+  for (const label of ["People Data Labs", "Lusha Contacts", "Lusha Professional Signals", "Institutional Mail", "Gmail send permission", "Last connectivity validation"]) assert.match(adminPanel, new RegExp(label))
+  assert.match(adminRoute, /authorizeRequest\(request, "MANAGE_USERS"\)/)
+  assert.match(adminRoute, /operationalReadiness/)
+  assert.doesNotMatch(page, /GMAIL_CLIENT_SECRET|GMAIL_REFRESH_TOKEN/)
+})
+
+test("final readiness mail confirmation is editable and makes no call until final approval", () => {
+  assert.match(page, /setMailPreview\(\{ \.\.\.mailPreview, subject:/)
+  assert.match(page, /setMailPreview\(\{ \.\.\.mailPreview, body:/)
+  assert.match(page, /Opening this confirmation makes zero mail calls/)
+  for (const label of ["From", "To", "Subject", "Purpose / event", "Communication status", "Duplicate-send status", "Mail provider", "Mode"]) assert.match(page, new RegExp(label))
+  assert.match(engagementRoute, /duplicateStatus: "No duplicate send found"/)
+})
+
+test("final readiness mail rejects invalid recipient before any transport", async () => {
+  let calls = 0
+  await assert.rejects(() => mail.sendMail({ recipient: "invalid", subject: "Subject", body: "Body" }, { fetcher: async () => { calls += 1; return new Response() } }), /valid recipient/)
+  assert.equal(calls, 0)
+})
+
+test("final readiness mail distinguishes disabled live gate", async () => {
+  const previous = { mode: process.env.MAIL_MODE, gate: process.env.MAIL_LIVE_ENABLED }
+  Object.assign(process.env, { MAIL_MODE: "live", MAIL_LIVE_ENABLED: "false" })
+  try { await assert.rejects(() => mail.sendMail({ recipient: "a@example.org", subject: "Subject", body: "Body" }), /Live institutional mail is disabled/) }
+  finally {
+    if (previous.mode === undefined) delete process.env.MAIL_MODE
+    else process.env.MAIL_MODE = previous.mode
+    if (previous.gate === undefined) delete process.env.MAIL_LIVE_ENABLED
+    else process.env.MAIL_LIVE_ENABLED = previous.gate
+  }
+})
+
+test("final readiness mail maps revoked OAuth and insufficient Gmail scope", async () => {
+  const keys = ["MAIL_MODE", "MAIL_LIVE_ENABLED", "MAIL_PROVIDER", "MAIL_SENDER_EMAIL", "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN", "GMAIL_SEND_SCOPE_CONFIRMED"]
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]))
+  Object.assign(process.env, { MAIL_MODE: "live", MAIL_LIVE_ENABLED: "true", MAIL_PROVIDER: "gmail", MAIL_SENDER_EMAIL: "pcom@example.edu", GMAIL_CLIENT_ID: "id", GMAIL_CLIENT_SECRET: "secret", GMAIL_REFRESH_TOKEN: "refresh", GMAIL_SEND_SCOPE_CONFIRMED: "true" })
+  try {
+    await assert.rejects(() => mail.sendMail({ recipient: "a@example.org", subject: "Subject", body: "Body" }, { fetcher: async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }) }), /expired or been revoked/)
+    let call = 0
+    await assert.rejects(() => mail.sendMail({ recipient: "a@example.org", subject: "Subject", body: "Body" }, { fetcher: async () => ++call === 1 ? new Response(JSON.stringify({ access_token: "mock" }), { status: 200 }) : new Response(JSON.stringify({ error: { status: "PERMISSION_DENIED" } }), { status: 403 }) }), /insufficient Gmail send scope/)
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
 test("final sprint Gmail adapter is independently gated and server-only", () => {
   assert.match(envExample, /MAIL_LIVE_ENABLED=false/)
   assert.match(envExample, /GMAIL_REFRESH_TOKEN=/)
@@ -177,8 +259,8 @@ test("final sprint Gmail adapter is independently gated and server-only", () => 
 })
 
 test("final sprint Gmail adapter sends only through injected mock transport", async () => {
-  const previous = Object.fromEntries(["MAIL_MODE", "MAIL_LIVE_ENABLED", "MAIL_PROVIDER", "MAIL_SENDER_EMAIL", "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN"].map(key => [key, process.env[key]]))
-  Object.assign(process.env, { MAIL_MODE: "live", MAIL_LIVE_ENABLED: "true", MAIL_PROVIDER: "gmail", MAIL_SENDER_EMAIL: "pcom@example.edu", GMAIL_CLIENT_ID: "test-id", GMAIL_CLIENT_SECRET: "test-secret", GMAIL_REFRESH_TOKEN: "test-refresh" })
+  const previous = Object.fromEntries(["MAIL_MODE", "MAIL_LIVE_ENABLED", "MAIL_PROVIDER", "MAIL_SENDER_EMAIL", "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN", "GMAIL_SEND_SCOPE_CONFIRMED"].map(key => [key, process.env[key]]))
+  Object.assign(process.env, { MAIL_MODE: "live", MAIL_LIVE_ENABLED: "true", MAIL_PROVIDER: "gmail", MAIL_SENDER_EMAIL: "pcom@example.edu", GMAIL_CLIENT_ID: "test-id", GMAIL_CLIENT_SECRET: "test-secret", GMAIL_REFRESH_TOKEN: "test-refresh", GMAIL_SEND_SCOPE_CONFIRMED: "true" })
   const calls = []
   try {
     const result = await mail.sendMail({ recipient: "alumnus@example.org", subject: "Approved", body: "Hello" }, { fetcher: async (url, init) => {
@@ -200,7 +282,8 @@ test("final sprint Gmail adapter sends only through injected mock transport", as
 
 test("final sprint mail requires human approval and stores approval provenance", () => {
   assert.match(engagementRoute, /Human approval is required after preview and before sending/)
-  assert.match(page, /Approve & Send/)
+  assert.match(page, /Continue to Final Confirmation/)
+  assert.match(page, /Approve and Send One Email/)
   for (const field of ["sender", "recipient", "purpose", "templateVersion", "approvedBy", "approvedAt"]) assert.match(schema, new RegExp(field))
 })
 

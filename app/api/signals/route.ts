@@ -16,6 +16,9 @@ export async function GET(request: Request) {
       configured: providerConfigured("lusha"),
       liveEnabled: runtime.liveEnabled,
       entitlement: runtime.entitlement,
+      implementationStatus: runtime.implementationStatus,
+      lastVerifiedAt: runtime.lastVerifiedAt,
+      verificationSource: runtime.verificationSource,
       scope: ["promotion", "job/company change"],
       startDate: defaultSignalsStartDate(),
       maximumContactsPerRequest: 1,
@@ -34,6 +37,7 @@ export async function POST(request: Request) {
     const payload = await request.json() as { action?: string; alumniIds?: number[]; confirmed?: boolean }
     if (payload.action !== "sync" || payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before a Signals sync." }, { status: 400 })
     const runtime = signalsRuntimeStatus()
+    if (runtime.entitlement === "not_entitled") return Response.json({ error: "Professional Signals are not enabled for this Lusha account. No provider call was made." }, { status: 409 })
     if (providerMode("lusha") !== "live" || !providerConfigured("lusha") || !runtime.liveEnabled || runtime.entitlement !== "confirmed") {
       return Response.json({ error: "Lusha Signals is prepared but disabled until account entitlement and billing behavior are manually validated. No provider call was made." }, { status: 409 })
     }

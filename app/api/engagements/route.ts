@@ -102,7 +102,7 @@ async function buildDraft(eventId: number, templateId?: number) {
   const { event, person } = await getEvent(eventId);
   const templates = templateId
     ? await db.select().from(messageTemplates).where(eq(messageTemplates.id, templateId)).limit(1)
-    : await db.select().from(messageTemplates).where(eq(messageTemplates.eventType, event.eventType));
+    : await db.select().from(messageTemplates).where(eq(messageTemplates.eventType, event.eventType === "Manual Relationship" ? "Professional Signal" : event.eventType));
   const template = templates.find(item => item.status === "Approved");
   if (!template) throw new Error("No approved message template is available for this event.");
   return { event, person, template, draft: createMailDraft(person.email, template.subject, template.body, person.name) };
@@ -149,6 +149,11 @@ async function validateSendEligibility(eventId: number, actor?: string) {
       throw new Error(`Birthday email excluded because the contact preference is “${preference.status}”.`);
     }
   }
+  return {
+    communicationStatus: event.eventType === "Birthday" ? birthdayPreference : professionalPreference !== "Unknown" ? professionalPreference : generalPreference,
+    recipient: person.email,
+    purpose: event.eventType === "Birthday" ? "Birthday wish" : event.eventType === "Manual Relationship" ? "Institutional outreach" : "Professional congratulations",
+  };
 }
 
 async function sendOne(eventId: number, context: SecurityContext, approved: boolean, templateId?: number, subject?: string, body?: string) {
@@ -186,7 +191,7 @@ async function sendOne(eventId: number, context: SecurityContext, approved: bool
   try {
     const result = await sendMail(prepared);
     const now = new Date().toISOString();
-    await db.update(engagementActions).set({ externalMessageId: result.messageId, deliveryStatus: result.deliveryStatus, sender: result.sender, recipient: result.recipient, performedAt: now }).where(eq(engagementActions.id, reserved.id));
+    await db.update(engagementActions).set({ externalMessageId: result.messageId, deliveryStatus: result.deliveryStatus, sender: result.sender, recipient: result.recipient, performedAt: now, notes: `Mail mode: ${result.mode}; provider: ${result.provider}` }).where(eq(engagementActions.id, reserved.id));
     await db.update(engagementEvents).set({
       status: "Action Taken",
       assignedTo: event.assignedTo || actor,
@@ -305,9 +310,13 @@ export async function POST(request: Request) {
       await db.update(engagementEvents).set({ status: "Action Planned", actionPlannedAt: now, assignedTo: actor, assignedAt: event.assignedAt || now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
       await audit(eventId, context, "action_planned", payload.notes ?? "Engagement action planned.");
     } else if (payload.action === "preview") {
+      const eligibility = await validateSendEligibility(eventId, actor);
       const item = await buildDraft(eventId, payload.templateId);
+      const actionKey = `mail:${item.person.id}:${item.event.eventKey}:${item.template.templateKey}:v${item.template.version}`;
+      const [duplicate] = await db.select({ id: engagementActions.id }).from(engagementActions).where(eq(engagementActions.actionKey, actionKey)).limit(1);
+      if (duplicate) return Response.json({ error: "This approved message has already been sent or reserved." }, { status: 409 });
       await audit(eventId, context, "draft_generated", `Draft prepared with ${item.template.name}.`);
-      return Response.json({ template: item.template, draft: item.draft });
+      return Response.json({ template: item.template, draft: item.draft, readiness: { ...eligibility, duplicateStatus: "No duplicate send found", provider: "Google Workspace / Gmail", mode: mailMode(), sender: mailConfiguration().sender || "Mock placement committee" } });
     } else if (payload.action === "send") {
       const sent = await sendOne(eventId, context, payload.approved === true, payload.templateId, payload.subject, payload.body);
       return Response.json({ sent, mode: mailMode() });

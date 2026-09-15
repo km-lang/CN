@@ -28,6 +28,8 @@ import {
 } from "@/db/schema"
 import { InvalidEmailError, isLikelyInstitutionalEmailTypo, normalizeEmail } from "@/lib/email-identity"
 import { classifyMockDataset } from "@/lib/mock-cleanup"
+import { mailConfiguration, mailRuntimeStatus } from "@/lib/mail-service"
+import { providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/provider-runtime"
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
 import { safeAuditMetadata } from "@/lib/security-policy"
 
@@ -112,7 +114,18 @@ export async function GET(request: Request) {
       db.select().from(alumniDataLifecycle).orderBy(desc(alumniDataLifecycle.updatedAt)),
       db.select().from(providerSettings).orderBy(providerSettings.provider),
     ])
-    return Response.json({ users: users.map(user => ({ ...user, identities: identities.filter(identity => identity.applicationUserId === user.id) })), audit, lifecycle, providerLimits })
+    return Response.json({
+      users: users.map(user => ({ ...user, identities: identities.filter(identity => identity.applicationUserId === user.id) })),
+      audit,
+      lifecycle,
+      providerLimits,
+      operationalReadiness: {
+        pdl: { mode: providerMode("pdl"), configured: providerConfigured("pdl") },
+        lushaContacts: { mode: providerMode("lusha"), configured: providerConfigured("lusha") },
+        signals: signalsRuntimeStatus(),
+        mail: { ...mailRuntimeStatus(), ...mailConfiguration() },
+      },
+    })
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied

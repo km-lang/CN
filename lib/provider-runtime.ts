@@ -11,6 +11,8 @@ type ProviderRuntimeEnvironment = {
   PDL_LIVE_REFRESH_MAX_PROFILES?: string
   LUSHA_SIGNALS_LIVE_ENABLED?: string
   LUSHA_SIGNALS_ENTITLEMENT?: string
+  LUSHA_SIGNALS_ENTITLEMENT_VERIFIED_AT?: string
+  LUSHA_SIGNALS_ENTITLEMENT_SOURCE?: string
 }
 
 function runtimeEnvironment() {
@@ -57,6 +59,13 @@ export function pdlLiveRefreshMaximum() {
 
 export function signalsRuntimeStatus() {
   const values = runtimeEnvironment()
-  const entitlement = values.LUSHA_SIGNALS_ENTITLEMENT?.trim().toLowerCase() === "confirmed" ? "confirmed" : "unverified"
-  return { liveEnabled: enabled(values.LUSHA_SIGNALS_LIVE_ENABLED), entitlement } as const
+  const configuredEntitlement = values.LUSHA_SIGNALS_ENTITLEMENT?.trim().toLowerCase()
+  const entitlement = configuredEntitlement === "confirmed" ? "confirmed" : configuredEntitlement === "not_entitled" ? "not_entitled" : "unknown"
+  return {
+    liveEnabled: enabled(values.LUSHA_SIGNALS_LIVE_ENABLED),
+    entitlement,
+    implementationStatus: "ready" as const,
+    lastVerifiedAt: values.LUSHA_SIGNALS_ENTITLEMENT_VERIFIED_AT?.trim() ?? "",
+    verificationSource: values.LUSHA_SIGNALS_ENTITLEMENT_SOURCE?.trim() ?? "",
+  } as const
 }
