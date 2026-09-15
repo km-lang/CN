@@ -218,6 +218,15 @@ test("final readiness mail confirmation is editable and makes no call until fina
   assert.match(engagementRoute, /duplicateStatus: "No duplicate send found"/)
 })
 
+test("final readiness allows a selected approved alumnus to start a controlled draft without a provider call", () => {
+  assert.match(page, /Controlled institutional email/)
+  assert.match(page, /create_manual_email_event/)
+  assert.match(page, /Draft Email/)
+  assert.match(engagementRoute, /action === "create_manual_email_event"/)
+  assert.match(engagementRoute, /A valid stored recipient email is required before drafting/)
+  assert.doesNotMatch(engagementRoute.match(/if \(payload\.action === "create_manual_email_event"\)[\s\S]*?return Response\.json\(\{ \.\.\.\(await loadWorkspace\(\)\), createdEventId: selectedEvent\.id \}\);/)?.[0] ?? "", /sendMail\(/)
+})
+
 test("final readiness mail rejects invalid recipient before any transport", async () => {
   let calls = 0
   await assert.rejects(() => mail.sendMail({ recipient: "invalid", subject: "Subject", body: "Body" }, { fetcher: async () => { calls += 1; return new Response() } }), /valid recipient/)

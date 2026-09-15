@@ -1009,6 +1009,26 @@ export default function Home() {
     }
   }
 
+  async function draftManualEmail(person: Alumni) {
+    setEngagementLoading(true)
+    setEngagementMessage("")
+    try {
+      const response = await fetch(API_ROUTES.engagements, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create_manual_email_event", alumnusId: person.id }) })
+      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; createdEventId?: number; error?: string }
+      const event = data.events?.find(item => item.id === data.createdEventId)
+      if (!response.ok || !event) throw new Error(data.error || "Unable to prepare the controlled email draft.")
+      setEngagements(data.events ?? [])
+      setMessageTemplates(data.templates ?? messageTemplates)
+      setSelected(null)
+      setActiveTab("engagement")
+      await previewEngagement(event)
+    } catch (error) {
+      setEngagementMessage(error instanceof Error ? error.message : "Unable to prepare the controlled email draft.")
+    } finally {
+      setEngagementLoading(false)
+    }
+  }
+
   async function sendMailPreview() {
     if (!mailPreview) return
     const result = await postEngagement("send", mailPreview.event.id, { templateId: mailPreview.templateId, subject: mailPreview.subject, body: mailPreview.body, approved: true })
@@ -1670,6 +1690,7 @@ export default function Home() {
 
       <Sheet open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)}>
         <SheetContent className="profile-sheet sm:max-w-xl">
+          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => void draftManualEmail(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             {selected.privacy?.generalContactStatus === "Do not contact" && <div className="do-not-contact-banner"><Ban /><div><strong>Do not contact</strong><span>All birthday, professional and outreach sends are blocked server-side for this alumnus.</span></div></div>}

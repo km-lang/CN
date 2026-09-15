@@ -373,6 +373,9 @@ button { cursor: pointer; }
 .signals-readiness .signals-selector { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(240px, 1fr) auto; align-items: center; gap: .45rem .75rem; color: inherit; }
 .signals-selector > small { grid-column: 1 / -1; }
 .signals-confirm-dialog { max-width: 680px; }
+.profile-direct-mail { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin: 3.5rem 1.25rem .75rem; padding: .75rem; border: 1px solid #dce4e9; border-radius: 12px; background: #f8fafb; }
+.profile-direct-mail > div { display: grid; gap: .2rem; }
+.profile-direct-mail small { color: #71818e; font-size: .7rem; }
 .readiness-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; padding: 0 1.35rem 1.2rem; }
 .readiness-grid article { display: grid; gap: .35rem; padding: .9rem; border: 1px solid #dce4e9; border-radius: 12px; background: #f8fafb; }
 .readiness-grid article > span { color: #155f51; font-weight: 800; font-size: .78rem; }

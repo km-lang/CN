@@ -233,6 +233,7 @@ export async function POST(request: Request) {
     const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as {
       action?: string;
+      alumnusId?: number;
       eventId?: number;
       eventIds?: number[];
       templateId?: number;
@@ -251,6 +252,19 @@ export async function POST(request: Request) {
     const db = getDb();
     const now = new Date().toISOString();
     const eventId = Number(payload.eventId);
+
+    if (payload.action === "create_manual_email_event") {
+      const alumnusId = Number(payload.alumnusId);
+      if (!Number.isInteger(alumnusId)) return Response.json({ error: "Select a valid approved alumnus." }, { status: 400 });
+      const [person] = await db.select().from(alumni).where(eq(alumni.id, alumnusId)).limit(1);
+      if (!person) return Response.json({ error: "Approved alumnus not found." }, { status: 404 });
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email)) return Response.json({ error: "A valid stored recipient email is required before drafting." }, { status: 409 });
+      const eventKey = `manual-professional-email:${person.id}`;
+      const [created] = await db.insert(engagementEvents).values({ eventKey, alumnusId: person.id, company: person.company, eventType: "Manual Relationship", eventSubtype: "Controlled institutional email", eventTitle: "Controlled institutional outreach", eventDescription: "Manually prepared institutional outreach for explicit review and approval.", source: "Manual PCOM selection", eventDate: now.slice(0, 10), status: "New", createdBy: actor, lastUpdatedBy: actor }).onConflictDoNothing().returning();
+      const selectedEvent = created ?? await db.select().from(engagementEvents).where(eq(engagementEvents.eventKey, eventKey)).limit(1).then(rows => rows[0]);
+      await writeSecurityAudit(context, { action: "manual_email_draft_event_prepared", entityType: "engagement_event", entityId: selectedEvent.id, metadata: { alumnusId: person.id } });
+      return Response.json({ ...(await loadWorkspace()), createdEventId: selectedEvent.id });
+    }
 
     if (payload.action === "bulk_preview") {
       const ids = [...new Set(payload.eventIds?.filter(Number.isInteger) ?? [])].slice(0, 25);
