@@ -27,6 +27,7 @@ import {
   securityAuditEvents,
 } from "@/db/schema"
 import { InvalidEmailError, isLikelyInstitutionalEmailTypo, normalizeEmail } from "@/lib/email-identity"
+import { validateLushaSignalsEntitlement } from "@/lib/lusha-signals-entitlement"
 import { classifyMockDataset } from "@/lib/mock-cleanup"
 import { mailConfiguration, mailRuntimeStatus } from "@/lib/mail-service"
 import { providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/provider-runtime"
@@ -139,6 +140,20 @@ export async function POST(request: Request) {
     const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean }
     const db = getDb()
     const now = new Date().toISOString()
+
+    if (payload.action === "validate_signals_entitlement") {
+      const result = await validateLushaSignalsEntitlement()
+      await writeSecurityAudit(context, {
+        action: "lusha_signals_entitlement_validated", entityType: "provider", entityId: "lusha_signals",
+        result: result.entitlement,
+        metadata: {
+          checkedAt: result.checkedAt, entitlement: result.entitlement, outcome: result.outcome,
+          httpStatus: result.httpStatus, promotionAvailable: result.promotionAvailable,
+          companyChangeAvailable: result.companyChangeAvailable, providerReportedCredits: result.providerReportedCredits,
+        },
+      })
+      return Response.json({ validation: result })
+    }
 
     if (payload.action === "preview_mock_cleanup") {
       const inventory = await mockCleanupInventory()

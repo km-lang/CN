@@ -20,6 +20,16 @@ type OperationalReadiness = {
   mail: { mode: string; liveEnabled: boolean; provider: string; senderConfigured: boolean; oauthConfigured: boolean; sendPermissionConfigured: boolean; lastValidationStatus: string; lastValidatedAt: string; validationSource: string }
 }
 type AdminData = { users: AdminUser[]; audit: AuditEvent[]; operationalReadiness?: OperationalReadiness }
+type SignalsEntitlementValidation = {
+  entitlement: "confirmed" | "not_entitled" | "unknown"
+  outcome: string
+  httpStatus: number | null
+  signalTypes: string[]
+  promotionAvailable: boolean
+  companyChangeAvailable: boolean
+  providerReportedCredits: number | null
+  checkedAt: string
+}
 type SimilarEmailWarning = { enteredEmail: string; similarUser: { id: number; email: string; displayName: string } }
 type MockCleanupInventory = {
   ambiguous: string[]
@@ -77,6 +87,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [cleanupIntegrity, setCleanupIntegrity] = useState<IntegrityResult | null>(null)
   const [cleanupResult, setCleanupResult] = useState<MockCleanupResult | null>(null)
   const [cleanupConfirmation, setCleanupConfirmation] = useState("")
+  const [signalsValidation, setSignalsValidation] = useState<SignalsEntitlementValidation | null>(null)
 
   const load = useCallback(async () => {
     const response = await fetch(apiPath("/api/admin"), { cache: "no-store" })
@@ -89,6 +100,28 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
     const timer = window.setTimeout(() => void load().catch(error => setMessage(error instanceof Error ? error.message : "Unable to load administration data.")), 0)
     return () => window.clearTimeout(timer)
   }, [load])
+
+  async function validateSignalsEntitlement() {
+    setLoading(true)
+    setSignalsValidation(null)
+    setMessage("")
+    try {
+      const response = await fetch(apiPath("/api/admin"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ action: "validate_signals_entitlement" }),
+      })
+      const result = await response.json() as { validation?: SignalsEntitlementValidation; error?: string }
+      if (!response.ok || !result.validation) throw new Error(result.error || "Unable to validate Professional Signals entitlement.")
+      setSignalsValidation(result.validation)
+      await load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to validate Professional Signals entitlement.")
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function action(payload: Record<string, unknown>) {
     setLoading(true)
@@ -193,7 +226,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       <div className="readiness-grid">
         <article><strong>People Data Labs</strong><span>{data.operationalReadiness?.pdl.mode.toUpperCase() ?? "UNKNOWN"}</span><small>{data.operationalReadiness?.pdl.configured ? "API key configured" : "API key missing"}</small></article>
         <article><strong>Lusha Contacts</strong><span>{data.operationalReadiness?.lushaContacts.mode.toUpperCase() ?? "UNKNOWN"}</span><small>{data.operationalReadiness?.lushaContacts.configured ? "Contact API configured" : "Contact API key missing"}</small></article>
-        <article><strong>Lusha Professional Signals</strong><span>{data.operationalReadiness?.signals.liveEnabled && data.operationalReadiness.signals.entitlement === "confirmed" ? "LIVE" : data.operationalReadiness?.signals.entitlement === "not_entitled" ? "OFF · NOT ENTITLED" : "OFF · READY"}</span><small>Implementation: {data.operationalReadiness?.signals.implementationStatus ?? "unknown"} · Gate: {data.operationalReadiness?.signals.liveEnabled ? "enabled" : "disabled"} · Entitlement: {(data.operationalReadiness?.signals.entitlement ?? "unknown").replaceAll("_", " ")}</small><small>Last verification: {data.operationalReadiness?.signals.lastVerifiedAt || "Not verified"}{data.operationalReadiness?.signals.verificationSource ? ` · ${data.operationalReadiness.signals.verificationSource}` : ""}</small></article>
+        <article><strong>Lusha Professional Signals</strong><span>{data.operationalReadiness?.signals.liveEnabled && data.operationalReadiness.signals.entitlement === "confirmed" ? "LIVE" : data.operationalReadiness?.signals.entitlement === "not_entitled" ? "OFF · NOT ENTITLED" : "OFF · READY"}</span><small>Implementation: {data.operationalReadiness?.signals.implementationStatus ?? "unknown"} · Gate: {data.operationalReadiness?.signals.liveEnabled ? "enabled" : "disabled"} · Entitlement: {(data.operationalReadiness?.signals.entitlement ?? "unknown").replaceAll("_", " ")}</small><small>Last verification: {data.operationalReadiness?.signals.lastVerifiedAt || "Not verified"}{data.operationalReadiness?.signals.verificationSource ? ` · ${data.operationalReadiness.signals.verificationSource}` : ""}</small><Button size="sm" variant="outline" disabled={loading || !data.operationalReadiness?.lushaContacts.configured} onClick={() => void validateSignalsEntitlement()}>{loading ? "Validating…" : "Validate Signals Entitlement"}</Button><small>Checks contact signal types once using the server-side key. No person lookup. Signals remain OFF.</small>{signalsValidation && <div role="status" className="signals-entitlement-result"><strong>Validation: {signalsValidation.entitlement.replaceAll("_", " ")}</strong><small>Provider outcome: {signalsValidation.outcome.replaceAll("_", " ")} · HTTP: {signalsValidation.httpStatus ?? "unavailable"} · {new Date(signalsValidation.checkedAt).toLocaleString()}</small><small>Promotion: {signalsValidation.promotionAvailable ? "available" : "not confirmed"} · Company/job change: {signalsValidation.companyChangeAvailable ? "available" : "not confirmed"}</small><small>Recognized contact types: {signalsValidation.signalTypes.join(", ") || "unavailable"}</small><small>Provider-reported usage: {signalsValidation.providerReportedCredits === null ? "Not reported (do not assume zero)" : `${signalsValidation.providerReportedCredits} credits`}. Account balance was not queried.</small>{signalsValidation.entitlement === "confirmed" && <small>For later manual activation through Sites: LUSHA_SIGNALS_ENTITLEMENT=confirmed, LUSHA_SIGNALS_LIVE_ENABLED=true, LUSHA_SIGNALS_ENTITLEMENT_VERIFIED_AT={signalsValidation.checkedAt}, LUSHA_SIGNALS_ENTITLEMENT_SOURCE=Lusha V3 contact signal types. This validation changes none of these settings.</small>}</div>}</article>
         <article><strong>Institutional Mail</strong><span>{data.operationalReadiness?.mail.mode === "live" ? "LIVE" : data.operationalReadiness?.mail.senderConfigured && data.operationalReadiness?.mail.oauthConfigured && data.operationalReadiness?.mail.sendPermissionConfigured ? "OFF · READY" : "OFF"}</span><small>Mode: {data.operationalReadiness?.mail.mode.toUpperCase() ?? "MOCK"} · Sender: {data.operationalReadiness?.mail.senderConfigured ? "configured" : "missing"} · OAuth: {data.operationalReadiness?.mail.oauthConfigured ? "configured" : "missing"} · Gmail send permission: {data.operationalReadiness?.mail.sendPermissionConfigured ? "confirmed" : "not confirmed"} · Gate: {data.operationalReadiness?.mail.liveEnabled ? "enabled" : "disabled"}</small><small>Last connectivity validation: {data.operationalReadiness?.mail.lastValidationStatus ?? "Not validated"}{data.operationalReadiness?.mail.lastValidatedAt ? ` · ${data.operationalReadiness.mail.lastValidatedAt}` : ""}{data.operationalReadiness?.mail.validationSource ? ` · ${data.operationalReadiness.mail.validationSource}` : ""}</small></article>
       </div>
       <p className="section-help">Change runtime provider and mail configuration only through authorized Sites environment controls. PCOM users cannot view or change these settings.</p>
