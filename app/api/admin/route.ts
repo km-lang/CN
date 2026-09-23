@@ -29,13 +29,27 @@ import {
 import { InvalidEmailError, isLikelyInstitutionalEmailTypo, normalizeEmail } from "@/lib/email-identity"
 import { validateLushaSignalsEntitlement } from "@/lib/lusha-signals-entitlement"
 import { classifyMockDataset } from "@/lib/mock-cleanup"
-import { mailConfiguration, mailRuntimeStatus } from "@/lib/mail-service"
+import { mailConfiguration, mailRuntimeStatus, validateGmailConnectivity } from "@/lib/mail-service"
 import { providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/provider-runtime"
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
 import { safeAuditMetadata } from "@/lib/security-policy"
 
 function clean(value: unknown, max = 500) {
   return String(value ?? "").trim().slice(0, max)
+}
+
+function mailValidationReadiness(row: typeof securityAuditEvents.$inferSelect | undefined) {
+  if (!row) return {}
+  let metadata: Record<string, unknown> = {}
+  try { metadata = JSON.parse(row.metadataJson) as Record<string, unknown> } catch {}
+  const status = ["confirmed", "failed", "unknown"].includes(row.result) ? row.result : "unknown"
+  return {
+    lastValidationStatus: status,
+    lastValidatedAt: clean(metadata.checkedAt, 64) || row.createdAt,
+    validationSource: "Google OAuth token refresh",
+    validationReason: clean(metadata.reason, 240),
+    scopeVerified: typeof metadata.scopeVerified === "boolean" ? metadata.scopeVerified : null,
+  }
 }
 
 async function mockCleanupInventory() {
@@ -108,12 +122,13 @@ export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_USERS")
     const db = getDb()
-    const [users, identities, audit, lifecycle, providerLimits] = await Promise.all([
+    const [users, identities, audit, lifecycle, providerLimits, mailValidationRows] = await Promise.all([
       db.select().from(applicationUsers).orderBy(applicationUsers.displayName),
       db.select({ id: applicationIdentities.id, applicationUserId: applicationIdentities.applicationUserId, provider: applicationIdentities.provider, verifiedEmail: applicationIdentities.verifiedEmail, providerDomain: applicationIdentities.providerDomain, lastAuthenticatedAt: applicationIdentities.lastAuthenticatedAt }).from(applicationIdentities).orderBy(applicationIdentities.provider),
       db.select().from(securityAuditEvents).orderBy(desc(securityAuditEvents.createdAt), desc(securityAuditEvents.id)).limit(200),
       db.select().from(alumniDataLifecycle).orderBy(desc(alumniDataLifecycle.updatedAt)),
       db.select().from(providerSettings).orderBy(providerSettings.provider),
+      db.select().from(securityAuditEvents).where(eq(securityAuditEvents.action, "gmail_connectivity_validated")).orderBy(desc(securityAuditEvents.createdAt), desc(securityAuditEvents.id)).limit(1),
     ])
     return Response.json({
       users: users.map(user => ({ ...user, identities: identities.filter(identity => identity.applicationUserId === user.id) })),
@@ -124,7 +139,7 @@ export async function GET(request: Request) {
         pdl: { mode: providerMode("pdl"), configured: providerConfigured("pdl") },
         lushaContacts: { mode: providerMode("lusha"), configured: providerConfigured("lusha") },
         signals: signalsRuntimeStatus(),
-        mail: { ...mailRuntimeStatus(), ...mailConfiguration() },
+        mail: { ...mailRuntimeStatus(), ...mailConfiguration(), ...mailValidationReadiness(mailValidationRows[0]) },
       },
     })
   } catch (error) {
@@ -153,6 +168,21 @@ export async function POST(request: Request) {
         },
       })
       return Response.json({ validation: result })
+    }
+
+    if (payload.action === "validate_gmail_connectivity") {
+      const validation = await validateGmailConnectivity()
+      await writeSecurityAudit(context, {
+        action: "gmail_connectivity_validated", entityType: "provider", entityId: "gmail",
+        result: validation.status,
+        metadata: {
+          checkedAt: validation.checkedAt,
+          outcome: validation.outcome,
+          reason: validation.reason,
+          scopeVerified: validation.scopeVerified,
+        },
+      })
+      return Response.json({ validation })
     }
 
     if (payload.action === "preview_mock_cleanup") {

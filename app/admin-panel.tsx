@@ -17,7 +17,7 @@ type OperationalReadiness = {
   pdl: { mode: string; configured: boolean }
   lushaContacts: { mode: string; configured: boolean }
   signals: { implementationStatus: string; liveEnabled: boolean; entitlement: "unknown" | "confirmed" | "not_entitled"; lastVerifiedAt: string; verificationSource: string }
-  mail: { mode: string; liveEnabled: boolean; provider: string; senderConfigured: boolean; oauthConfigured: boolean; sendPermissionConfigured: boolean; lastValidationStatus: string; lastValidatedAt: string; validationSource: string }
+  mail: { mode: string; liveEnabled: boolean; provider: string; senderConfigured: boolean; oauthConfigured: boolean; sendPermissionConfigured: boolean; lastValidationStatus: string; lastValidatedAt: string; validationSource: string; validationReason?: string; scopeVerified?: boolean | null }
 }
 type AdminData = { users: AdminUser[]; audit: AuditEvent[]; operationalReadiness?: OperationalReadiness }
 type SignalsEntitlementValidation = {
@@ -29,6 +29,13 @@ type SignalsEntitlementValidation = {
   companyChangeAvailable: boolean
   providerReportedCredits: number | null
   checkedAt: string
+}
+type GmailConnectivityValidation = {
+  status: "confirmed" | "failed" | "unknown"
+  outcome: string
+  checkedAt: string
+  reason: string
+  scopeVerified: boolean | null
 }
 type SimilarEmailWarning = { enteredEmail: string; similarUser: { id: number; email: string; displayName: string } }
 type MockCleanupInventory = {
@@ -88,6 +95,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [cleanupResult, setCleanupResult] = useState<MockCleanupResult | null>(null)
   const [cleanupConfirmation, setCleanupConfirmation] = useState("")
   const [signalsValidation, setSignalsValidation] = useState<SignalsEntitlementValidation | null>(null)
+  const [mailValidation, setMailValidation] = useState<GmailConnectivityValidation | null>(null)
 
   const load = useCallback(async () => {
     const response = await fetch(apiPath("/api/admin"), { cache: "no-store" })
@@ -118,6 +126,28 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       await load()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to validate Professional Signals entitlement.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function validateGmailConnectivity() {
+    setLoading(true)
+    setMailValidation(null)
+    setMessage("")
+    try {
+      const response = await fetch(apiPath("/api/admin"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ action: "validate_gmail_connectivity" }),
+      })
+      const result = await response.json() as { validation?: GmailConnectivityValidation; error?: string }
+      if (!response.ok || !result.validation) throw new Error(result.error || "Unable to validate Gmail connectivity.")
+      setMailValidation(result.validation)
+      await load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to validate Gmail connectivity.")
     } finally {
       setLoading(false)
     }
@@ -227,7 +257,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
         <article><strong>People Data Labs</strong><span>{data.operationalReadiness?.pdl.mode.toUpperCase() ?? "UNKNOWN"}</span><small>{data.operationalReadiness?.pdl.configured ? "API key configured" : "API key missing"}</small></article>
         <article><strong>Lusha Contacts</strong><span>{data.operationalReadiness?.lushaContacts.mode.toUpperCase() ?? "UNKNOWN"}</span><small>{data.operationalReadiness?.lushaContacts.configured ? "Contact API configured" : "Contact API key missing"}</small></article>
         <article><strong>Lusha Professional Signals</strong><span>{data.operationalReadiness?.signals.liveEnabled && data.operationalReadiness.signals.entitlement === "confirmed" ? "LIVE" : data.operationalReadiness?.signals.entitlement === "not_entitled" ? "OFF · NOT ENTITLED" : "OFF · READY"}</span><small>Implementation: {data.operationalReadiness?.signals.implementationStatus ?? "unknown"} · Gate: {data.operationalReadiness?.signals.liveEnabled ? "enabled" : "disabled"} · Entitlement: {(data.operationalReadiness?.signals.entitlement ?? "unknown").replaceAll("_", " ")}</small><small>Last verification: {data.operationalReadiness?.signals.lastVerifiedAt || "Not verified"}{data.operationalReadiness?.signals.verificationSource ? ` · ${data.operationalReadiness.signals.verificationSource}` : ""}</small><Button size="sm" variant="outline" disabled={loading || !data.operationalReadiness?.lushaContacts.configured} onClick={() => void validateSignalsEntitlement()}>{loading ? "Validating…" : "Validate Signals Entitlement"}</Button><small>Checks contact signal types once using the server-side key. No person lookup. Signals remain OFF.</small>{signalsValidation && <div role="status" className="signals-entitlement-result"><strong>Validation: {signalsValidation.entitlement.replaceAll("_", " ")}</strong><small>Provider outcome: {signalsValidation.outcome.replaceAll("_", " ")} · HTTP: {signalsValidation.httpStatus ?? "unavailable"} · {new Date(signalsValidation.checkedAt).toLocaleString()}</small><small>Promotion: {signalsValidation.promotionAvailable ? "available" : "not confirmed"} · Company/job change: {signalsValidation.companyChangeAvailable ? "available" : "not confirmed"}</small><small>Recognized contact types: {signalsValidation.signalTypes.join(", ") || "unavailable"}</small><small>Provider-reported usage: {signalsValidation.providerReportedCredits === null ? "Not reported (do not assume zero)" : `${signalsValidation.providerReportedCredits} credits`}. Account balance was not queried.</small>{signalsValidation.entitlement === "confirmed" && <small>For later manual activation through Sites: LUSHA_SIGNALS_ENTITLEMENT=confirmed, LUSHA_SIGNALS_LIVE_ENABLED=true, LUSHA_SIGNALS_ENTITLEMENT_VERIFIED_AT={signalsValidation.checkedAt}, LUSHA_SIGNALS_ENTITLEMENT_SOURCE=Lusha V3 contact signal types. This validation changes none of these settings.</small>}</div>}</article>
-        <article><strong>Institutional Mail</strong><span>{data.operationalReadiness?.mail.mode === "live" ? "LIVE" : data.operationalReadiness?.mail.senderConfigured && data.operationalReadiness?.mail.oauthConfigured && data.operationalReadiness?.mail.sendPermissionConfigured ? "OFF · READY" : "OFF"}</span><small>Mode: {data.operationalReadiness?.mail.mode.toUpperCase() ?? "MOCK"} · Sender: {data.operationalReadiness?.mail.senderConfigured ? "configured" : "missing"} · OAuth: {data.operationalReadiness?.mail.oauthConfigured ? "configured" : "missing"} · Gmail send permission: {data.operationalReadiness?.mail.sendPermissionConfigured ? "confirmed" : "not confirmed"} · Gate: {data.operationalReadiness?.mail.liveEnabled ? "enabled" : "disabled"}</small><small>Last connectivity validation: {data.operationalReadiness?.mail.lastValidationStatus ?? "Not validated"}{data.operationalReadiness?.mail.lastValidatedAt ? ` · ${data.operationalReadiness.mail.lastValidatedAt}` : ""}{data.operationalReadiness?.mail.validationSource ? ` · ${data.operationalReadiness.mail.validationSource}` : ""}</small></article>
+        <article><strong>Institutional Mail</strong><span>{data.operationalReadiness?.mail.mode === "live" ? "LIVE" : data.operationalReadiness?.mail.senderConfigured && data.operationalReadiness?.mail.oauthConfigured && data.operationalReadiness?.mail.sendPermissionConfigured ? "OFF · READY" : "OFF"}</span><small>Mode: {data.operationalReadiness?.mail.mode.toUpperCase() ?? "MOCK"} · Sender: {data.operationalReadiness?.mail.senderConfigured ? "configured" : "missing"} · OAuth: {data.operationalReadiness?.mail.oauthConfigured ? "configured" : "missing"} · Gmail send permission: {data.operationalReadiness?.mail.sendPermissionConfigured ? "confirmed" : "not confirmed"} · Gate: {data.operationalReadiness?.mail.liveEnabled ? "enabled" : "disabled"}</small><small>Last connectivity validation: {data.operationalReadiness?.mail.lastValidationStatus ?? "Not validated"}{data.operationalReadiness?.mail.lastValidatedAt ? ` · ${data.operationalReadiness.mail.lastValidatedAt}` : ""}{data.operationalReadiness?.mail.validationSource ? ` · ${data.operationalReadiness.mail.validationSource}` : ""}</small>{data.operationalReadiness?.mail.lastValidationStatus !== "confirmed" && data.operationalReadiness?.mail.validationReason && <small>Reason: {data.operationalReadiness.mail.validationReason}</small>}<Button size="sm" variant="outline" disabled={loading || !data.operationalReadiness?.mail.oauthConfigured || data.operationalReadiness?.mail.provider !== "gmail"} onClick={() => void validateGmailConnectivity()}>{loading ? "Validating…" : "Validate Gmail Connectivity"}</Button><small>Refreshes OAuth authorization only. No email is created or sent, and Mail remains OFF/MOCK.</small>{mailValidation && <div role="status" className="signals-entitlement-result"><strong>Validation: {mailValidation.status}</strong><small>{mailValidation.reason}</small><small>Outcome: {mailValidation.outcome.replaceAll("_", " ")} · {new Date(mailValidation.checkedAt).toLocaleString()}</small><small>Gmail send scope: {mailValidation.scopeVerified === true ? "confirmed" : mailValidation.scopeVerified === false ? "missing" : "not returned by provider"}</small></div>}</article>
       </div>
       <p className="section-help">Change runtime provider and mail configuration only through authorized Sites environment controls. PCOM users cannot view or change these settings.</p>
     </section>

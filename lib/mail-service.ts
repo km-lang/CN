@@ -16,6 +16,14 @@ export type MailSendResult = {
   recipient: string;
 };
 
+export type GmailConnectivityValidation = {
+  status: "confirmed" | "failed" | "unknown"
+  outcome: string
+  checkedAt: string
+  reason: string
+  scopeVerified: boolean | null
+}
+
 type MailRuntimeEnv = {
   MAIL_MODE?: string
   MAIL_LIVE_ENABLED?: string
@@ -91,6 +99,12 @@ function base64Url(value: string) {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
 }
 
+class GmailTokenError extends Error {
+  constructor(message: string, public readonly outcome: string, public readonly classification: "failed" | "unknown") {
+    super(message)
+  }
+}
+
 async function gmailAccessToken(fetcher: typeof fetch) {
   const values = environment()
   const body = new URLSearchParams({
@@ -103,15 +117,46 @@ async function gmailAccessToken(fetcher: typeof fetch) {
   try {
     response = await fetcher("https://oauth2.googleapis.com/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body, signal: AbortSignal.timeout(15_000) })
   } catch (error) {
-    if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) throw new Error("The institutional Gmail authorization request timed out.")
-    throw new Error("The institutional Gmail authorization provider is unavailable.")
+    if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) throw new GmailTokenError("The institutional Gmail authorization request timed out.", "timeout", "unknown")
+    throw new GmailTokenError("The institutional Gmail authorization provider is unavailable.", "provider_unavailable", "unknown")
   }
-  const result = await response.json().catch(() => ({})) as { access_token?: string; error?: string }
+  let result: { access_token?: string; error?: string; scope?: string }
+  try {
+    result = await response.json() as typeof result
+  } catch {
+    throw new GmailTokenError("Google returned an unreadable OAuth response.", "malformed_response", "unknown")
+  }
   if (!response.ok || !result.access_token) {
-    if (result.error === "invalid_grant") throw new Error("The institutional Gmail authorization has expired or been revoked.")
-    throw new Error("The institutional Gmail OAuth configuration was rejected.")
+    if (result.error === "invalid_grant") throw new GmailTokenError("The institutional Gmail authorization has expired or been revoked.", "authorization_revoked", "failed")
+    if (response.status >= 500) throw new GmailTokenError("Google OAuth is temporarily unavailable.", "provider_unavailable", "unknown")
+    if (response.ok) throw new GmailTokenError("Google returned an incomplete OAuth response.", "malformed_response", "unknown")
+    throw new GmailTokenError("The institutional Gmail OAuth configuration was rejected.", "oauth_rejected", "failed")
   }
-  return result.access_token
+  return { accessToken: result.access_token, scope: result.scope?.trim() ?? "" }
+}
+
+export async function validateGmailConnectivity(options: { fetcher?: typeof fetch; checkedAt?: string } = {}): Promise<GmailConnectivityValidation> {
+  const checkedAt = options.checkedAt ?? new Date().toISOString()
+  const config = mailConfiguration()
+  if (config.provider !== "gmail" || !config.oauthConfigured) {
+    return { status: "failed", outcome: "configuration_missing", checkedAt, reason: "Gmail OAuth configuration is incomplete.", scopeVerified: null }
+  }
+  try {
+    const token = await gmailAccessToken(options.fetcher ?? fetch)
+    if (token.scope) {
+      const scopes = new Set(token.scope.split(/\s+/).filter(Boolean))
+      const scopeVerified = scopes.has("https://www.googleapis.com/auth/gmail.send")
+      return scopeVerified
+        ? { status: "confirmed", outcome: "oauth_authenticated", checkedAt, reason: "OAuth token refresh succeeded and Gmail send scope was confirmed.", scopeVerified: true }
+        : { status: "failed", outcome: "gmail_send_scope_missing", checkedAt, reason: "OAuth token refresh succeeded, but Gmail send scope was not present.", scopeVerified: false }
+    }
+    return { status: "confirmed", outcome: "oauth_authenticated_scope_unreported", checkedAt, reason: "OAuth token refresh succeeded; Google did not return scope metadata.", scopeVerified: null }
+  } catch (error) {
+    if (error instanceof GmailTokenError) {
+      return { status: error.classification, outcome: error.outcome, checkedAt, reason: error.message, scopeVerified: null }
+    }
+    return { status: "unknown", outcome: "unexpected_error", checkedAt, reason: "Gmail connectivity could not be determined.", scopeVerified: null }
+  }
 }
 
 export async function sendMail(draft: MailDraft, options: { fetcher?: typeof fetch } = {}): Promise<MailSendResult> {
@@ -127,7 +172,7 @@ export async function sendMail(draft: MailDraft, options: { fetcher?: typeof fet
     if (!config.oauthConfigured || config.provider !== "gmail") throw new Error("The institutional Gmail OAuth client is not configured.")
     if (!config.sendPermissionConfigured) throw new Error("The institutional Gmail OAuth authorization does not have confirmed Gmail send permission.")
     const fetcher = options.fetcher ?? fetch
-    const accessToken = await gmailAccessToken(fetcher)
+    const { accessToken } = await gmailAccessToken(fetcher)
     const raw = base64Url([
       `From: ${safeHeader(serverConfig.mailSenderDisplayName)} <${safeHeader(config.sender)}>`,
       `To: ${safeHeader(draft.recipient)}`,
