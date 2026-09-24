@@ -220,11 +220,11 @@ test("final readiness mail confirmation is editable and makes no call until fina
 
 test("final readiness allows a selected approved alumnus to start a controlled draft without a provider call", () => {
   assert.match(page, /Controlled institutional email/)
-  assert.match(page, /create_manual_email_event/)
+  assert.match(page, /prepare_manual_email/)
   assert.match(page, /Draft Email/)
-  assert.match(engagementRoute, /action === "create_manual_email_event"/)
+  assert.match(engagementRoute, /action === "prepare_manual_email"/)
   assert.match(engagementRoute, /A valid stored recipient email is required before drafting/)
-  assert.doesNotMatch(engagementRoute.match(/if \(payload\.action === "create_manual_email_event"\)[\s\S]*?return Response\.json\(\{ \.\.\.\(await loadWorkspace\(\)\), createdEventId: selectedEvent\.id \}\);/)?.[0] ?? "", /sendMail\(/)
+  assert.doesNotMatch(engagementRoute.match(/if \(payload\.action === "prepare_manual_email"\)[\s\S]*?if \(payload\.action === "bulk_preview"\)/)?.[0] ?? "", /sendMail\(/)
 })
 
 test("final readiness mail rejects invalid recipient before any transport", async () => {

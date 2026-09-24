@@ -9,7 +9,10 @@ const vite = await createServer({ appType: "custom", configFile: false, root, re
 after(async () => vite.close())
 
 const navigation = await vite.ssrLoadModule("/lib/controlled-email-navigation.ts")
+const initialization = await vite.ssrLoadModule("/lib/controlled-email-initialization.ts")
+const draftSelection = await vite.ssrLoadModule("/lib/controlled-email-draft.ts")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+const initializationSource = await readFile(new URL("../lib/controlled-email-initialization.ts", import.meta.url), "utf8")
 const dialog = await readFile(new URL("../components/ui/dialog.tsx", import.meta.url), "utf8")
 const sheet = await readFile(new URL("../components/ui/sheet.tsx", import.meta.url), "utf8")
 const route = await readFile(new URL("../app/api/engagements/route.ts", import.meta.url), "utf8")
@@ -35,29 +38,51 @@ test("composer recipient remains the selected alumnus stored email", () => {
 })
 
 test("opening and cancelling the profile composer never sends email", () => {
-  const createBlock = route.match(/if \(payload\.action === "create_manual_email_event"\)[\s\S]*?return Response\.json\(\{ \.\.\.\(await loadWorkspace\(\)\), createdEventId: selectedEvent\.id \}\);/)?.[0] ?? ""
-  assert.ok(createBlock)
-  assert.doesNotMatch(createBlock, /sendMail\(/)
+  const prepareBlock = route.match(/if \(payload\.action === "prepare_manual_email"\)[\s\S]*?if \(payload\.action === "bulk_preview"\)/)?.[0] ?? ""
+  assert.ok(prepareBlock)
+  assert.doesNotMatch(prepareBlock, /sendMail\(/)
   assert.match(page, /cancelControlledEmailDraft/)
   assert.doesNotMatch(page.match(/function cancelControlledEmailDraft\(\)[\s\S]*?\n  \}/)?.[0] ?? "", /sendMailPreview|postEngagement\("send"/)
 })
 
 test("a completed manual outreach gets a fresh draft event without weakening duplicate-send checks", () => {
-  const createBlock = route.match(/if \(payload\.action === "create_manual_email_event"\)[\s\S]*?return Response\.json\(\{ \.\.\.\(await loadWorkspace\(\)\), createdEventId: selectedEvent\.id \}\);/)?.[0] ?? ""
-  assert.match(createBlock, /activeEvent = manualEvents\.find\(event => !terminalStatuses\.has\(event\.status\) && !event\.actionTakenAt\)/)
-  assert.match(createBlock, /crypto\.randomUUID\(\)/)
+  const prepareBlock = route.match(/if \(payload\.action === "prepare_manual_email"\)[\s\S]*?if \(payload\.action === "bulk_preview"\)/)?.[0] ?? ""
+  assert.match(prepareBlock, /eventsWithEmailActions/)
+  assert.match(prepareBlock, /reusableManualEmailEvent\(manualEvents, eventsWithEmailActions, actor\)/)
+  assert.match(prepareBlock, /crypto\.randomUUID\(\)/)
   assert.match(route, /This approved message has already been sent or reserved/)
   assert.match(route, /validateSendEligibility\(eventId, actor\)/)
+})
+
+test("historical or reserved email events cannot be reused as the next draft", () => {
+  const events = [
+    { id: 15, status: "New", actionTakenAt: "", assignedTo: "" },
+    { id: 14, status: "Action Taken", actionTakenAt: "2026-08-01T12:00:00Z", assignedTo: "Test Operator" },
+  ]
+  assert.equal(draftSelection.reusableManualEmailEvent(events, new Set([15]), "Test Operator"), undefined)
+  assert.equal(draftSelection.reusableManualEmailEvent(events, new Set(), "Test Operator")?.id, 15)
+  assert.equal(draftSelection.reusableManualEmailEvent([{ id: 16, status: "New", actionTakenAt: "", assignedTo: "Other Operator" }], new Set(), "Test Operator"), undefined)
 })
 
 test("composer initialization is bounded, supersedable, and always renders failure controls", () => {
   assert.match(page, /const generation = \+\+composeGenerationRef\.current/)
   assert.match(page, /composeGenerationRef\.current !== generation/)
-  assert.match(page, /controller\.abort\(\)/)
+  assert.match(initializationSource, /Promise\.race/)
+  assert.match(initializationSource, /status: "cancelled"/)
   assert.match(page, /15_000/)
   assert.match(page, /Unable to prepare this email draft\./)
   assert.match(page, />Retry</)
   assert.match(page, /setComposeRetry\(value => value \+ 1\)/)
+})
+
+test("initializer reaches ready, error, timeout, and cancelled terminal states", async () => {
+  assert.deepEqual(await initialization.initializeControlledEmail({ request: async () => "ready", timeoutMs: 50, timeoutMessage: "timeout", errorMessage: "error" }), { status: "ready", value: "ready" })
+  assert.deepEqual(await initialization.initializeControlledEmail({ request: async () => { throw new Error("failed") }, timeoutMs: 50, timeoutMessage: "timeout", errorMessage: "error" }), { status: "error", message: "failed" })
+  assert.deepEqual(await initialization.initializeControlledEmail({ request: async () => new Promise(() => {}), timeoutMs: 5, timeoutMessage: "timeout", errorMessage: "error" }), { status: "error", message: "timeout" })
+  const controller = new AbortController()
+  const cancelled = initialization.initializeControlledEmail({ request: async () => new Promise(() => {}), signal: controller.signal, timeoutMs: 1_000, timeoutMessage: "timeout", errorMessage: "error" })
+  controller.abort()
+  assert.deepEqual(await cancelled, { status: "cancelled" })
 })
 
 test("profile drawer closure cannot erase a compose route transition", () => {

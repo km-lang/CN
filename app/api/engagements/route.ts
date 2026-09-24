@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -15,6 +15,7 @@ import {
   messageTemplates,
 } from "@/db/schema";
 import { createMailDraft, mailConfiguration, mailMode, sendMail } from "@/lib/mail-service";
+import { reusableManualEmailEvent } from "@/lib/controlled-email-draft";
 import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
 
 const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Skipped"]);
@@ -253,23 +254,56 @@ export async function POST(request: Request) {
     const now = new Date().toISOString();
     const eventId = Number(payload.eventId);
 
-    if (payload.action === "create_manual_email_event") {
+    if (payload.action === "prepare_manual_email") {
       const alumnusId = Number(payload.alumnusId);
       if (!Number.isInteger(alumnusId)) return Response.json({ error: "Select a valid approved alumnus." }, { status: 400 });
       const [person] = await db.select().from(alumni).where(eq(alumni.id, alumnusId)).limit(1);
       if (!person) return Response.json({ error: "Approved alumnus not found." }, { status: 404 });
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email)) return Response.json({ error: "A valid stored recipient email is required before drafting." }, { status: 409 });
+
       const manualEvents = await db.select().from(engagementEvents).where(and(
         eq(engagementEvents.alumnusId, person.id),
         eq(engagementEvents.eventType, "Manual Relationship"),
       )).orderBy(desc(engagementEvents.id));
-      const activeEvent = manualEvents.find(event => !terminalStatuses.has(event.status) && !event.actionTakenAt);
+      const manualEventIds = manualEvents.map(event => event.id);
+      const priorEmailActions = manualEventIds.length
+        ? await db.select({ eventId: engagementActions.eventId }).from(engagementActions).where(and(
+            inArray(engagementActions.eventId, manualEventIds),
+            eq(engagementActions.channel, "Email"),
+          ))
+        : [];
+      const eventsWithEmailActions = new Set(priorEmailActions.map(action => action.eventId));
+      const reusableEvent = reusableManualEmailEvent(manualEvents, eventsWithEmailActions, actor);
       const eventKey = `manual-professional-email:${person.id}:${crypto.randomUUID()}`;
-      const [created] = activeEvent ? [] : await db.insert(engagementEvents).values({ eventKey, alumnusId: person.id, company: person.company, eventType: "Manual Relationship", eventSubtype: "Controlled institutional email", eventTitle: "Controlled institutional outreach", eventDescription: "Manually prepared institutional outreach for explicit review and approval.", source: "Manual PCOM selection", eventDate: now.slice(0, 10), status: "New", createdBy: actor, lastUpdatedBy: actor }).returning();
-      const selectedEvent = activeEvent ?? created;
-      if (!selectedEvent) throw new Error("Unable to create the controlled email draft event.");
-      await writeSecurityAudit(context, { action: "manual_email_draft_event_prepared", entityType: "engagement_event", entityId: selectedEvent.id, metadata: { alumnusId: person.id } });
-      return Response.json({ ...(await loadWorkspace()), createdEventId: selectedEvent.id });
+      const [created] = reusableEvent ? [] : await db.insert(engagementEvents).values({ eventKey, alumnusId: person.id, company: person.company, eventType: "Manual Relationship", eventSubtype: "Controlled institutional email", eventTitle: "Controlled institutional outreach", eventDescription: "Manually prepared institutional outreach for explicit review and approval.", source: "Manual PCOM selection", eventDate: now.slice(0, 10), status: "New", createdBy: actor, lastUpdatedBy: actor }).returning();
+      const event = reusableEvent ?? created;
+      if (!event) throw new Error("Unable to create the controlled email draft event.");
+
+      try {
+        const eligibility = await validateSendEligibility(event.id, actor);
+        const item = await buildDraft(event.id);
+        const actionKey = `mail:${item.person.id}:${item.event.eventKey}:${item.template.templateKey}:v${item.template.version}`;
+        const [duplicate] = await db.select({ id: engagementActions.id }).from(engagementActions).where(eq(engagementActions.actionKey, actionKey)).limit(1);
+        if (duplicate) throw new Error("This approved message has already been sent or reserved.");
+        const templates = await db.select().from(messageTemplates).where(eq(messageTemplates.eventType, "Professional Signal"));
+        const approvedTemplates = templates.filter(template => template.status === "Approved");
+        await audit(event.id, context, "draft_generated", `Draft prepared with ${item.template.name}.`);
+        const preparedEvent = {
+          ...event,
+          alumnus: { id: person.id, name: person.name, initials: person.initials, company: person.company, title: person.title, programme: person.programme, batch: person.batch, email: person.email, relationship: person.iimlRelationship, confidence: person.confidence, outreachStatus: person.status },
+          birthday: null,
+          preference: eligibility.communicationStatus,
+          actions: [],
+          responses: [],
+          views: [],
+          activity: [],
+        };
+        return Response.json({ event: preparedEvent, templates: approvedTemplates, template: item.template, draft: item.draft, readiness: { ...eligibility, duplicateStatus: "No duplicate send found", provider: "Google Workspace / Gmail", mode: mailMode(), sender: mailConfiguration().sender || "Mock placement committee" } });
+      } catch (error) {
+        await audit(event.id, context, "draft_failed", "Controlled email draft initialization failed before any send attempt.");
+        console.error("Controlled email draft initialization failed", { eventId: event.id, message: error instanceof Error ? error.message : "Unknown error" });
+        throw error;
+      }
     }
 
     if (payload.action === "bulk_preview") {
