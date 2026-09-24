@@ -21,7 +21,7 @@ test("profile Draft Email preserves the exact alumnus across navigation", () => 
 
 test("URL state, not a deferred initializer, owns the composer and profile", () => {
   assert.doesNotMatch(page, /createControlledEmailInitializer|setControlledEmailIntent|setSelected\(/)
-  assert.match(page, /const controlledEmailIntent = parseControlledEmailIntent\(routeSearch\)/)
+  assert.match(page, /const controlledEmailIntent = useMemo\(\(\) => parseControlledEmailIntent\(routeSearch\), \[routeSearch\]\)/)
   assert.match(page, /const selected = activeTab === "directory" && routeState\.profileAlumnusId/)
   assert.match(page, /open=\{Boolean\(controlledEmailIntent \|\| mailPreview\)\}/)
 })
@@ -34,9 +34,32 @@ test("composer recipient remains the selected alumnus stored email", () => {
 
 test("opening and cancelling the profile composer never sends email", () => {
   const createBlock = route.match(/if \(payload\.action === "create_manual_email_event"\)[\s\S]*?return Response\.json\(\{ \.\.\.\(await loadWorkspace\(\)\), createdEventId: selectedEvent\.id \}\);/)?.[0] ?? ""
+  assert.ok(createBlock)
   assert.doesNotMatch(createBlock, /sendMail\(/)
   assert.match(page, /cancelControlledEmailDraft/)
   assert.doesNotMatch(page.match(/function cancelControlledEmailDraft\(\)[\s\S]*?\n  \}/)?.[0] ?? "", /sendMailPreview|postEngagement\("send"/)
+})
+
+test("a completed manual outreach gets a fresh draft event without weakening duplicate-send checks", () => {
+  const createBlock = route.match(/if \(payload\.action === "create_manual_email_event"\)[\s\S]*?return Response\.json\(\{ \.\.\.\(await loadWorkspace\(\)\), createdEventId: selectedEvent\.id \}\);/)?.[0] ?? ""
+  assert.match(createBlock, /activeEvent = manualEvents\.find\(event => !terminalStatuses\.has\(event\.status\) && !event\.actionTakenAt\)/)
+  assert.match(createBlock, /crypto\.randomUUID\(\)/)
+  assert.match(route, /This approved message has already been sent or reserved/)
+  assert.match(route, /validateSendEligibility\(eventId, actor\)/)
+})
+
+test("composer initialization is bounded, supersedable, and always renders failure controls", () => {
+  assert.match(page, /const generation = \+\+composeGenerationRef\.current/)
+  assert.match(page, /composeGenerationRef\.current !== generation/)
+  assert.match(page, /controller\.abort\(\)/)
+  assert.match(page, /15_000/)
+  assert.match(page, /Unable to prepare this email draft\./)
+  assert.match(page, />Retry</)
+  assert.match(page, /setComposeRetry\(value => value \+ 1\)/)
+})
+
+test("profile drawer closure cannot erase a compose route transition", () => {
+  assert.match(page, /onOpenChange=\{open => \{ if \(!open && routeState\.profileAlumnusId\) closeAlumnusProfile\(\) \}\}/)
 })
 
 test("blocked and unknown preferences remain enforced by the server", () => {

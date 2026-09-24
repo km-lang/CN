@@ -472,7 +472,9 @@ export default function Home() {
   const [engagementMessage, setEngagementMessage] = useState("")
   const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
   const [mailSendConfirmOpen, setMailSendConfirmOpen] = useState(false)
-  const composeRequestRef = useRef<number | null>(null)
+  const composeGenerationRef = useRef(0)
+  const [composeState, setComposeState] = useState<{ status: "idle" | "loading" | "ready" | "error"; message: string }>({ status: "idle", message: "" })
+  const [composeRetry, setComposeRetry] = useState(0)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [responseType, setResponseType] = useState("Positive")
   const [responseNotes, setResponseNotes] = useState("")
@@ -523,7 +525,8 @@ export default function Home() {
       setRouteSearch(window.location.search)
       setMailPreview(null)
       setMailSendConfirmOpen(false)
-      composeRequestRef.current = null
+      composeGenerationRef.current += 1
+      setComposeState({ status: "idle", message: "" })
     }
     applyRouteState()
     window.addEventListener("popstate", applyRouteState)
@@ -531,7 +534,7 @@ export default function Home() {
   }, [])
 
   const routeState = profileRouteState(routeSearch)
-  const controlledEmailIntent = parseControlledEmailIntent(routeSearch)
+  const controlledEmailIntent = useMemo(() => parseControlledEmailIntent(routeSearch), [routeSearch])
   const activeTab = controlledEmailIntent ? "engagement" : routeState.tab ?? "overview"
   const selected = activeTab === "directory" && routeState.profileAlumnusId
     ? alumni.find(person => person.id === routeState.profileAlumnusId) ?? null
@@ -1032,24 +1035,6 @@ export default function Home() {
     }
   }
 
-  async function draftManualEmail(person: Alumni) {
-    setEngagementLoading(true)
-    setEngagementMessage("")
-    try {
-      const response = await fetch(API_ROUTES.engagements, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create_manual_email_event", alumnusId: person.id }) })
-      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; createdEventId?: number; error?: string }
-      const event = data.events?.find(item => item.id === data.createdEventId)
-      if (!response.ok || !event) throw new Error(data.error || "Unable to prepare the controlled email draft.")
-      setEngagements(data.events ?? [])
-      setMessageTemplates(data.templates ?? messageTemplates)
-      await previewEngagement(event)
-    } catch (error) {
-      setEngagementMessage(error instanceof Error ? error.message : "Unable to prepare the controlled email draft.")
-    } finally {
-      setEngagementLoading(false)
-    }
-  }
-
   function startProfileEmailDraft(person: Alumni) {
     navigateWorkspace(controlledEmailUrl(window.location.href, person.id, "directory"))
   }
@@ -1072,6 +1057,8 @@ export default function Home() {
   }
 
   function cancelControlledEmailDraft() {
+    composeGenerationRef.current += 1
+    setComposeState({ status: "idle", message: "" })
     setMailPreview(null)
     setMailSendConfirmOpen(false)
     if (!controlledEmailIntent) return
@@ -1079,17 +1066,52 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!controlledEmailIntent || mailPreview || engagementLoading || composeRequestRef.current === controlledEmailIntent.alumnusId) return
+    if (!controlledEmailIntent || mailPreview || workspaceLoading) return
     const person = alumni.find(item => item.id === controlledEmailIntent.alumnusId)
-    if (!person) return
-    composeRequestRef.current = person.id
-    // The URL is authoritative; this effect only resolves its alumnus ID into draft data.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void draftManualEmail(person).finally(() => {
-      if (composeRequestRef.current === person.id) composeRequestRef.current = null
-    })
+    const generation = ++composeGenerationRef.current
+    if (!person) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setComposeState({ status: "error", message: "Unable to prepare this email draft." })
+      return
+    }
+    const controller = new AbortController()
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 15_000)
+    setComposeState({ status: "loading", message: "" })
+    setEngagementMessage("")
+    const initialize = async () => {
+      try {
+        const createResponse = await fetch(API_ROUTES.engagements, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create_manual_email_event", alumnusId: person.id }), signal: controller.signal })
+        const created = await createResponse.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; createdEventId?: number; error?: string }
+        const event = created.events?.find(item => item.id === created.createdEventId)
+        if (!createResponse.ok || !event) throw new Error(created.error || "Unable to prepare the controlled email draft.")
+        const template = created.templates?.find(item => item.eventType === event.eventType)
+        const previewResponse = await fetch(API_ROUTES.engagements, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "preview", eventId: event.id, templateId: template?.id }), signal: controller.signal })
+        const preview = await previewResponse.json() as { template?: MessageTemplate; draft?: { recipient: string; subject: string; body: string }; readiness?: MailPreview["readiness"]; error?: string }
+        if (!previewResponse.ok || !preview.template || !preview.draft || !preview.readiness) throw new Error(preview.error || "Unable to prepare the email draft.")
+        if (composeGenerationRef.current !== generation) return
+        setEngagements(created.events ?? [])
+        setMessageTemplates(created.templates ?? messageTemplates)
+        setMailPreview({ event, templateId: preview.template.id, ...preview.draft, readiness: preview.readiness })
+        setComposeState({ status: "ready", message: "" })
+      } catch (error) {
+        if (composeGenerationRef.current !== generation || (error instanceof DOMException && error.name === "AbortError" && !timedOut)) return
+        console.error("Controlled email composer initialization failed", error)
+        setComposeState({ status: "error", message: "Unable to prepare this email draft." })
+      } finally {
+        window.clearTimeout(timeout)
+      }
+    }
+    void initialize()
+    return () => {
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alumni, controlledEmailIntent, engagementLoading, mailPreview])
+  }, [alumni, composeRetry, controlledEmailIntent?.alumnusId, mailPreview, workspaceLoading])
 
   async function sendMailPreview() {
     if (!mailPreview) return
@@ -1756,7 +1778,7 @@ export default function Home() {
         </Tabs>
       </section>
 
-      <Sheet open={Boolean(selected)} onOpenChange={open => !open && closeAlumnusProfile()}>
+      <Sheet open={Boolean(selected)} onOpenChange={open => { if (!open && routeState.profileAlumnusId) closeAlumnusProfile() }}>
         <SheetContent className="profile-sheet sm:max-w-xl">
           {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
@@ -1825,7 +1847,8 @@ export default function Home() {
 
       <Dialog open={Boolean(controlledEmailIntent || mailPreview)} onOpenChange={open => { if (!open) { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) } }}>
         <DialogContent className="mail-dialog">
-          {controlledEmailIntent && !mailPreview && <><DialogHeader><DialogTitle>Preparing email draft</DialogTitle><DialogDescription>Loading the selected alumnus and eligible stored recipient. No email is sent while this draft opens.</DialogDescription></DialogHeader><div className="empty-state"><LoaderCircle className="spin" /><h3>Loading composer for alumnus {controlledEmailIntent.alumnusId}</h3></div><DialogFooter><Button variant="outline" onClick={cancelControlledEmailDraft}>Cancel</Button></DialogFooter></>}
+          {controlledEmailIntent && !mailPreview && composeState.status !== "error" && <><DialogHeader><DialogTitle>Preparing email draft</DialogTitle><DialogDescription>Loading the selected alumnus and eligible stored recipient. No email is sent while this draft opens.</DialogDescription></DialogHeader><div className="empty-state"><LoaderCircle className="spin" /><h3>Loading composer for alumnus {controlledEmailIntent.alumnusId}</h3></div><DialogFooter><Button variant="outline" onClick={cancelControlledEmailDraft}>Cancel</Button></DialogFooter></>}
+          {controlledEmailIntent && !mailPreview && composeState.status === "error" && <><DialogHeader><DialogTitle>Unable to prepare this email draft.</DialogTitle><DialogDescription>{composeState.message} No email was sent.</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setComposeRetry(value => value + 1)}>Retry</Button><Button onClick={cancelControlledEmailDraft}>Cancel</Button></DialogFooter></>}
           {mailPreview && <><DialogHeader><DialogTitle>Review email before sending</DialogTitle><DialogDescription>No message is sent until you approve it. {mailMode === "mock" ? "This demonstration uses the mock mail service." : "This message will use the approved institute mail service."}</DialogDescription></DialogHeader>
             <div className="mail-form"><label><span>Recipient</span><Input value={mailPreview.recipient} readOnly /></label><label><span>Approved template</span><Select value={String(mailPreview.templateId)} onValueChange={value => switchMailTemplate(Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{messageTemplates.filter(item => item.eventType === mailPreview.event.eventType).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></label><label><span>Subject</span><Input value={mailPreview.subject} onChange={event => setMailPreview({ ...mailPreview, subject: event.target.value })} /></label><label><span>Message</span><Textarea value={mailPreview.body} onChange={event => setMailPreview({ ...mailPreview, body: event.target.value })} rows={9} /></label></div>
             <DialogFooter><Button variant="outline" onClick={() => { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) }}>Cancel</Button><Button disabled={engagementLoading || !mailPreview.subject.trim() || !mailPreview.body.trim()} onClick={() => setMailSendConfirmOpen(true)}><Eye /> Continue to Final Confirmation</Button></DialogFooter></>}
