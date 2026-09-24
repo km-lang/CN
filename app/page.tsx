@@ -420,7 +420,7 @@ export default function Home() {
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [targetCompany, setTargetCompany] = useState("")
-  const [routeSearch, setRouteSearch] = useState(() => typeof window === "undefined" ? "" : window.location.search)
+  const [routeSearch, setRouteSearch] = useState("")
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [workspaceMessage, setWorkspaceMessage] = useState("")
