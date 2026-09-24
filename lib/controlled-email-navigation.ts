@@ -7,30 +7,6 @@ export type ControlledEmailIntent = {
   returnTab: string
 }
 
-export function createControlledEmailInitializer() {
-  let activeAlumnusId: number | null = null
-  return {
-    schedule(alumnusId: number, start: () => Promise<void>) {
-      if (activeAlumnusId === alumnusId) return () => undefined
-      let started = false
-      const timer = setTimeout(() => {
-        if (activeAlumnusId !== null) return
-        started = true
-        activeAlumnusId = alumnusId
-        void start().finally(() => {
-          activeAlumnusId = null
-        })
-      }, 0)
-      return () => {
-        if (!started) clearTimeout(timer)
-      }
-    },
-    activeAlumnusId() {
-      return activeAlumnusId
-    },
-  }
-}
-
 export function parseControlledEmailIntent(search: string): ControlledEmailIntent | null {
   const params = new URLSearchParams(search)
   if (params.get("compose") !== "email") return null

@@ -19,29 +19,11 @@ test("profile Draft Email preserves the exact alumnus across navigation", () => 
   assert.match(page, /startProfileEmailDraft\(selected\)/)
 })
 
-test("a cancelled deferred initialization does not poison the next browser render", async () => {
-  const initializer = navigation.createControlledEmailInitializer()
-  let starts = 0
-  const cancelFirstRender = initializer.schedule(417, async () => { starts += 1 })
-  cancelFirstRender()
-  initializer.schedule(417, async () => { starts += 1 })
-  await new Promise(resolve => setTimeout(resolve, 10))
-  assert.equal(starts, 1)
-  assert.equal(initializer.activeAlumnusId(), null)
-})
-
-test("the browser initializer does not duplicate an in-flight composer request", async () => {
-  const initializer = navigation.createControlledEmailInitializer()
-  let release
-  const pending = new Promise(resolve => { release = resolve })
-  let starts = 0
-  initializer.schedule(417, async () => { starts += 1; await pending })
-  await new Promise(resolve => setTimeout(resolve, 5))
-  initializer.schedule(417, async () => { starts += 1 })
-  await new Promise(resolve => setTimeout(resolve, 5))
-  assert.equal(starts, 1)
-  release()
-  await pending
+test("URL state, not a deferred initializer, owns the composer and profile", () => {
+  assert.doesNotMatch(page, /createControlledEmailInitializer|setControlledEmailIntent|setSelected\(/)
+  assert.match(page, /const controlledEmailIntent = parseControlledEmailIntent\(routeSearch\)/)
+  assert.match(page, /const selected = activeTab === "directory" && routeState\.profileAlumnusId/)
+  assert.match(page, /open=\{Boolean\(controlledEmailIntent \|\| mailPreview\)\}/)
 })
 
 test("composer recipient remains the selected alumnus stored email", () => {
@@ -65,8 +47,8 @@ test("blocked and unknown preferences remain enforced by the server", () => {
 
 test("mobile and desktop use the same durable composer route", () => {
   assert.equal((page.match(/startProfileEmailDraft\(selected\)/g) ?? []).length, 1)
-  assert.match(page, /controlledEmailUrl\(window\.location\.href, person\.id, activeTab\)/)
-  assert.match(page, /setActiveTab\("engagement"\)/)
+  assert.match(page, /controlledEmailUrl\(window\.location\.href, person\.id, "directory"\)/)
+  assert.doesNotMatch(page, /setActiveTab/)
 })
 
 test("Cancel restores the originating profile and tab", () => {
@@ -110,7 +92,14 @@ test("Flow E: close and tab navigation remove stale compose/profile state", () =
   const directory = navigation.workspaceTabUrl(stale, "directory")
   assert.equal(directory, "/?tab=directory")
   assert.deepEqual(navigation.profileRouteState(new URL(directory, "https://network.example").search), { profileAlumnusId: null, tab: "directory" })
-  assert.match(page, /setSelected\(routeState\.profileAlumnusId \? alumni\.find[\s\S]*?\?\? null : null\)/)
+  assert.match(page, /const selected = activeTab === "directory" && routeState\.profileAlumnusId[\s\S]*?alumni\.find/)
+})
+
+test("critical browser contract: Cancel is one atomic URL navigation with the drawer identity", () => {
+  const cancel = page.match(/function cancelControlledEmailDraft\(\)[\s\S]*?\n  \}/)?.[0] ?? ""
+  assert.match(cancel, /navigateWorkspace\(controlledEmailReturnUrl\(window\.location\.href, controlledEmailIntent\), "replace"\)/)
+  assert.doesNotMatch(cancel, /setTimeout|setSelected|setActiveTab/)
+  assert.match(page, /<Sheet open=\{Boolean\(selected\)\}/)
 })
 
 test("direct Engagement email controls remain separate from profile navigation", () => {

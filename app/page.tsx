@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Activity, ArrowUpRight, Ban, BellRing, BriefcaseBusiness, Building2, Cake,
   CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, Cloud, ContactRound,
@@ -30,7 +30,7 @@ import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
 import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
-import { alumnusProfileUrl, controlledEmailReturnUrl, controlledEmailUrl, createControlledEmailInitializer, parseControlledEmailIntent, profileRouteState, workspaceTabUrl, type ControlledEmailIntent } from "@/lib/controlled-email-navigation"
+import { alumnusProfileUrl, controlledEmailReturnUrl, controlledEmailUrl, parseControlledEmailIntent, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -419,9 +419,8 @@ export default function Home() {
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>({})
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
-  const [selected, setSelected] = useState<Alumni | null>(null)
   const [targetCompany, setTargetCompany] = useState("")
-  const [activeTab, setActiveTab] = useState("overview")
+  const [routeSearch, setRouteSearch] = useState(() => typeof window === "undefined" ? "" : window.location.search)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [workspaceMessage, setWorkspaceMessage] = useState("")
@@ -473,8 +472,7 @@ export default function Home() {
   const [engagementMessage, setEngagementMessage] = useState("")
   const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
   const [mailSendConfirmOpen, setMailSendConfirmOpen] = useState(false)
-  const [controlledEmailIntent, setControlledEmailIntent] = useState<ControlledEmailIntent | null>(null)
-  const [controlledEmailInitializer] = useState(createControlledEmailInitializer)
+  const composeRequestRef = useRef<number | null>(null)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [responseType, setResponseType] = useState("Positive")
   const [responseNotes, setResponseNotes] = useState("")
@@ -505,7 +503,6 @@ export default function Home() {
       const data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load the shared workspace.")
       setAlumni(data.alumni ?? [])
-      setSelected(current => current ? data.alumni?.find(person => person.id === current.id) ?? null : null)
       setCompanyPriorities(data.companyPriorities ?? {})
       setLatestImport(data.latestImport ?? null)
       setWorkspaceMessage("")
@@ -523,24 +520,27 @@ export default function Home() {
 
   useEffect(() => {
     const applyRouteState = () => {
-      const intent = parseControlledEmailIntent(window.location.search)
-      const routeState = profileRouteState(window.location.search)
-      setControlledEmailIntent(intent)
-      if (intent) {
-        setActiveTab("engagement")
-        setSelected(null)
-      } else {
-        setControlledEmailIntent(null)
-        setMailPreview(null)
-        setMailSendConfirmOpen(false)
-        if (routeState.tab) setActiveTab(routeState.tab)
-        setSelected(routeState.profileAlumnusId ? alumni.find(person => person.id === routeState.profileAlumnusId) ?? null : null)
-      }
+      setRouteSearch(window.location.search)
+      setMailPreview(null)
+      setMailSendConfirmOpen(false)
+      composeRequestRef.current = null
     }
     applyRouteState()
     window.addEventListener("popstate", applyRouteState)
     return () => window.removeEventListener("popstate", applyRouteState)
-  }, [alumni])
+  }, [])
+
+  const routeState = profileRouteState(routeSearch)
+  const controlledEmailIntent = parseControlledEmailIntent(routeSearch)
+  const activeTab = controlledEmailIntent ? "engagement" : routeState.tab ?? "overview"
+  const selected = activeTab === "directory" && routeState.profileAlumnusId
+    ? alumni.find(person => person.id === routeState.profileAlumnusId) ?? null
+    : null
+
+  function navigateWorkspace(destination: string, mode: "push" | "replace" = "push") {
+    window.history[mode === "push" ? "pushState" : "replaceState"]({}, "", destination)
+    setRouteSearch(window.location.search)
+  }
 
   const loadEnrichment = useCallback(async () => {
     try {
@@ -711,7 +711,6 @@ export default function Home() {
 
   function replaceAlumnus(updated: Alumni) {
     setAlumni(current => current.map(person => person.id === updated.id ? updated : person))
-    setSelected(current => current?.id === updated.id ? updated : current)
   }
 
   async function saveAlumnus(id: number, changes: { status?: OutreachStatus; assessment?: Partial<Alumni["assessment"]> }) {
@@ -1043,8 +1042,6 @@ export default function Home() {
       if (!response.ok || !event) throw new Error(data.error || "Unable to prepare the controlled email draft.")
       setEngagements(data.events ?? [])
       setMessageTemplates(data.templates ?? messageTemplates)
-      setSelected(null)
-      setActiveTab("engagement")
       await previewEngagement(event)
     } catch (error) {
       setEngagementMessage(error instanceof Error ? error.message : "Unable to prepare the controlled email draft.")
@@ -1054,59 +1051,45 @@ export default function Home() {
   }
 
   function startProfileEmailDraft(person: Alumni) {
-    const intent: ControlledEmailIntent = { alumnusId: person.id, returnAlumnusId: person.id, returnTab: activeTab }
-    window.history.pushState({}, "", controlledEmailUrl(window.location.href, person.id, activeTab))
-    setControlledEmailIntent(intent)
-    setSelected(null)
-    setActiveTab("engagement")
+    navigateWorkspace(controlledEmailUrl(window.location.href, person.id, "directory"))
   }
 
-  function openAlumnusProfile(person: Alumni, tab = activeTab) {
+  function openAlumnusProfile(person: Alumni, tab = "directory") {
     const destinationTab = tab === "engagement" ? "directory" : tab
-    window.history.pushState({}, "", alumnusProfileUrl(window.location.href, person.id, destinationTab))
-    setControlledEmailIntent(null)
+    navigateWorkspace(alumnusProfileUrl(window.location.href, person.id, destinationTab))
     setMailPreview(null)
     setMailSendConfirmOpen(false)
-    setActiveTab(destinationTab)
-    setSelected(person)
   }
 
   function closeAlumnusProfile() {
-    if (parseControlledEmailIntent(window.location.search)) {
-      setSelected(null)
-      return
-    }
-    window.history.replaceState({}, "", workspaceTabUrl(window.location.href, activeTab))
-    setSelected(null)
+    navigateWorkspace(workspaceTabUrl(window.location.href, activeTab), "replace")
   }
 
   function changeWorkspaceTab(tab: string) {
-    window.history.pushState({}, "", workspaceTabUrl(window.location.href, tab))
-    setControlledEmailIntent(null)
+    navigateWorkspace(workspaceTabUrl(window.location.href, tab))
     setMailPreview(null)
     setMailSendConfirmOpen(false)
-    setSelected(null)
-    setActiveTab(tab)
   }
 
   function cancelControlledEmailDraft() {
     setMailPreview(null)
     setMailSendConfirmOpen(false)
     if (!controlledEmailIntent) return
-    window.history.replaceState({}, "", controlledEmailReturnUrl(window.location.href, controlledEmailIntent))
-    setActiveTab(controlledEmailIntent.returnTab)
-    setSelected(alumni.find(person => person.id === controlledEmailIntent.returnAlumnusId) ?? null)
-    setControlledEmailIntent(null)
+    navigateWorkspace(controlledEmailReturnUrl(window.location.href, controlledEmailIntent), "replace")
   }
 
   useEffect(() => {
-    if (!controlledEmailIntent || mailPreview || engagementLoading) return
+    if (!controlledEmailIntent || mailPreview || engagementLoading || composeRequestRef.current === controlledEmailIntent.alumnusId) return
     const person = alumni.find(item => item.id === controlledEmailIntent.alumnusId)
     if (!person) return
-    return controlledEmailInitializer.schedule(person.id, () => draftManualEmail(person))
-    // draftManualEmail intentionally runs only when the durable route identity changes.
+    composeRequestRef.current = person.id
+    // The URL is authoritative; this effect only resolves its alumnus ID into draft data.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void draftManualEmail(person).finally(() => {
+      if (composeRequestRef.current === person.id) composeRequestRef.current = null
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alumni, controlledEmailInitializer, controlledEmailIntent, engagementLoading, mailPreview])
+  }, [alumni, controlledEmailIntent, engagementLoading, mailPreview])
 
   async function sendMailPreview() {
     if (!mailPreview) return
@@ -1116,8 +1099,7 @@ export default function Home() {
         const url = new URL(window.location.href)
         for (const key of ["compose", "alumnusId", "returnAlumnusId", "returnTab", "profileAlumnusId"]) url.searchParams.delete(key)
         url.searchParams.set("tab", "engagement")
-        window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`)
-        setControlledEmailIntent(null)
+        navigateWorkspace(`${url.pathname}${url.search}${url.hash}`, "replace")
       }
       setMailPreview(null)
       setMailSendConfirmOpen(false)
@@ -1277,13 +1259,13 @@ export default function Home() {
   function findMoreForCompany(companyName: string) {
     const next = { ...defaultDirectoryFilters(), company: companyName }
     setFilters(next)
-    setActiveTab("directory")
+    changeWorkspaceTab("directory")
     discoverMoreAlumni(next)
   }
 
   function compareRefreshWithPdl(person: Alumni) {
     setSelectedForEnrichment([person.id])
-    setSelected(null)
+    closeAlumnusProfile()
     setRefreshConfirmOpen(true)
   }
 
@@ -1535,18 +1517,18 @@ export default function Home() {
 
             <section className="overview-grid">
               <article className="panel lead-panel">
-                <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Highest-value alumni leads</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => setActiveTab("directory")}>View all <ArrowUpRight /></Button></div>
+                <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Highest-value alumni leads</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => changeWorkspaceTab("directory")}>View all <ArrowUpRight /></Button></div>
                 <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="lead-row" onClick={() => openAlumnusProfile(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
               </article>
 
               {session.canOperate && <aside className="panel signal-panel">
                 <div className="signal-orbit"><Sparkles /><span>{professionalEvents.filter(event => !["Closed", "Skipped"].includes(event.status)).length}</span></div><p className="eyebrow">Professional signals</p><h2>Shared reasons to reach out</h2>
-                {professionalEvents.slice(0, 3).map(event => <button key={event.id} className="signal-item signal-button" onClick={() => { setActiveTab("engagement"); void openEngagement(event) }}><div>{event.eventSubtype === "Promotion" ? <ArrowUpRight /> : <BriefcaseBusiness />}</div><p><strong>{event.alumnus?.name}</strong> {event.eventDescription.replace(`${event.alumnus?.name} `, "")}<small><EngagementStatusBadge status={event.status} />{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></button>)}
-                <Button variant="ghost" size="sm" className="signal-review" onClick={() => { setEngagementFilter("Professional Signals"); setActiveTab("engagement") }}>Review signals <ChevronRight /></Button>
+                {professionalEvents.slice(0, 3).map(event => <button key={event.id} className="signal-item signal-button" onClick={() => { changeWorkspaceTab("engagement"); void openEngagement(event) }}><div>{event.eventSubtype === "Promotion" ? <ArrowUpRight /> : <BriefcaseBusiness />}</div><p><strong>{event.alumnus?.name}</strong> {event.eventDescription.replace(`${event.alumnus?.name} `, "")}<small><EngagementStatusBadge status={event.status} />{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></button>)}
+                <Button variant="ghost" size="sm" className="signal-review" onClick={() => { setEngagementFilter("Professional Signals"); changeWorkspaceTab("engagement") }}>Review signals <ChevronRight /></Button>
               </aside>}
             </section>
 
-            {session.canOperate && <button className="panel birthday-overview" onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); setActiveTab("engagement") }}>
+            {session.canOperate && <button className="panel birthday-overview" onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); changeWorkspaceTab("engagement") }}>
               <span className="birthday-overview-icon"><Cake /></span><span><p className="eyebrow">Birthday engagement</p><strong>{birthdaysToday.length} today · {birthdaysNextWeek.length} in the next 7 days</strong><small>{birthdayEvents.filter(birthdayReady).length} ready for review and sending</small></span><ChevronRight />
             </button>}
 
@@ -1632,7 +1614,7 @@ export default function Home() {
           </TabsContent>
 
           <TabsContent value="companies" className="tab-panel">
-            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div>{companies.length > 0 ? <div className="company-actions"><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>{session.canOperate && <Button onClick={() => findMoreForCompany(activeTargetCompany)} disabled={discovering}><Search /> Find More Alumni</Button>}</div> : session.canOperate ? <Button onClick={() => setActiveTab("directory")}><Search /> Discover alumni</Button> : null}</section>
+            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div>{companies.length > 0 ? <div className="company-actions"><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>{session.canOperate && <Button onClick={() => findMoreForCompany(activeTargetCompany)} disabled={discovering}><Search /> Find More Alumni</Button>}</div> : session.canOperate ? <Button onClick={() => changeWorkspaceTab("directory")}><Search /> Discover alumni</Button> : null}</section>
             {companies.length === 0 ? <section className="panel empty-state"><Building2 /><h3>No companies are mapped yet</h3><p>Approve a reviewed external profile or import approved alumni data to create company intelligence.</p></section> : <section className="company-grid">
               <article className="panel company-summary">
                 <div className="company-title"><div className="company-logo">{activeTargetCompany.slice(0, 1)}</div><div><h2>{activeTargetCompany}</h2><span>Target company · Priority inherited by all mapped alumni</span></div></div>
@@ -1705,7 +1687,7 @@ export default function Home() {
             <section className="panel outreach-panel">
               <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved centrally and shared across committee members.</span></div></div>
               <div className="pipeline-summary">{statusOptions.map(status => <div key={status}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></div>)}</div>
-              <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this person</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{[...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score).map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{person.note}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this person</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{[...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score).map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{person.note}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>
             </section>
           </TabsContent>
 
@@ -1761,7 +1743,7 @@ export default function Home() {
             <section className="panel batch-panel">
               <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? providerModes.pdl === "live" ? "Select one approved alumnus for controlled provider actions" : "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. PDL refresh and Lusha email preparation remain separate. No live action runs without confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button>{providerModes.lusha === "live" ? <Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select one alumnus" : !lushaEmailReady ? "Select exactly one alumnus and confirm Lusha is configured with application capacity" : "Start the controlled Lusha V3 email workflow"} onClick={() => { const person = alumni.find(item => item.id === selectedForEnrichment[0]); if (person) prepareLushaEmail(person) }}><Mail /> Prepare Email Reveal</Button> : <><Button variant="outline" disabled={!lushaEmailReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div>}</div>
               {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
-              <Table><TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label={providerModes.pdl === "live" ? "Select first alumnus" : "Select first 25 alumni"} checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(providerModes.pdl === "live" ? 1 : 25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, providerModes.pdl === "live" ? 1 : 25).map(person => person.id) : [])} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} />}</TableCell><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label={providerModes.pdl === "live" ? "Select first alumnus" : "Select first 25 alumni"} checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(providerModes.pdl === "live" ? 1 : 25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, providerModes.pdl === "live" ? 1 : 25).map(person => person.id) : [])} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} />}</TableCell><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
             </section>
 
             <section className="panel history-panel">
@@ -1788,9 +1770,9 @@ export default function Home() {
               <label><span>Warm-introduction potential</span><Select disabled={!session.canOperate} value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
-            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; setSelected(null); void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
+            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
             {session.canOperate && <section className="profile-section privacy-section"><h3>Privacy and contact preferences</h3><p className="section-help">Unknown is not affirmative consent. Send eligibility is checked again on the server.</p><div className="assessment-grid"><label><span>General contact</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional engagement</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday engagement</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Consent/source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Privacy note</span><Textarea value={selected.privacy?.notes || ""} onChange={event => replaceAlumnus({ ...selected, privacy: { ...(selected.privacy ?? { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" }), notes: event.target.value } })} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></section>}
-            {session.canOperate && <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setSelected(null); setEngagementFilter("Needs Action"); setActiveTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { setSelected(null); setActiveTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => { const usage = providerUsageLabel(item); return <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {usage.label === "—" ? usage.label : `${usage.label} credits`}</small></p></div> })}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>}
+            {session.canOperate && <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setEngagementFilter("Needs Action"); changeWorkspaceTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { changeWorkspaceTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => { const usage = providerUsageLabel(item); return <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {usage.label === "—" ? usage.label : `${usage.label} credits`}</small></p></div> })}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>}
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last data check: {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
               <div><span>Current company</span><strong className={verificationTone(selected.verification.currentCompany)}>{selected.verification.currentCompany}</strong></div>
@@ -1841,8 +1823,9 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(mailPreview)} onOpenChange={open => { if (!open) { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) } }}>
+      <Dialog open={Boolean(controlledEmailIntent || mailPreview)} onOpenChange={open => { if (!open) { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) } }}>
         <DialogContent className="mail-dialog">
+          {controlledEmailIntent && !mailPreview && <><DialogHeader><DialogTitle>Preparing email draft</DialogTitle><DialogDescription>Loading the selected alumnus and eligible stored recipient. No email is sent while this draft opens.</DialogDescription></DialogHeader><div className="empty-state"><LoaderCircle className="spin" /><h3>Loading composer for alumnus {controlledEmailIntent.alumnusId}</h3></div><DialogFooter><Button variant="outline" onClick={cancelControlledEmailDraft}>Cancel</Button></DialogFooter></>}
           {mailPreview && <><DialogHeader><DialogTitle>Review email before sending</DialogTitle><DialogDescription>No message is sent until you approve it. {mailMode === "mock" ? "This demonstration uses the mock mail service." : "This message will use the approved institute mail service."}</DialogDescription></DialogHeader>
             <div className="mail-form"><label><span>Recipient</span><Input value={mailPreview.recipient} readOnly /></label><label><span>Approved template</span><Select value={String(mailPreview.templateId)} onValueChange={value => switchMailTemplate(Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{messageTemplates.filter(item => item.eventType === mailPreview.event.eventType).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></label><label><span>Subject</span><Input value={mailPreview.subject} onChange={event => setMailPreview({ ...mailPreview, subject: event.target.value })} /></label><label><span>Message</span><Textarea value={mailPreview.body} onChange={event => setMailPreview({ ...mailPreview, body: event.target.value })} rows={9} /></label></div>
             <DialogFooter><Button variant="outline" onClick={() => { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) }}>Cancel</Button><Button disabled={engagementLoading || !mailPreview.subject.trim() || !mailPreview.body.trim()} onClick={() => setMailSendConfirmOpen(true)}><Eye /> Continue to Final Confirmation</Button></DialogFooter></>}
@@ -1872,7 +1855,7 @@ export default function Home() {
             <div className={`route-result route-result-${routeRecommendation.routeType.toLowerCase().replaceAll(" ", "-")}`}><span>{routeRecommendation.routeType}</span><h3>{routeRecommendation.routeType === "Warm" ? `Via ${routeRecommendation.intermediary?.name}` : routeRecommendation.routeType === "Direct" ? `Contact ${routeRecommendation.target.name} directly` : "Profile enrichment or relationship evidence required"}</h3><p>{routeRecommendation.rationale}</p></div>
             <div className="route-flow route-dialog-flow"><div className="route-node active"><span>PC</span><p><strong>PlaceCom</strong><small>Initiates outreach</small></p></div>{routeRecommendation.intermediary && <><div className="route-link"><span>Warm introduction</span><Network /></div><div className="route-node"><span>{routeRecommendation.intermediary.initials}</span><p><strong>{routeRecommendation.intermediary.name}</strong><small>{routeRecommendation.intermediary.title}</small></p></div></>}<div className="route-link"><span>{routeRecommendation.routeType === "Direct" ? "Direct outreach" : routeRecommendation.routeType === "Warm" ? "Confirmed route" : "No credible path"}</span><ChevronRight /></div><div className="route-node"><span>{routeRecommendation.target.initials}</span><p><strong>{routeRecommendation.target.name}</strong><small>{routeRecommendation.target.title}</small></p></div></div>
             <div className="route-evidence"><strong>Evidence used</strong><p>{routeRecommendation.evidence}</p><small>Contact route: {routeRecommendation.factors.usableContact ? "available" : "unavailable"} · Profile reliability: {routeRecommendation.factors.reliableProfile ? "sufficient" : "needs review"} · Confirmed intermediary: {routeRecommendation.factors.confirmedIntermediary ? "yes" : "no"}</small></div>
-            <DialogFooter><Button variant="outline" onClick={() => setRouteRecommendation(null)}>Close</Button><Button onClick={() => { const person = alumni.find(item => item.id === routeRecommendation.target.id); setRouteRecommendation(null); setSelected(person ?? null) }}>Open Target Profile</Button></DialogFooter></>}
+            <DialogFooter><Button variant="outline" onClick={() => setRouteRecommendation(null)}>Close</Button><Button onClick={() => { const person = alumni.find(item => item.id === routeRecommendation.target.id); setRouteRecommendation(null); if (person) openAlumnusProfile(person) }}>Open Target Profile</Button></DialogFooter></>}
         </DialogContent>
       </Dialog>
 
@@ -1887,9 +1870,9 @@ export default function Home() {
             <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
             <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML / PlaceCom relationship</span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
             {manualMessage && <div className="manual-message">{manualMessage}</div>}
-            {manualMatches.length > 0 && <div className="manual-matches"><strong>Possible existing alumnus</strong>{manualMatches.map(match => <div key={match.id}><span className="avatar small">{match.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</span><p><strong>{match.name}</strong><small>{match.programme} {match.batch || ""} · {match.company} · {match.title}</small></p><Button variant="outline" size="sm" onClick={() => { setManualOpen(false); setSelected(alumni.find(item => item.id === match.id) ?? null) }}>Compare</Button><Button size="sm" onClick={() => { setManualOpen(false); setSelected(alumni.find(item => item.id === match.id) ?? null) }}>Use Existing</Button></div>)}</div>}
+            {manualMatches.length > 0 && <div className="manual-matches"><strong>Possible existing alumnus</strong>{manualMatches.map(match => <div key={match.id}><span className="avatar small">{match.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</span><p><strong>{match.name}</strong><small>{match.programme} {match.batch || ""} · {match.company} · {match.title}</small></p><Button variant="outline" size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Compare</Button><Button size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Use Existing</Button></div>)}</div>}
           </div>}
-          <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); setSelected(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && <Button variant="outline" onClick={() => void saveManualAlumnus(true)}>Continue as New</Button>}<Button disabled={manualLoading} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add</Button></>}</DialogFooter>
+          <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); openAlumnusProfile(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && <Button variant="outline" onClick={() => void saveManualAlumnus(true)}>Continue as New</Button>}<Button disabled={manualLoading} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add</Button></>}</DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1929,7 +1912,7 @@ export default function Home() {
           <DialogFooter className="comparison-footer">
             {comparisonResult?.matchStatus === "Possible duplicate" && <Button variant="outline" onClick={() => void keepDiscoveryResultSeparate()} disabled={discovering}>Different person · Keep Separate</Button>}
             {comparisonResult?.matchStatus === "Needs review" && <Button variant="outline" onClick={() => { setIgnoreResult(comparisonResult); setComparisonResult(null) }}>Ignore profile</Button>}
-            {comparisonAlumnus && <Button variant="ghost" onClick={() => { setSelected(comparisonAlumnus); setComparisonResult(null) }}><Eye /> View existing record</Button>}
+            {comparisonAlumnus && <Button variant="ghost" onClick={() => { openAlumnusProfile(comparisonAlumnus); setComparisonResult(null) }}><Eye /> View existing record</Button>}
             {comparisonAlumnus ? <Button onClick={() => void applyComparison()} disabled={discovering}>{comparisonResult?.matchStatus === "Possible duplicate" ? selectedComparisonFields.length ? "Same person · Apply Updates" : "Same person · Keep Internal" : selectedComparisonFields.length ? "Apply Selected Updates" : "Keep Internal Values"}</Button> : <Button onClick={() => setComparisonResult(null)}>Keep Pending Review</Button>}
           </DialogFooter>
         </DialogContent>
