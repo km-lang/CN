@@ -50,8 +50,6 @@ function SheetContent({
   side = "right",
   showCloseButton = true,
   onClose,
-  onEscapeKeyDown,
-  onPointerDownOutside,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left"
@@ -75,14 +73,6 @@ function SheetContent({
             "inset-x-0 bottom-0 h-auto border-t data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom",
           className
         )}
-        onEscapeKeyDown={(event) => {
-          onEscapeKeyDown?.(event)
-          if (!event.defaultPrevented) onClose?.()
-        }}
-        onPointerDownOutside={(event) => {
-          onPointerDownOutside?.(event)
-          if (!event.defaultPrevented) onClose?.()
-        }}
         {...props}
       >
         {children}

@@ -10,6 +10,7 @@ after(async () => vite.close())
 
 const navigation = await vite.ssrLoadModule("/lib/controlled-email-navigation.ts")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+const sheet = await readFile(new URL("../components/ui/sheet.tsx", import.meta.url), "utf8")
 const route = await readFile(new URL("../app/api/engagements/route.ts", import.meta.url), "utf8")
 
 test("profile Draft Email preserves the exact alumnus across navigation", () => {
@@ -62,6 +63,8 @@ test("profile drawer closure cannot erase a compose route transition", () => {
   assert.match(page, /<Sheet open=\{Boolean\(selected\)\}>/)
   assert.match(page, /<SheetContent className="profile-sheet sm:max-w-xl" onClose=\{closeAlumnusProfile\}>/)
   assert.doesNotMatch(page, /<Sheet[^>]+onOpenChange=/)
+  assert.doesNotMatch(sheet, /onPointerDownOutside=.*onClose/)
+  assert.doesNotMatch(sheet, /onEscapeKeyDown=.*onClose/)
 })
 
 test("blocked and unknown preferences remain enforced by the server", () => {
