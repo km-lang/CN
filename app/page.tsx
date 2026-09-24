@@ -473,6 +473,8 @@ export default function Home() {
   const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
   const [mailSendConfirmOpen, setMailSendConfirmOpen] = useState(false)
   const composeGenerationRef = useRef(0)
+  const mutationGenerationRef = useRef(new Map<string, number>())
+  const pendingSyncCountRef = useRef(0)
   const [composeState, setComposeState] = useState<{ status: "idle" | "loading" | "ready" | "error"; message: string }>({ status: "idle", message: "" })
   const [composeRetry, setComposeRetry] = useState(0)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
@@ -716,19 +718,57 @@ export default function Home() {
     setAlumni(current => current.map(person => person.id === updated.id ? updated : person))
   }
 
-  async function saveAlumnus(id: number, changes: { status?: OutreachStatus; assessment?: Partial<Alumni["assessment"]> }) {
+  function beginSync() {
+    pendingSyncCountRef.current += 1
     setSyncing(true)
+  }
+
+  function finishSync() {
+    pendingSyncCountRef.current = Math.max(0, pendingSyncCountRef.current - 1)
+    setSyncing(pendingSyncCountRef.current > 0)
+  }
+
+  function nextMutation(key: string) {
+    const generation = (mutationGenerationRef.current.get(key) ?? 0) + 1
+    mutationGenerationRef.current.set(key, generation)
+    return generation
+  }
+
+  function isLatestMutation(key: string, generation: number) {
+    return mutationGenerationRef.current.get(key) === generation
+  }
+
+  async function saveAlumnus(id: number, changes: { status?: OutreachStatus; assessment?: Partial<Alumni["assessment"]> }) {
+    const previous = alumni.find(person => person.id === id)
+    if (!previous) return
+    const assessmentKeys = Object.keys(changes.assessment ?? {}) as Array<keyof Alumni["assessment"]>
+    const mutationKey = changes.status ? `alumnus:${id}:status` : `alumnus:${id}:assessment:${assessmentKeys.join(",")}`
+    const generation = nextMutation(mutationKey)
+    replaceAlumnus({ ...previous, ...(changes.status ? { status: changes.status } : {}), assessment: { ...previous.assessment, ...changes.assessment } })
+    beginSync()
     try {
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_alumnus", id, ...changes }) })
       const data = await response.json() as { alumnus?: Alumni; error?: string }
       if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the update.")
-      replaceAlumnus(data.alumnus)
+      if (isLatestMutation(mutationKey, generation)) {
+        setAlumni(current => current.map(person => person.id === id ? {
+          ...person,
+          ...(changes.status ? { status: data.alumnus!.status } : {}),
+          assessment: assessmentKeys.length ? { ...person.assessment, ...Object.fromEntries(assessmentKeys.map(key => [key, data.alumnus!.assessment[key]])) } : person.assessment,
+        } : person))
+      }
       setWorkspaceMessage("Saved to the shared workspace.")
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save the update.")
-      await loadWorkspace()
+      if (isLatestMutation(mutationKey, generation)) {
+        setAlumni(current => current.map(person => person.id === id ? {
+          ...person,
+          ...(changes.status ? { status: previous.status } : {}),
+          assessment: assessmentKeys.length ? { ...person.assessment, ...Object.fromEntries(assessmentKeys.map(key => [key, previous.assessment[key]])) } : person.assessment,
+        } : person))
+      }
     } finally {
-      setSyncing(false)
+      finishSync()
     }
   }
 
@@ -741,49 +781,64 @@ export default function Home() {
   }
 
   async function updateCompanyPriority(name: string, priority: string) {
-    setSyncing(true)
+    const previous = companyPriorities[name]
+    const mutationKey = `company:${name}:priority`
+    const generation = nextMutation(mutationKey)
+    setCompanyPriorities(current => ({ ...current, [name]: priority }))
+    beginSync()
     try {
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_priority", company: name, priority }) })
       const data = await response.json() as { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to save company priority.")
-      setCompanyPriorities(current => ({ ...current, [name]: priority }))
       setWorkspaceMessage("Company priority saved for all committee members.")
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save company priority.")
+      if (isLatestMutation(mutationKey, generation)) setCompanyPriorities(current => ({ ...current, [name]: previous }))
     } finally {
-      setSyncing(false)
+      finishSync()
     }
   }
 
   async function updatePrivacy(person: Alumni, changes: Partial<NonNullable<Alumni["privacy"]>>) {
-    setSyncing(true)
+    const fallback = { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" }
+    const previousPrivacy = person.privacy ?? fallback
+    const changedKeys = Object.keys(changes) as Array<keyof NonNullable<Alumni["privacy"]>>
+    const mutationKey = `alumnus:${person.id}:privacy:${changedKeys.join(",")}`
+    const generation = nextMutation(mutationKey)
+    const privacy = { ...previousPrivacy, ...changes }
+    replaceAlumnus({ ...person, privacy })
+    beginSync()
     try {
-      const privacy = { ...(person.privacy ?? { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" }), ...changes }
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_privacy", id: person.id, privacy }) })
       const data = await response.json() as { privacy?: NonNullable<Alumni["privacy"]>; error?: string }
       if (!response.ok || !data.privacy) throw new Error(data.error || "Unable to save privacy preferences.")
-      const updated = { ...person, privacy: data.privacy }
-      replaceAlumnus(updated)
+      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, privacy: { ...(item.privacy ?? fallback), ...Object.fromEntries(changedKeys.map(key => [key, data.privacy![key]])), updatedAt: data.privacy!.updatedAt, updatedBy: data.privacy!.updatedBy } } : item))
       setWorkspaceMessage("Privacy preference saved and audited.")
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save privacy preferences.")
+      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, privacy: { ...(item.privacy ?? fallback), ...Object.fromEntries(changedKeys.map(key => [key, previousPrivacy[key]])) } } : item))
     } finally {
-      setSyncing(false)
+      finishSync()
     }
   }
 
   async function updateProfessionalDataQuality(person: Alumni, status: string, note: string) {
-    setSyncing(true)
+    const mutationKey = `alumnus:${person.id}:professional-data-quality`
+    const generation = nextMutation(mutationKey)
+    const previous = { status: person.professionalDataStatus, note: person.professionalDataNote }
+    replaceAlumnus({ ...person, professionalDataStatus: status, professionalDataNote: note })
+    beginSync()
     try {
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_data_quality", id: person.id, professionalDataStatus: status, professionalDataNote: note }) })
       const data = await response.json() as { alumnus?: Alumni; error?: string }
       if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the professional data-quality review.")
-      replaceAlumnus({ ...data.alumnus, privacy: person.privacy })
+      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, professionalDataStatus: data.alumnus!.professionalDataStatus, professionalDataNote: data.alumnus!.professionalDataNote } : item))
       setWorkspaceMessage("Professional data-quality status saved without overwriting profile fields.")
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save the professional data-quality review.")
+      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, professionalDataStatus: previous.status, professionalDataNote: previous.note } : item))
     } finally {
-      setSyncing(false)
+      finishSync()
     }
   }
 
@@ -1556,14 +1611,14 @@ export default function Home() {
 
             {session.canOperate && <section className="panel route-panel route-planner">
               <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div><span className="route-score">Target-specific</span></div>
-              <div className="route-controls"><label><span>Target company</span><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue placeholder="No mapped companies" /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><label><span>Search mapped alumni</span><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Type a name or role" /></label><label><span>Who do you want to reach?</span><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select a target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select></label><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
+              <div className="route-controls"><label><span>Target company</span><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue placeholder="No mapped companies" /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><label><span>Search mapped alumni</span><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Type a name or role" /></label><label><span>Who do you want to reach?</span><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select a target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select></label><Button title={!targetAlumnusId ? "Select a target alumnus first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
               {routeMessage && <p className="route-message">{routeMessage}</p>}
             </section>}
           </TabsContent>
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <div className="directory-discovery-action"><label><span>Results to retrieve</span><Input type="number" inputMode="numeric" min="1" max={maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="PDL profiles to retrieve" /></label><div className="result-presets">{[1, 5, 10, 20].map(value => <Button key={value} type="button" size="sm" variant="outline" disabled={value > maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} onClick={() => setDiscoveryLimit(String(value))}>{value}</Button>)}</div><Button onClick={() => discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>}</div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <div className="directory-discovery-action"><label><span>Results to retrieve</span><Input type="number" inputMode="numeric" min="1" max={maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="PDL profiles to retrieve" /></label><div className="result-presets">{[1, 5, 10, 20].map(value => { const maximum = maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100); return <Button key={value} title={value > maximum ? `Requires at least ${value} available PDL application credits; ${maximum} currently available.` : undefined} type="button" size="sm" variant="outline" disabled={value > maximum} onClick={() => setDiscoveryLimit(String(value))}>{value}</Button> })}</div><Button onClick={() => discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>}</div>
               {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
@@ -1645,7 +1700,7 @@ export default function Home() {
                 <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(targetAlumni.length, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
               </article>
               <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="contact-card" onClick={() => openAlumnusProfile(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
-              {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Route for a specific alumnus</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Search by name or role" aria-label="Search target alumni" /><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {activeTargetCompany} before requesting a route.</small>}</article>}
+              {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Route for a specific alumnus</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Search by name or role" aria-label="Search target alumni" /><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select><Button title={!targetAlumnusId ? "Select a target alumnus first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {activeTargetCompany} before requesting a route.</small>}</article>}
               <article className="panel account-history"><div className="panel-heading"><div><p className="eyebrow">Institutional memory</p><h2>Account history</h2></div></div><div className="empty-state"><History /><h3>No company engagement recorded</h3><p>Verified outreach and placement history will appear here when it is added.</p></div></article>
             </section>}
           </TabsContent>
@@ -1656,7 +1711,7 @@ export default function Home() {
               <div className="demo-user"><label>Signed-in owner</label><strong>{session.displayName}</strong><small>Actions use your authenticated identity</small></div>
             </section>
 
-            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsActive ? "LIVE · entitlement confirmed" : signalsStatus?.entitlement === "not_entitled" ? "OFF · account not entitled" : "Professional Signals are prepared but not activated."}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small>{session.canOperate && <div className="signals-selector"><Select value={signalsAlumnusId ? String(signalsAlumnusId) : ""} onValueChange={value => setSignalsAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select approved alumnus" /></SelectTrigger><SelectContent>{alumni.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.lushaPersonId ? "Stable Lusha ID available" : "Lusha ID required"}</SelectItem>)}</SelectContent></Select>{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}{signalsActive && <Button size="sm" disabled={!signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check Professional Signals</Button>}</div>}</section>
+            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsActive ? "LIVE · entitlement confirmed" : signalsStatus?.entitlement === "not_entitled" ? "OFF · account not entitled" : "Professional Signals are prepared but not activated."}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small>{session.canOperate && <div className="signals-selector"><Select value={signalsAlumnusId ? String(signalsAlumnusId) : ""} onValueChange={value => setSignalsAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select approved alumnus" /></SelectTrigger><SelectContent>{alumni.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.lushaPersonId ? "Stable Lusha ID available" : "Lusha ID required"}</SelectItem>)}</SelectContent></Select>{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}{signalsActive && <Button title={!signalsTarget ? "Select an alumnus first." : !signalsTarget.lushaPersonId ? "Requires a stored Lusha contact ID." : undefined} size="sm" disabled={!signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check Professional Signals</Button>}</div>}</section>
             {signalsMessage && <div className="discovery-message">{signalsMessage}</div>}
 
             <section className="engagement-stats">
@@ -1723,7 +1778,7 @@ export default function Home() {
                     <div><strong>{importFile ? importFile.name : "Choose an alumni CSV file"}</strong><span>Required: name, batch and company. Existing records are matched by name, batch and company.</span></div>
                     <input aria-label="Choose alumni CSV file" type="file" accept=".csv,text/csv" onChange={event => setImportFile(event.target.files?.[0] ?? null)} />
                   </div>
-                  <div className="import-actions"><Button variant="outline" onClick={downloadTemplate}><Download /> Download template</Button><Button onClick={importAlumni} disabled={!importFile || importing}>{importing ? <LoaderCircle className="spin" /> : <Upload />} {importing ? "Importing" : "Import to shared database"}</Button></div>
+                  <div className="import-actions"><Button variant="outline" onClick={downloadTemplate}><Download /> Download template</Button><Button title={!importFile ? "Choose a CSV file first." : importing ? "The selected file is still being imported." : undefined} onClick={importAlumni} disabled={!importFile || importing}>{importing ? <LoaderCircle className="spin" /> : <Upload />} {importing ? "Importing" : "Import to shared database"}</Button></div>
                   {workspaceMessage && <div className="workspace-message"><Cloud /> <span>{workspaceMessage}</span></div>}
                 </div>
               </article>
@@ -1780,7 +1835,7 @@ export default function Home() {
 
       <Sheet open={Boolean(selected)}>
         <SheetContent className="profile-sheet sm:max-w-xl" onClose={closeAlumnusProfile}>
-          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
+          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button title={!selected.email ? "Requires an eligible stored email." : engagementLoading ? "The email draft is still being prepared." : undefined} size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             {selected.privacy?.generalContactStatus === "Do not contact" && <div className="do-not-contact-banner"><Ban /><div><strong>Do not contact</strong><span>All birthday, professional and outreach sends are blocked server-side for this alumnus.</span></div></div>}

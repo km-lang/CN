@@ -72,5 +72,5 @@ test("validation never enables Signals, writes secrets, or performs a person-lev
   assert.doesNotMatch(route, /process\.env\.LUSHA_SIGNALS_\w+\s*=|db\.update\(providerSettings\)/)
   assert.doesNotMatch(panel, /setEnvironment|updateEnvironmentVariables/)
   assert.match(route, /writeSecurityAudit\(context/)
-  assert.match(panel, /This validation changes none of these settings/)
+  assert.match(panel, /this validation changes no runtime setting/)
 })
