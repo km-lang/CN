@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Activity, ArrowUpRight, Ban, BellRing, BriefcaseBusiness, Building2, Cake,
   CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, Cloud, ContactRound,
@@ -30,7 +30,7 @@ import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
 import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
-import { controlledEmailReturnUrl, controlledEmailUrl, parseControlledEmailIntent, profileRouteState, type ControlledEmailIntent } from "@/lib/controlled-email-navigation"
+import { controlledEmailReturnUrl, controlledEmailUrl, createControlledEmailInitializer, parseControlledEmailIntent, profileRouteState, type ControlledEmailIntent } from "@/lib/controlled-email-navigation"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -474,7 +474,7 @@ export default function Home() {
   const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
   const [mailSendConfirmOpen, setMailSendConfirmOpen] = useState(false)
   const [controlledEmailIntent, setControlledEmailIntent] = useState<ControlledEmailIntent | null>(null)
-  const draftIntentInFlight = useRef<number | null>(null)
+  const [controlledEmailInitializer] = useState(createControlledEmailInitializer)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [responseType, setResponseType] = useState("Positive")
   const [responseNotes, setResponseNotes] = useState("")
@@ -1071,19 +1071,13 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!controlledEmailIntent || mailPreview || engagementLoading || draftIntentInFlight.current === controlledEmailIntent.alumnusId) return
+    if (!controlledEmailIntent || mailPreview || engagementLoading) return
     const person = alumni.find(item => item.id === controlledEmailIntent.alumnusId)
     if (!person) return
-    draftIntentInFlight.current = person.id
-    const timer = window.setTimeout(() => {
-      void draftManualEmail(person).finally(() => {
-        draftIntentInFlight.current = null
-      })
-    }, 0)
-    return () => window.clearTimeout(timer)
+    return controlledEmailInitializer.schedule(person.id, () => draftManualEmail(person))
     // draftManualEmail intentionally runs only when the durable route identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alumni, controlledEmailIntent, engagementLoading, mailPreview])
+  }, [alumni, controlledEmailInitializer, controlledEmailIntent, engagementLoading, mailPreview])
 
   async function sendMailPreview() {
     if (!mailPreview) return

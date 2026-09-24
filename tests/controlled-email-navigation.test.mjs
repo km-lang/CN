@@ -19,6 +19,31 @@ test("profile Draft Email preserves the exact alumnus across navigation", () => 
   assert.match(page, /startProfileEmailDraft\(selected\)/)
 })
 
+test("a cancelled deferred initialization does not poison the next browser render", async () => {
+  const initializer = navigation.createControlledEmailInitializer()
+  let starts = 0
+  const cancelFirstRender = initializer.schedule(417, async () => { starts += 1 })
+  cancelFirstRender()
+  initializer.schedule(417, async () => { starts += 1 })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(starts, 1)
+  assert.equal(initializer.activeAlumnusId(), null)
+})
+
+test("the browser initializer does not duplicate an in-flight composer request", async () => {
+  const initializer = navigation.createControlledEmailInitializer()
+  let release
+  const pending = new Promise(resolve => { release = resolve })
+  let starts = 0
+  initializer.schedule(417, async () => { starts += 1; await pending })
+  await new Promise(resolve => setTimeout(resolve, 5))
+  initializer.schedule(417, async () => { starts += 1 })
+  await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(starts, 1)
+  release()
+  await pending
+})
+
 test("composer recipient remains the selected alumnus stored email", () => {
   assert.match(route, /where\(eq\(alumni\.id, alumnusId\)\)/)
   assert.match(route, /A valid stored recipient email is required before drafting/)
