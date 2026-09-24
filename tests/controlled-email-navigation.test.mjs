@@ -59,7 +59,7 @@ test("composer initialization is bounded, supersedable, and always renders failu
 })
 
 test("profile drawer closure cannot erase a compose route transition", () => {
-  assert.match(page, /onOpenChange=\{open => \{ if \(!open && routeState\.profileAlumnusId\) closeAlumnusProfile\(\) \}\}/)
+  assert.match(page, /onOpenChange=\{open => \{ if \(!open && profileRouteState\(window\.location\.search\)\.profileAlumnusId\) closeAlumnusProfile\(\) \}\}/)
 })
 
 test("blocked and unknown preferences remain enforced by the server", () => {

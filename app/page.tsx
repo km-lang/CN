@@ -1778,7 +1778,7 @@ export default function Home() {
         </Tabs>
       </section>
 
-      <Sheet open={Boolean(selected)} onOpenChange={open => { if (!open && routeState.profileAlumnusId) closeAlumnusProfile() }}>
+      <Sheet open={Boolean(selected)} onOpenChange={open => { if (!open && profileRouteState(window.location.search).profileAlumnusId) closeAlumnusProfile() }}>
         <SheetContent className="profile-sheet sm:max-w-xl">
           {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
