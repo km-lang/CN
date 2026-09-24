@@ -49,10 +49,14 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  onClose,
+  onEscapeKeyDown,
+  onPointerDownOutside,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
+  onClose?: () => void
 }) {
   return (
     <SheetPortal>
@@ -71,10 +75,23 @@ function SheetContent({
             "inset-x-0 bottom-0 h-auto border-t data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom",
           className
         )}
+        onEscapeKeyDown={(event) => {
+          onEscapeKeyDown?.(event)
+          if (!event.defaultPrevented) onClose?.()
+        }}
+        onPointerDownOutside={(event) => {
+          onPointerDownOutside?.(event)
+          if (!event.defaultPrevented) onClose?.()
+        }}
         {...props}
       >
         {children}
-        {showCloseButton && (
+        {showCloseButton && onClose ? (
+          <button type="button" onClick={onClose} className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+            <XIcon className="size-4" />
+            <span className="sr-only">Close</span>
+          </button>
+        ) : showCloseButton && (
           <SheetPrimitive.Close className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary">
             <XIcon className="size-4" />
             <span className="sr-only">Close</span>

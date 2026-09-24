@@ -1778,8 +1778,8 @@ export default function Home() {
         </Tabs>
       </section>
 
-      <Sheet open={Boolean(selected)} onOpenChange={open => { if (!open && profileRouteState(window.location.search).profileAlumnusId) closeAlumnusProfile() }}>
-        <SheetContent className="profile-sheet sm:max-w-xl">
+      <Sheet open={Boolean(selected)}>
+        <SheetContent className="profile-sheet sm:max-w-xl" onClose={closeAlumnusProfile}>
           {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
