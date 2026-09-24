@@ -51,9 +51,11 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onClose,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  onClose?: () => void
 }) {
   return (
     <DialogPortal data-slot="dialog-portal">
@@ -67,7 +69,16 @@ function DialogContent({
         {...props}
       >
         {children}
-        {showCloseButton && (
+        {showCloseButton && onClose ? (
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+          >
+            <XIcon />
+            <span className="sr-only">Close</span>
+          </button>
+        ) : showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
             className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"

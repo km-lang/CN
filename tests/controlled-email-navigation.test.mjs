@@ -10,6 +10,7 @@ after(async () => vite.close())
 
 const navigation = await vite.ssrLoadModule("/lib/controlled-email-navigation.ts")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+const dialog = await readFile(new URL("../components/ui/dialog.tsx", import.meta.url), "utf8")
 const sheet = await readFile(new URL("../components/ui/sheet.tsx", import.meta.url), "utf8")
 const route = await readFile(new URL("../app/api/engagements/route.ts", import.meta.url), "utf8")
 
@@ -65,6 +66,9 @@ test("profile drawer closure cannot erase a compose route transition", () => {
   assert.doesNotMatch(page, /<Sheet[^>]+onOpenChange=/)
   assert.doesNotMatch(sheet, /onPointerDownOutside=.*onClose/)
   assert.doesNotMatch(sheet, /onEscapeKeyDown=.*onClose/)
+  assert.match(page, /<Dialog open=\{Boolean\(controlledEmailIntent \|\| mailPreview\)\}>/)
+  assert.doesNotMatch(page, /<Dialog open=\{Boolean\(controlledEmailIntent \|\| mailPreview\)\} onOpenChange=/)
+  assert.match(dialog, /onClick=\{onClose\}/)
 })
 
 test("blocked and unknown preferences remain enforced by the server", () => {

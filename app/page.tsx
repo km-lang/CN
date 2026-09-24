@@ -1845,8 +1845,8 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(controlledEmailIntent || mailPreview)} onOpenChange={open => { if (!open) { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) } }}>
-        <DialogContent className="mail-dialog">
+      <Dialog open={Boolean(controlledEmailIntent || mailPreview)}>
+        <DialogContent className="mail-dialog" onClose={() => { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) }}>
           {controlledEmailIntent && !mailPreview && composeState.status !== "error" && <><DialogHeader><DialogTitle>Preparing email draft</DialogTitle><DialogDescription>Loading the selected alumnus and eligible stored recipient. No email is sent while this draft opens.</DialogDescription></DialogHeader><div className="empty-state"><LoaderCircle className="spin" /><h3>Loading composer for alumnus {controlledEmailIntent.alumnusId}</h3></div><DialogFooter><Button variant="outline" onClick={cancelControlledEmailDraft}>Cancel</Button></DialogFooter></>}
           {controlledEmailIntent && !mailPreview && composeState.status === "error" && <><DialogHeader><DialogTitle>Unable to prepare this email draft.</DialogTitle><DialogDescription>{composeState.message} No email was sent.</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setComposeRetry(value => value + 1)}>Retry</Button><Button onClick={cancelControlledEmailDraft}>Cancel</Button></DialogFooter></>}
           {mailPreview && <><DialogHeader><DialogTitle>Review email before sending</DialogTitle><DialogDescription>No message is sent until you approve it. {mailMode === "mock" ? "This demonstration uses the mock mail service." : "This message will use the approved institute mail service."}</DialogDescription></DialogHeader>
