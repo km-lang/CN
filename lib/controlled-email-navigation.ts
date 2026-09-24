@@ -1,4 +1,5 @@
 const VALID_TABS = new Set(["overview", "directory", "companies", "engagement", "outreach", "data-import", "enrichment", "admin"])
+const EMAIL_STATE_KEYS = ["compose", "alumnusId", "returnAlumnusId", "returnTab"]
 
 export type ControlledEmailIntent = {
   alumnusId: number
@@ -62,6 +63,22 @@ export function controlledEmailReturnUrl(href: string, intent: ControlledEmailIn
   url.searchParams.delete("returnTab")
   url.searchParams.set("tab", intent.returnTab)
   url.searchParams.set("profileAlumnusId", String(intent.returnAlumnusId))
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
+export function workspaceTabUrl(href: string, tab: string) {
+  const url = new URL(href)
+  for (const key of EMAIL_STATE_KEYS) url.searchParams.delete(key)
+  url.searchParams.delete("profileAlumnusId")
+  url.searchParams.set("tab", VALID_TABS.has(tab) ? tab : "overview")
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
+export function alumnusProfileUrl(href: string, alumnusId: number, tab = "directory") {
+  const url = new URL(href)
+  for (const key of EMAIL_STATE_KEYS) url.searchParams.delete(key)
+  url.searchParams.set("tab", VALID_TABS.has(tab) ? tab : "directory")
+  url.searchParams.set("profileAlumnusId", String(alumnusId))
   return `${url.pathname}${url.search}${url.hash}`
 }
 

@@ -30,7 +30,7 @@ import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
 import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
-import { controlledEmailReturnUrl, controlledEmailUrl, createControlledEmailInitializer, parseControlledEmailIntent, profileRouteState, type ControlledEmailIntent } from "@/lib/controlled-email-navigation"
+import { alumnusProfileUrl, controlledEmailReturnUrl, controlledEmailUrl, createControlledEmailInitializer, parseControlledEmailIntent, profileRouteState, workspaceTabUrl, type ControlledEmailIntent } from "@/lib/controlled-email-navigation"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -529,11 +529,12 @@ export default function Home() {
       if (intent) {
         setActiveTab("engagement")
         setSelected(null)
+      } else {
+        setControlledEmailIntent(null)
         setMailPreview(null)
         setMailSendConfirmOpen(false)
-      } else {
         if (routeState.tab) setActiveTab(routeState.tab)
-        setSelected(current => routeState.profileAlumnusId ? alumni.find(person => person.id === routeState.profileAlumnusId) ?? current : current)
+        setSelected(routeState.profileAlumnusId ? alumni.find(person => person.id === routeState.profileAlumnusId) ?? null : null)
       }
     }
     applyRouteState()
@@ -1060,6 +1061,34 @@ export default function Home() {
     setActiveTab("engagement")
   }
 
+  function openAlumnusProfile(person: Alumni, tab = activeTab) {
+    const destinationTab = tab === "engagement" ? "directory" : tab
+    window.history.pushState({}, "", alumnusProfileUrl(window.location.href, person.id, destinationTab))
+    setControlledEmailIntent(null)
+    setMailPreview(null)
+    setMailSendConfirmOpen(false)
+    setActiveTab(destinationTab)
+    setSelected(person)
+  }
+
+  function closeAlumnusProfile() {
+    if (parseControlledEmailIntent(window.location.search)) {
+      setSelected(null)
+      return
+    }
+    window.history.replaceState({}, "", workspaceTabUrl(window.location.href, activeTab))
+    setSelected(null)
+  }
+
+  function changeWorkspaceTab(tab: string) {
+    window.history.pushState({}, "", workspaceTabUrl(window.location.href, tab))
+    setControlledEmailIntent(null)
+    setMailPreview(null)
+    setMailSendConfirmOpen(false)
+    setSelected(null)
+    setActiveTab(tab)
+  }
+
   function cancelControlledEmailDraft() {
     setMailPreview(null)
     setMailSendConfirmOpen(false)
@@ -1484,7 +1513,7 @@ export default function Home() {
           <div><p className="eyebrow">Placement intelligence</p><h1>{appConfig.tagline}</h1></div>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="product-tabs">
+        <Tabs value={activeTab} onValueChange={changeWorkspaceTab} className="product-tabs">
           <TabsList variant="line" className="main-tabs" aria-label="Platform sections">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="directory">Alumni directory</TabsTrigger>
@@ -1507,7 +1536,7 @@ export default function Home() {
             <section className="overview-grid">
               <article className="panel lead-panel">
                 <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Highest-value alumni leads</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => setActiveTab("directory")}>View all <ArrowUpRight /></Button></div>
-                <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="lead-row" onClick={() => setSelected(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
+                <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="lead-row" onClick={() => openAlumnusProfile(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
               </article>
 
               {session.canOperate && <aside className="panel signal-panel">
@@ -1555,7 +1584,7 @@ export default function Home() {
               </div>}
               <Table>
                 <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
-                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => setSelected(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
+                <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person, "directory")}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
               </Table>
               {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Search external professional data while keeping the IIM Lucknow education criterion fixed." : "No authorized records match the selected filters."}</p>{session.canOperate && <Button onClick={() => discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button>}</div>}
             </section>
@@ -1611,7 +1640,7 @@ export default function Home() {
                 <div className="company-kpis"><div><strong>{targetAlumni.length}</strong><span>Alumni mapped</span></div><div><strong>{targetAlumni.filter(p => optionScore(seniorityOptions, seniorityLabel(p)) >= 80).length}</strong><span>Senior leaders</span></div><div><strong>{targetAlumni.filter(p => p.function === "HR").length}</strong><span>HR contacts</span></div><div><strong>{targetAlumni.filter(p => operationalStatus(p) === "Contact-ready").length}</strong><span>Contact-ready</span></div></div>
                 <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(targetAlumni.length, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
               </article>
-              <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="contact-card" onClick={() => setSelected(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
+              <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="contact-card" onClick={() => openAlumnusProfile(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
               {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Route for a specific alumnus</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Search by name or role" aria-label="Search target alumni" /><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select><Button disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {activeTargetCompany} before requesting a route.</small>}</article>}
               <article className="panel account-history"><div className="panel-heading"><div><p className="eyebrow">Institutional memory</p><h2>Account history</h2></div></div><div className="empty-state"><History /><h3>No company engagement recorded</h3><p>Verified outreach and placement history will appear here when it is added.</p></div></article>
             </section>}
@@ -1745,7 +1774,7 @@ export default function Home() {
         </Tabs>
       </section>
 
-      <Sheet open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)}>
+      <Sheet open={Boolean(selected)} onOpenChange={open => !open && closeAlumnusProfile()}>
         <SheetContent className="profile-sheet sm:max-w-xl">
           {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">

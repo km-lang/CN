@@ -74,3 +74,47 @@ test("Cancel restores the originating profile and tab", () => {
   const returnUrl = navigation.controlledEmailReturnUrl("https://network.example/?tab=engagement&compose=email&alumnusId=417&returnAlumnusId=417&returnTab=directory", intent)
   assert.equal(returnUrl, "/?tab=directory&profileAlumnusId=417")
 })
+
+test("Flow A: ordinary Directory selection opens only the profile route", () => {
+  const url = navigation.alumnusProfileUrl("https://network.example/?tab=directory", 15, "directory")
+  assert.equal(url, "/?tab=directory&profileAlumnusId=15")
+  assert.equal(navigation.parseControlledEmailIntent(new URL(url, "https://network.example").search), null)
+  assert.deepEqual(navigation.profileRouteState(new URL(url, "https://network.example").search), { profileAlumnusId: 15, tab: "directory" })
+  assert.match(page, /openAlumnusProfile\(person, "directory"\)/)
+})
+
+test("Flow B: Draft Email alone creates the Engagement compose route", () => {
+  const profile = navigation.alumnusProfileUrl("https://network.example/", 15, "directory")
+  const email = navigation.controlledEmailUrl(`https://network.example${profile}`, 15, "directory")
+  assert.equal(email, "/?tab=engagement&compose=email&alumnusId=15&returnAlumnusId=15&returnTab=directory")
+  assert.equal(navigation.parseControlledEmailIntent(new URL(email, "https://network.example").search).alumnusId, 15)
+})
+
+test("Flow C: Cancel removes compose state and restores the original drawer", () => {
+  const email = "https://network.example/?tab=engagement&compose=email&alumnusId=15&returnAlumnusId=15&returnTab=directory"
+  const returned = navigation.controlledEmailReturnUrl(email, { alumnusId: 15, returnAlumnusId: 15, returnTab: "directory" })
+  const parsed = new URL(returned, "https://network.example")
+  assert.equal(parsed.searchParams.has("compose"), false)
+  assert.deepEqual(navigation.profileRouteState(parsed.search), { profileAlumnusId: 15, tab: "directory" })
+})
+
+test("Flow D: selecting another alumnus replaces stale email and profile identity", () => {
+  const stale = "https://network.example/?tab=engagement&profileAlumnusId=15&compose=email&alumnusId=15&returnAlumnusId=15&returnTab=directory"
+  const next = navigation.alumnusProfileUrl(stale, 22, "directory")
+  assert.equal(next, "/?tab=directory&profileAlumnusId=22")
+  assert.equal(navigation.parseControlledEmailIntent(new URL(next, "https://network.example").search), null)
+})
+
+test("Flow E: close and tab navigation remove stale compose/profile state", () => {
+  const stale = "https://network.example/?tab=engagement&profileAlumnusId=15&compose=email&alumnusId=15&returnAlumnusId=15&returnTab=directory"
+  const directory = navigation.workspaceTabUrl(stale, "directory")
+  assert.equal(directory, "/?tab=directory")
+  assert.deepEqual(navigation.profileRouteState(new URL(directory, "https://network.example").search), { profileAlumnusId: null, tab: "directory" })
+  assert.match(page, /setSelected\(routeState\.profileAlumnusId \? alumni\.find[\s\S]*?\?\? null : null\)/)
+})
+
+test("direct Engagement email controls remain separate from profile navigation", () => {
+  assert.match(page, /previewEngagement\(event\)/)
+  assert.match(page, /openAlumnusProfile\(person, "directory"\)/)
+  assert.doesNotMatch(page.match(/function openAlumnusProfile[\s\S]*?\n  \}/)?.[0] ?? "", /previewEngagement|create_manual_email_event/)
+})
