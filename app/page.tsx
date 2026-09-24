@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Activity, ArrowUpRight, Ban, BellRing, BriefcaseBusiness, Building2, Cake,
   CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, Cloud, ContactRound,
@@ -30,6 +30,7 @@ import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
 import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
+import { controlledEmailReturnUrl, controlledEmailUrl, parseControlledEmailIntent, profileRouteState, type ControlledEmailIntent } from "@/lib/controlled-email-navigation"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -472,6 +473,8 @@ export default function Home() {
   const [engagementMessage, setEngagementMessage] = useState("")
   const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
   const [mailSendConfirmOpen, setMailSendConfirmOpen] = useState(false)
+  const [controlledEmailIntent, setControlledEmailIntent] = useState<ControlledEmailIntent | null>(null)
+  const draftIntentInFlight = useRef<number | null>(null)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [responseType, setResponseType] = useState("Positive")
   const [responseNotes, setResponseNotes] = useState("")
@@ -517,6 +520,26 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadWorkspace(), 0)
     return () => window.clearTimeout(timer)
   }, [loadWorkspace, session.canOperate])
+
+  useEffect(() => {
+    const applyRouteState = () => {
+      const intent = parseControlledEmailIntent(window.location.search)
+      const routeState = profileRouteState(window.location.search)
+      setControlledEmailIntent(intent)
+      if (intent) {
+        setActiveTab("engagement")
+        setSelected(null)
+        setMailPreview(null)
+        setMailSendConfirmOpen(false)
+      } else {
+        if (routeState.tab) setActiveTab(routeState.tab)
+        setSelected(current => routeState.profileAlumnusId ? alumni.find(person => person.id === routeState.profileAlumnusId) ?? current : current)
+      }
+    }
+    applyRouteState()
+    window.addEventListener("popstate", applyRouteState)
+    return () => window.removeEventListener("popstate", applyRouteState)
+  }, [alumni])
 
   const loadEnrichment = useCallback(async () => {
     try {
@@ -1029,10 +1052,50 @@ export default function Home() {
     }
   }
 
+  function startProfileEmailDraft(person: Alumni) {
+    const intent: ControlledEmailIntent = { alumnusId: person.id, returnAlumnusId: person.id, returnTab: activeTab }
+    window.history.pushState({}, "", controlledEmailUrl(window.location.href, person.id, activeTab))
+    setControlledEmailIntent(intent)
+    setSelected(null)
+    setActiveTab("engagement")
+  }
+
+  function cancelControlledEmailDraft() {
+    setMailPreview(null)
+    setMailSendConfirmOpen(false)
+    if (!controlledEmailIntent) return
+    window.history.replaceState({}, "", controlledEmailReturnUrl(window.location.href, controlledEmailIntent))
+    setActiveTab(controlledEmailIntent.returnTab)
+    setSelected(alumni.find(person => person.id === controlledEmailIntent.returnAlumnusId) ?? null)
+    setControlledEmailIntent(null)
+  }
+
+  useEffect(() => {
+    if (!controlledEmailIntent || mailPreview || engagementLoading || draftIntentInFlight.current === controlledEmailIntent.alumnusId) return
+    const person = alumni.find(item => item.id === controlledEmailIntent.alumnusId)
+    if (!person) return
+    draftIntentInFlight.current = person.id
+    const timer = window.setTimeout(() => {
+      void draftManualEmail(person).finally(() => {
+        draftIntentInFlight.current = null
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+    // draftManualEmail intentionally runs only when the durable route identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alumni, controlledEmailIntent, engagementLoading, mailPreview])
+
   async function sendMailPreview() {
     if (!mailPreview) return
     const result = await postEngagement("send", mailPreview.event.id, { templateId: mailPreview.templateId, subject: mailPreview.subject, body: mailPreview.body, approved: true })
     if (result) {
+      if (controlledEmailIntent) {
+        const url = new URL(window.location.href)
+        for (const key of ["compose", "alumnusId", "returnAlumnusId", "returnTab", "profileAlumnusId"]) url.searchParams.delete(key)
+        url.searchParams.set("tab", "engagement")
+        window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`)
+        setControlledEmailIntent(null)
+      }
       setMailPreview(null)
       setMailSendConfirmOpen(false)
       setSelectedEngagement(null)
@@ -1690,7 +1753,7 @@ export default function Home() {
 
       <Sheet open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)}>
         <SheetContent className="profile-sheet sm:max-w-xl">
-          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => void draftManualEmail(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
+          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             {selected.privacy?.generalContactStatus === "Do not contact" && <div className="do-not-contact-banner"><Ban /><div><strong>Do not contact</strong><span>All birthday, professional and outreach sends are blocked server-side for this alumnus.</span></div></div>}
@@ -1755,11 +1818,11 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(mailPreview)} onOpenChange={open => { if (!open) setMailPreview(null) }}>
+      <Dialog open={Boolean(mailPreview)} onOpenChange={open => { if (!open) { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) } }}>
         <DialogContent className="mail-dialog">
           {mailPreview && <><DialogHeader><DialogTitle>Review email before sending</DialogTitle><DialogDescription>No message is sent until you approve it. {mailMode === "mock" ? "This demonstration uses the mock mail service." : "This message will use the approved institute mail service."}</DialogDescription></DialogHeader>
             <div className="mail-form"><label><span>Recipient</span><Input value={mailPreview.recipient} readOnly /></label><label><span>Approved template</span><Select value={String(mailPreview.templateId)} onValueChange={value => switchMailTemplate(Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{messageTemplates.filter(item => item.eventType === mailPreview.event.eventType).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></label><label><span>Subject</span><Input value={mailPreview.subject} onChange={event => setMailPreview({ ...mailPreview, subject: event.target.value })} /></label><label><span>Message</span><Textarea value={mailPreview.body} onChange={event => setMailPreview({ ...mailPreview, body: event.target.value })} rows={9} /></label></div>
-            <DialogFooter><Button variant="outline" onClick={() => setMailPreview(null)}>Cancel</Button><Button disabled={engagementLoading || !mailPreview.subject.trim() || !mailPreview.body.trim()} onClick={() => setMailSendConfirmOpen(true)}><Eye /> Continue to Final Confirmation</Button></DialogFooter></>}
+            <DialogFooter><Button variant="outline" onClick={() => { if (controlledEmailIntent) cancelControlledEmailDraft(); else setMailPreview(null) }}>Cancel</Button><Button disabled={engagementLoading || !mailPreview.subject.trim() || !mailPreview.body.trim()} onClick={() => setMailSendConfirmOpen(true)}><Eye /> Continue to Final Confirmation</Button></DialogFooter></>}
         </DialogContent>
       </Dialog>
 
