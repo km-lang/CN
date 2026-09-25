@@ -33,6 +33,7 @@ import { providerUsageLabel } from "@/lib/provider-usage"
 import { alumnusProfileUrl, canonicalWorkspaceUrl, controlledEmailReturnUrl, controlledEmailUrl, engagementEventUrl, parseControlledEmailIntent, parseEngagementEventId, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
 import { initializeControlledEmail } from "@/lib/controlled-email-initialization"
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
+import { programmeFilterOptions, type ProgrammeOption } from "@/lib/programme-options"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -419,6 +420,7 @@ export default function Home() {
   const currentDemoUser = session.displayName
   const [alumni, setAlumni] = useState<Alumni[]>([])
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>({})
+  const [configuredProgrammes, setConfiguredProgrammes] = useState<ProgrammeOption[]>([])
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [targetCompany, setTargetCompany] = useState("")
@@ -512,10 +514,11 @@ export default function Home() {
     try {
       setWorkspaceLoading(true)
       const response = await fetch(API_ROUTES.workspace, { cache: "no-store" })
-      const data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; latestImport?: LatestImport | null; error?: string }
+      const data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; programmeOptions?: ProgrammeOption[]; latestImport?: LatestImport | null; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load the shared workspace.")
       setAlumni(data.alumni ?? [])
       setCompanyPriorities(data.companyPriorities ?? {})
+      setConfiguredProgrammes(data.programmeOptions ?? [])
       setLatestImport(data.latestImport ?? null)
       setWorkspaceMessage("")
     } catch (error) {
@@ -690,7 +693,8 @@ export default function Home() {
   }
 
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
-  const programmes = useMemo(() => [...new Set(alumni.map(person => person.programme))].sort(), [alumni])
+  const programmeChoices = useMemo(() => programmeFilterOptions(configuredProgrammes, alumni.map(person => person.programme)), [alumni, configuredProgrammes])
+  const activeProgrammeChoices = programmeChoices.filter(option => option.active)
   const activeTargetCompany = companies.includes(targetCompany) ? targetCompany : companies[0] ?? ""
   const filtered = useMemo(() => alumni.filter(person => {
     const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
@@ -725,6 +729,9 @@ export default function Home() {
     && ["Standard engagement allowed", "Birthday engagement allowed"].includes(event.preference)
     && !["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status)
   const reviewableBirthdaysNextWeek = birthdaysNextWeek.filter(birthdayReady)
+  const discoveryMaximum = maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)
+  const discoveryCountPreset = ["1", "5", "10", "20"].includes(discoveryLimit) ? discoveryLimit : "custom"
+  const discoveryCountValidation = validateDiscoveryCount(Number(discoveryLimit), providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)
   const visibleEngagements = engagements.filter(event => {
     if (engagementFilter === "Professional Signals" && event.eventType !== "Professional Signal") return false
     if (engagementFilter === "Birthdays" && event.eventType !== "Birthday") return false
@@ -1340,6 +1347,31 @@ export default function Home() {
     setLastDiscoveryFilters(null)
   }
 
+  function clearDirectoryFilters() {
+    setFilters(defaultDirectoryFilters())
+    setDiscoveryResults([])
+    setDiscoveryCounts({ existing: 0, new: 0, possibleDuplicate: 0, needsReview: 0 })
+    setDiscoveryMessage("")
+    setDiscoveryState("idle")
+    setLastDiscoveryFilters(null)
+    setPendingDiscoveryFilters(null)
+    setDiscoveryRequestedCount(null)
+    setDiscoveryReturnedCount(null)
+    setSelectedDiscoveryIds([])
+  }
+
+  function changeDiscoveryCountPreset(value: string) {
+    if (value === "custom") {
+      if (discoveryCountPreset !== "custom") setDiscoveryLimit("")
+      return
+    }
+    setDiscoveryLimit(value)
+  }
+
+  function discoveryCountControl(actionLabel: string, variant: "default" | "outline" = "default") {
+    return <div className="discovery-count-control"><label><span>Results to retrieve</span><Select value={discoveryCountPreset} onValueChange={changeDiscoveryCountPreset}><SelectTrigger aria-label="Results to retrieve"><SelectValue /></SelectTrigger><SelectContent>{[1, 5, 10, 20].map(value => <SelectItem key={value} value={String(value)} disabled={value > discoveryMaximum}>{value}</SelectItem>)}<SelectItem value="custom">Custom</SelectItem></SelectContent></Select></label>{discoveryCountPreset === "custom" && <label><span>Custom result count</span><Input type="number" inputMode="numeric" min="1" max={discoveryMaximum} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="Custom result count" /></label>}<small>{discoveryCountValidation.ok ? `Maximum currently ${discoveryMaximum}.` : discoveryCountValidation.message}</small><Button title={!discoveryCountValidation.ok ? `Enter a valid count within the ${discoveryMaximum} available PDL application credits.` : undefined} variant={variant} onClick={() => discoverMoreAlumni()} disabled={discovering || !discoveryCountValidation.ok}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {actionLabel}</Button></div>
+  }
+
   function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
     const requested = Number(discoveryLimit)
     const validation = validateDiscoveryCount(requested, providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)
@@ -1710,7 +1742,7 @@ export default function Home() {
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <div className="directory-discovery-action"><label><span>Results to retrieve</span><Input type="number" inputMode="numeric" min="1" max={maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="PDL profiles to retrieve" /></label><div className="result-presets">{[1, 5, 10, 20].map(value => { const maximum = maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100); return <Button key={value} title={value > maximum ? `Requires at least ${value} available PDL application credits; ${maximum} currently available.` : undefined} type="button" size="sm" variant="outline" disabled={value > maximum} onClick={() => setDiscoveryLimit(String(value))}>{value}</Button> })}</div><Button onClick={() => discoverMoreAlumni()} disabled={discovering}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Discover More Alumni</Button></div>}</div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div></div>
               {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
@@ -1720,15 +1752,15 @@ export default function Home() {
                 <Select value={filters.function} onValueChange={value => updateFilter("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Select value={filters.seniority} onValueChange={value => updateFilter("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All seniority</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Input value={filters.location} onChange={event => updateFilter("location", event.target.value)} placeholder="Location" aria-label="Filter by location" />
-                <Button variant="outline" onClick={() => setShowAdvancedFilters(value => !value)}><Filter /> {showAdvancedFilters ? "Fewer filters" : "More filters"}</Button>
-                <Button variant="ghost" onClick={() => { setFilters(defaultDirectoryFilters()); setDiscoveryResults([]); setDiscoveryMessage(""); setDiscoveryState("idle"); setLastDiscoveryFilters(null); setSelectedDiscoveryIds([]) }}>Clear</Button>
+                <Button variant="outline" onClick={() => setShowAdvancedFilters(value => !value)}><Filter /> {showAdvancedFilters ? "Hide advanced filters" : "More filters"}</Button>
+                <Button variant="ghost" onClick={clearDirectoryFilters}>Clear</Button>
               </div>
               {showAdvancedFilters && <div className="advanced-filters">
-                <Select value={filters.programme} onValueChange={value => updateFilter("programme", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{programmes.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={filters.programme} onValueChange={value => updateFilter("programme", value)}><SelectTrigger aria-label="Filter by programme"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{programmeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select>
                 <Input type="number" min="1980" max="2100" value={filters.batch} onChange={event => updateFilter("batch", event.target.value)} placeholder="Batch / graduation year" />
                 <Input value={filters.previousCompany} onChange={event => updateFilter("previousCompany", event.target.value)} placeholder="Previous company" />
-                <Select value={String(filters.minRelevance)} onValueChange={value => updateFilter("minRelevance", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any relevance</SelectItem><SelectItem value="60">Relevance 60+</SelectItem><SelectItem value="75">Relevance 75+</SelectItem><SelectItem value="85">Relevance 85+</SelectItem></SelectContent></Select>
-                <Select value={String(filters.minConfidence)} onValueChange={value => updateFilter("minConfidence", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any confidence</SelectItem><SelectItem value="60">Confidence 60+</SelectItem><SelectItem value="75">Confidence 75+</SelectItem><SelectItem value="90">Confidence 90+</SelectItem></SelectContent></Select>
+                <Select value={String(filters.minRelevance)} onValueChange={value => updateFilter("minRelevance", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Placement Relevance</SelectItem><SelectItem value="60">Placement Relevance 60+</SelectItem><SelectItem value="75">Placement Relevance 75+</SelectItem><SelectItem value="85">Placement Relevance 85+</SelectItem></SelectContent></Select>
+                <Select value={String(filters.minConfidence)} onValueChange={value => updateFilter("minConfidence", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Data Confidence</SelectItem><SelectItem value="60">Data Confidence 60+</SelectItem><SelectItem value="75">Data Confidence 75+</SelectItem><SelectItem value="90">Data Confidence 90+</SelectItem></SelectContent></Select>
                 <Select value={filters.contactStatus} onValueChange={value => updateFilter("contactStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["All contact states", "Contact-ready", "Partially verified", "Needs verification", "Mismatch"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Select value={filters.outreachStatus} onValueChange={value => updateFilter("outreachStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All outreach states">All outreach states</SelectItem>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Select value={filters.relationship} onValueChange={value => updateFilter("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All relationships">All IIML relationships</SelectItem>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select>
@@ -1737,8 +1769,10 @@ export default function Home() {
                 <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                 <TableBody>{filtered.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person, "directory")}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
               </Table>
-              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Search external professional data while keeping the IIM Lucknow education criterion fixed." : "No authorized records match the selected filters."}</p>{session.canOperate && <Button onClick={() => discoverMoreAlumni()} disabled={discovering}>Discover More Alumni</Button>}</div>}
+              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Adjust or clear the internal filters, or use the separate external discovery area below." : "No authorized records match the selected filters."}</p></div>}
             </section>
+
+            {session.canOperate && <section className="panel directory-external-discovery"><div><p className="eyebrow">External discovery</p><h2>Need more alumni?</h2><span>Search external professional data for additional IIM Lucknow alumni. Internal directory filters never call a provider.</span></div>{discoveryCountControl("Discover More Alumni")}</section>}
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">
@@ -1748,7 +1782,7 @@ export default function Home() {
               {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Company</span><strong>{lastDiscoveryFilters.company}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.batch || "Any year"}</strong></div><div><span>Results requested / returned</span><strong>{discoveryRequestedCount ?? discoveryLimit} / {discoveryReturnedCount ?? discoveryResults.length}</strong></div></div>}
               <div className="discovery-controls">
                 <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
-                <div className="result-limit"><span>Results to retrieve</span><Input type="number" inputMode="numeric" min="1" max={maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="Custom PDL profile count" /><div className="result-presets">{[1, 5, 10, 20].map(value => <Button key={value} type="button" size="sm" variant={discoveryLimit === String(value) ? "default" : "outline"} disabled={value > maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)} onClick={() => setDiscoveryLimit(String(value))}>{value}</Button>)}</div><small>Whole numbers only · maximum currently {maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)}</small><Button variant="outline" onClick={() => discoverMoreAlumni()} disabled={discovering}>Run again</Button></div>
+                {discoveryCountControl("Run again", "outline")}
               </div>
               <div className="credit-notice"><Activity /><span>External discovery may consume PDL credits based on the number of person records returned. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
@@ -1876,7 +1910,7 @@ export default function Home() {
                 </div>
               </article>
 
-              <article className="panel manual-entry-card"><div className="manual-entry-icon"><Plus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><Plus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
+              <article className="panel manual-entry-card"><div className="manual-entry-icon"><Plus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualForm(current => ({ ...current, programme: activeProgrammeChoices.some(option => option.value === current.programme) ? current.programme : activeProgrammeChoices[0]?.value ?? "" })); setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><Plus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
 
               <aside className="panel database-panel">
                 <div className="database-hero"><Database /><div><p className="eyebrow">Central data state</p><h2>{alumni.length} alumni records</h2><span>{companies.length} companies in one shared workspace</span></div></div>
@@ -2037,7 +2071,7 @@ export default function Home() {
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
         <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? `The record is now in ${appConfig.name}. Provider actions remain optional.` : "Enter what is known. Name plus an email, profile URL, or company and graduation year is required."}</DialogDescription></DialogHeader>
           {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via PDL</Button>{providerModes.lusha === "live" ? <Button variant="outline" onClick={() => { setManualOpen(false); prepareLushaEmail(manualSaved) }}>Prepare Email Reveal</Button> : <><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></>}</div></div> : <div className="manual-form">
-            <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Input value={manualForm.programme} onChange={event => updateManualField("programme", event.target.value)} /></label><label><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
+            <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Select value={manualForm.programme} onValueChange={value => updateManualField("programme", value)}><SelectTrigger><SelectValue placeholder="Select programme" /></SelectTrigger><SelectContent>{activeProgrammeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label><label><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
             <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
             <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML / Placement Committee relationship</span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
             {manualMessage && <div className="manual-message">{manualMessage}</div>}

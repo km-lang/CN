@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns } from "@/db/schema";
+import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns, programmeOptions } from "@/db/schema";
 import type { ApplicationRole } from "@/lib/access-types";
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
@@ -241,12 +241,13 @@ export async function GET(request: Request) {
   try {
     const context = await authorizeRequest(request, "VIEW_ALUMNI");
     const db = getDb();
-    const [alumniRows, priorityRows, latestImports, privacyRows, lifecycleRows] = await Promise.all([
+    const [alumniRows, priorityRows, latestImports, privacyRows, lifecycleRows, programmeRows] = await Promise.all([
       db.select().from(alumni).orderBy(alumni.name),
       db.select().from(companyPriorities).orderBy(companyPriorities.company),
       db.select().from(importRuns).orderBy(desc(importRuns.createdAt), desc(importRuns.id)).limit(1),
       db.select().from(alumniPrivacyControls),
       db.select().from(alumniDataLifecycle),
+      db.select().from(programmeOptions).orderBy(programmeOptions.sortOrder, programmeOptions.name),
     ]);
     const privacyByAlumnus = new Map(privacyRows.map(row => [row.alumnusId, row]));
     const lifecycleByAlumnus = new Map(lifecycleRows.map(row => [row.alumnusId, row]));
@@ -254,6 +255,7 @@ export async function GET(request: Request) {
       alumni: alumniRows.map(row => toApiAlumnus(row, context.role, privacyByAlumnus.get(row.id), lifecycleByAlumnus.get(row.id))),
       companyPriorities: Object.fromEntries(priorityRows.map(row => [row.company, row.priority])),
       latestImport: latestImports[0] ?? null,
+      programmeOptions: programmeRows,
       access: { role: context.role, contactsMasked: !hasPermission(context.role, "VIEW_CONTACTS") },
     });
   } catch (error) {

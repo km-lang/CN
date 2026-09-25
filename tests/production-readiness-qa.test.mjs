@@ -28,8 +28,10 @@ test("persisted profile selections update visually before the network request", 
 })
 
 test("rapid persisted selections ignore stale responses and retain saving state until all requests settle", () => {
-  assert.match(page, /mutationGenerationRef = useRef\(new Map<string, number>\(\)\)/)
-  assert.match(page, /isLatestMutation\(mutationKey, generation\)/)
+  assert.match(page, /persistedMutationsRef = useRef\(new PersistedMutationCoordinator\(\)\)/)
+  assert.match(page, /persistedMutationsRef\.current\.run\(mutationKey/)
+  assert.match(page, /result\.ok && result\.latest/)
+  assert.match(page, /!result\.ok && result\.latest/)
   assert.match(page, /pendingSyncCountRef\.current \+= 1/)
   assert.match(page, /setSyncing\(pendingSyncCountRef\.current > 0\)/)
   assert.doesNotMatch(functionBody(page, "saveAlumnus", "updateStatus"), /loadWorkspace\(/)
@@ -38,10 +40,10 @@ test("rapid persisted selections ignore stale responses and retain saving state 
 test("admin role and lifecycle selections are optimistic and roll back on failure", () => {
   const role = functionBody(admin, "updateUserRole", "updateLifecycle")
   const lifecycle = functionBody(admin, "updateLifecycle", "authorizeUser")
-  assert.ok(role.indexOf("setData(") < role.indexOf("await action("))
-  assert.match(role, /if \(!saved\) setData/)
-  assert.ok(lifecycle.indexOf("setLifecycleDrafts(") < lifecycle.indexOf("await action("))
-  assert.match(lifecycle, /if \(!saved\) setLifecycleDrafts/)
+  assert.ok(role.indexOf("setData(") < role.indexOf("await persistedMutationsRef.current.run("))
+  assert.match(role, /result\.ok \? result\.value : result\.rollback/)
+  assert.ok(lifecycle.indexOf("setLifecycleDrafts(") < lifecycle.indexOf("await persistedMutationsRef.current.run("))
+  assert.match(lifecycle, /result\.ok \? result\.value : result\.rollback/)
 })
 
 test("live readiness copy never claims enabled Signals or mail remain off", () => {

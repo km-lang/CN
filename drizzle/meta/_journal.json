@@ -71,6 +71,13 @@
       "when": 1789387413219,
       "tag": "0009_shiny_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790337785329,
+      "tag": "0010_clean_revanche",
+      "breakpoints": true
     }
   ]
 }

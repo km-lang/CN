@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { apiPath } from "@/lib/app-config"
 import type { ApplicationRole } from "@/lib/access-types"
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
+import type { ProgrammeOption } from "@/lib/programme-options"
 
 type AdminIdentity = { id: number; provider: "google_workspace" | "chatgpt"; verifiedEmail: string; providerDomain: string; lastAuthenticatedAt: string }
 type AdminUser = { id: number; externalIdentity: string; displayName: string; email: string; role: ApplicationRole; enabled: boolean; createdAt: string; updatedAt: string; lastLoginAt: string; identities: AdminIdentity[] }
@@ -20,7 +21,7 @@ type OperationalReadiness = {
   signals: { implementationStatus: string; liveEnabled: boolean; entitlement: "unknown" | "confirmed" | "not_entitled"; lastVerifiedAt: string; verificationSource: string }
   mail: { mode: string; liveEnabled: boolean; provider: string; senderConfigured: boolean; oauthConfigured: boolean; sendPermissionConfigured: boolean; lastValidationStatus: string; lastValidatedAt: string; validationSource: string; validationReason?: string; scopeVerified?: boolean | null }
 }
-type AdminData = { users: AdminUser[]; audit: AuditEvent[]; operationalReadiness?: OperationalReadiness }
+type AdminData = { users: AdminUser[]; audit: AuditEvent[]; programmeOptions?: ProgrammeOption[]; operationalReadiness?: OperationalReadiness }
 type SignalsEntitlementValidation = {
   entitlement: "confirmed" | "not_entitled" | "unknown"
   outcome: string
@@ -86,6 +87,8 @@ type MockCleanupResult = {
 export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: string; lifecycle?: string }> }) {
   const [data, setData] = useState<AdminData>({ users: [], audit: [] })
   const [form, setForm] = useState({ displayName: "", email: "", role: "PCOM" as ApplicationRole })
+  const [programmeForm, setProgrammeForm] = useState({ code: "", name: "" })
+  const [programmeNameDrafts, setProgrammeNameDrafts] = useState<Record<number, string>>({})
   const [message, setMessage] = useState("")
   const [loading, setLoading] = useState(false)
   const [anonymizeId, setAnonymizeId] = useState<number | null>(null)
@@ -189,6 +192,17 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       return false
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function addProgramme() {
+    if (await action({ action: "add_programme", ...programmeForm })) setProgrammeForm({ code: "", name: "" })
+  }
+
+  async function renameProgramme(programme: ProgrammeOption) {
+    const name = (programmeNameDrafts[programme.id] ?? programme.name).trim()
+    if (await action({ action: "rename_programme", programmeId: programme.id, name })) {
+      setProgrammeNameDrafts(current => { const next = { ...current }; delete next[programme.id]; return next })
     }
   }
 
@@ -307,6 +321,12 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       <div className="admin-add-user"><Input placeholder="Display name" value={form.displayName} onChange={event => { setForm({ ...form, displayName: event.target.value }); setSimilarEmailWarning(null) }} /><Input type="email" placeholder="Institutional email" value={form.email} onChange={event => { setForm({ ...form, email: event.target.value }); setSimilarEmailWarning(null) }} /><Select value={form.role} onValueChange={role => setForm({ ...form, role: role as ApplicationRole })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem><SelectItem value="ADMIN">Admin</SelectItem></SelectContent></Select><Button title={!form.email ? "Enter an institutional email address first." : loading ? "Another administration change is still saving." : undefined} disabled={loading || !form.email} onClick={() => void authorizeUser()}><UserPlus /> Authorize</Button></div>
       {similarEmailWarning && <div className="admin-similar-warning"><div><strong>Possible similar authorized user found:</strong><span>{similarEmailWarning.similarUser.email}</span><strong>You entered:</strong><span>{similarEmailWarning.enteredEmail}</span><small>Review the address carefully. This warning does not automatically block authorization.</small></div><div><Button variant="outline" disabled={loading} onClick={() => void authorizeUser(true)}>Continue anyway</Button><Button variant="ghost" disabled={loading} onClick={() => setSimilarEmailWarning(null)}>Cancel</Button></div></div>}
       <Table><TableHeader><TableRow><TableHead>User</TableHead><TableHead>Linked sign-in</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Last login</TableHead><TableHead>Action</TableHead></TableRow></TableHeader><TableBody>{data.users.map(user => { const roleMutationKey = `user:${user.id}:role`; return <TableRow key={user.id}><TableCell><strong>{user.displayName}</strong><small className="review-status">{user.email}</small></TableCell><TableCell>{user.identities.length ? user.identities.map(identity => <span key={identity.id} className="identity-provider">{identity.provider === "google_workspace" ? "Institutional Google" : "ChatGPT recovery"}<small>{identity.verifiedEmail}</small></span>) : <span className="review-status">Pending first sign-in</span>}</TableCell><TableCell><Select value={user.role} onValueChange={role => void updateUserRole(user, role as ApplicationRole)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ADMIN">Admin</SelectItem><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem></SelectContent></Select>{pendingMutationKeys.has(roleMutationKey) && <small className="review-status">Saving latest role…</small>}</TableCell><TableCell><span className={`history-status ${user.enabled ? "history-success" : "history-blocked"}`}>{user.enabled ? "Active" : "Disabled"}</span></TableCell><TableCell>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "Not signed in"}</TableCell><TableCell><Button title={loading ? "Another administration change is still saving." : undefined} size="sm" variant="outline" disabled={loading} onClick={() => void action({ action: "set_user_status", userId: user.id, enabled: !user.enabled })}>{user.enabled ? "Disable" : "Enable"}</Button></TableCell></TableRow> })}</TableBody></Table>
+    </section>
+
+    <section className="panel admin-section">
+      <div className="panel-heading"><div><h2>Programme reference data</h2><span>Active programmes are available for future selection. Deactivation preserves historical alumni values.</span></div></div>
+      <div className="admin-programme-add"><Input aria-label="New programme code" placeholder="Code, e.g. PGPWE" value={programmeForm.code} onChange={event => setProgrammeForm(current => ({ ...current, code: event.target.value }))} /><Input aria-label="New programme name" placeholder="Programme name" value={programmeForm.name} onChange={event => setProgrammeForm(current => ({ ...current, name: event.target.value }))} /><Button disabled={loading || !programmeForm.code.trim() || !programmeForm.name.trim()} onClick={() => void addProgramme()}><UserPlus /> Add programme</Button></div>
+      <Table><TableHeader><TableRow><TableHead>Code</TableHead><TableHead>Display name</TableHead><TableHead>Availability</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>{(data.programmeOptions ?? []).map(programme => <TableRow key={programme.id}><TableCell><strong>{programme.code}</strong></TableCell><TableCell><Input aria-label={`Programme name for ${programme.code}`} value={programmeNameDrafts[programme.id] ?? programme.name} onChange={event => setProgrammeNameDrafts(current => ({ ...current, [programme.id]: event.target.value }))} /></TableCell><TableCell><span className={`history-status ${programme.active ? "history-success" : "history-blocked"}`}>{programme.active ? "Active" : "Inactive"}</span></TableCell><TableCell><div className="programme-actions"><Button size="sm" variant="outline" disabled={loading || !(programmeNameDrafts[programme.id] ?? programme.name).trim() || (programmeNameDrafts[programme.id] ?? programme.name).trim() === programme.name} onClick={() => void renameProgramme(programme)}>Save name</Button><Button size="sm" variant="ghost" disabled={loading} onClick={() => void action({ action: "set_programme_status", programmeId: programme.id, active: !programme.active })}>{programme.active ? "Deactivate" : "Reactivate"}</Button></div></TableCell></TableRow>)}</TableBody></Table>
     </section>
 
     <section className="panel admin-section">

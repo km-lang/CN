@@ -24,6 +24,7 @@ import {
   providerRefreshReviews,
   providerResponseHistory,
   providerSettings,
+  programmeOptions,
   securityAuditEvents,
 } from "@/db/schema"
 import { InvalidEmailError, isLikelyInstitutionalEmailTypo, normalizeEmail } from "@/lib/email-identity"
@@ -33,6 +34,7 @@ import { mailConfiguration, mailRuntimeStatus, validateGmailConnectivity } from 
 import { providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/provider-runtime"
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
 import { safeAuditMetadata } from "@/lib/security-policy"
+import { normaliseProgrammeCode } from "@/lib/programme-options"
 
 function clean(value: unknown, max = 500) {
   return String(value ?? "").trim().slice(0, max)
@@ -122,19 +124,21 @@ export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_USERS")
     const db = getDb()
-    const [users, identities, audit, lifecycle, providerLimits, mailValidationRows] = await Promise.all([
+    const [users, identities, audit, lifecycle, providerLimits, mailValidationRows, programmes] = await Promise.all([
       db.select().from(applicationUsers).orderBy(applicationUsers.displayName),
       db.select({ id: applicationIdentities.id, applicationUserId: applicationIdentities.applicationUserId, provider: applicationIdentities.provider, verifiedEmail: applicationIdentities.verifiedEmail, providerDomain: applicationIdentities.providerDomain, lastAuthenticatedAt: applicationIdentities.lastAuthenticatedAt }).from(applicationIdentities).orderBy(applicationIdentities.provider),
       db.select().from(securityAuditEvents).orderBy(desc(securityAuditEvents.createdAt), desc(securityAuditEvents.id)).limit(200),
       db.select().from(alumniDataLifecycle).orderBy(desc(alumniDataLifecycle.updatedAt)),
       db.select().from(providerSettings).orderBy(providerSettings.provider),
       db.select().from(securityAuditEvents).where(eq(securityAuditEvents.action, "gmail_connectivity_validated")).orderBy(desc(securityAuditEvents.createdAt), desc(securityAuditEvents.id)).limit(1),
+      db.select().from(programmeOptions).orderBy(programmeOptions.sortOrder, programmeOptions.name),
     ])
     return Response.json({
       users: users.map(user => ({ ...user, identities: identities.filter(identity => identity.applicationUserId === user.id) })),
       audit,
       lifecycle,
       providerLimits,
+      programmeOptions: programmes,
       operationalReadiness: {
         pdl: { mode: providerMode("pdl"), configured: providerConfigured("pdl") },
         lushaContacts: { mode: providerMode("lusha"), configured: providerConfigured("lusha") },
@@ -152,7 +156,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_USERS")
-    const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean }
+    const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean; programmeId?: number; code?: string; name?: string; active?: boolean }
     const db = getDb()
     const now = new Date().toISOString()
 
@@ -279,6 +283,31 @@ export async function POST(request: Request) {
           foreignKeys,
         },
       })
+    }
+
+    if (payload.action === "add_programme") {
+      const code = normaliseProgrammeCode(payload.code)
+      const name = clean(payload.name || code, 100)
+      if (!code || !name) return Response.json({ error: "Enter a programme code and name." }, { status: 400 })
+      const [existing] = await db.select().from(programmeOptions).where(eq(programmeOptions.code, code)).limit(1)
+      if (existing) return Response.json({ error: "That programme code already exists." }, { status: 409 })
+      const [last] = await db.select().from(programmeOptions).orderBy(desc(programmeOptions.sortOrder)).limit(1)
+      const [programme] = await db.insert(programmeOptions).values({ code, name, active: true, sortOrder: (last?.sortOrder ?? 0) + 10, updatedBy: context.displayName, updatedAt: now }).returning()
+      await writeSecurityAudit(context, { action: "programme_added", entityType: "programme_option", entityId: programme.id, metadata: { code, name } })
+      return Response.json({ programme }, { status: 201 })
+    }
+
+    if ((payload.action === "rename_programme" || payload.action === "set_programme_status") && Number.isInteger(payload.programmeId)) {
+      const id = payload.programmeId!
+      const [existing] = await db.select().from(programmeOptions).where(eq(programmeOptions.id, id)).limit(1)
+      if (!existing) return Response.json({ error: "Programme option not found." }, { status: 404 })
+      const changes = payload.action === "rename_programme"
+        ? { name: clean(payload.name, 100), updatedBy: context.displayName, updatedAt: now }
+        : { active: Boolean(payload.active), updatedBy: context.displayName, updatedAt: now }
+      if (payload.action === "rename_programme" && !changes.name) return Response.json({ error: "Enter a programme name." }, { status: 400 })
+      const [programme] = await db.update(programmeOptions).set(changes).where(eq(programmeOptions.id, id)).returning()
+      await writeSecurityAudit(context, { action: payload.action === "rename_programme" ? "programme_renamed" : programme.active ? "programme_activated" : "programme_deactivated", entityType: "programme_option", entityId: id, metadata: { code: existing.code, before: existing.name, after: programme.name, active: programme.active } })
+      return Response.json({ programme })
     }
 
     if (payload.action === "authorize_user") {

@@ -64,6 +64,19 @@ export const companyPriorities = sqliteTable("company_priorities", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const programmeOptions = sqliteTable("programme_options", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  updatedBy: text("updated_by").notNull().default("System"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_programme_options_code").on(table.code),
+]);
+
 export const importRuns = sqliteTable("import_runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   filename: text("filename").notNull(),
