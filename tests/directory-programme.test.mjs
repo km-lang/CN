@@ -61,7 +61,7 @@ test("Clear resets all directory and discovery state without a provider request"
 })
 
 test("Directory copy separates internal filtering from explicit external discovery", () => {
-  assert.match(page, /Internal results/)
+  assert.match(page, /Internal alumni directory/i)
   assert.match(page, /Need more alumni\?/)
   assert.match(page, /Internal directory filters never call a provider/)
   assert.match(page, /Any Data Confidence/)

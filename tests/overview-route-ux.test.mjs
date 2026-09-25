@@ -8,6 +8,7 @@ const routeApi = await readFile(new URL("../app/api/outreach-route/route.ts", im
 const fixture = await readFile(new URL("../scripts/local-development-fixture.sql", import.meta.url), "utf8")
 
 test("shared navigation exposes an obvious compact sticky active state", () => {
+  assert.match(styles, /\.product-tabs\s*\{\s*display:\s*contents;/)
   assert.match(styles, /\.main-tabs\s*\{[^}]*position:\s*sticky[^}]*box-shadow:/s)
   assert.match(styles, /\.main-tabs \[data-slot="tabs-trigger"\]\[data-state="active"\]\s*\{[^}]*color:\s*#8c1d2c/s)
   assert.match(styles, /\.main-tabs \[data-slot="tabs-trigger"\]\[data-state="active"\]::after/)
@@ -30,8 +31,8 @@ test("Overview birthday zero state is compact and reports ready-for-review work"
 })
 
 test("Overview uses one searchable target selector and deterministic ranking", () => {
-  assert.match(page, /role="combobox"/)
-  assert.match(page, /list="overview-target-alumni"/)
+  assert.match(page, /<AlumnusCombobox options=\{targetAlumni}/)
+  assert.doesNotMatch(page, /overview-target-alumni|<datalist id="overview-target-alumni"/)
   assert.match(page, /Top alumni for outreach/)
   assert.match(page, /a\.name\.localeCompare\(b\.name\)/)
   assert.doesNotMatch(page, /Who do you want to reach\?/)
@@ -60,5 +61,6 @@ test("route explanation and profile actions use business language and stored evi
 test("KPI help reflects the shared implemented definitions", () => {
   assert.match(page, /Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone/)
   assert.match(page, /Includes shared outreach states Contacted, Responded, and Meeting set/)
-  assert.match(page, /const activeOutreach = alumni\.filter\(person => person\.status !== "Not contacted"\)/)
+  assert.match(page, /const activeOutreach = alumni\.filter\(person => isActiveOutreach\(person\.status\)\)/)
+  assert.match(page, /<TooltipTrigger asChild>/)
 })

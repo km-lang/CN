@@ -6,7 +6,7 @@ import {
   CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, Cloud, ContactRound,
   Database, Download, Eye, FileSpreadsheet, Filter, GitCompare, History, LoaderCircle,
   Mail, MapPin, MessageSquare, Network, Plus, Search, Send, Sparkles, Target, Upload,
-  UserRoundCheck, UsersRound, XCircle, Zap,
+  Info, UserRoundCheck, UsersRound, XCircle, Zap,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { AlumnusCombobox } from "@/components/alumnus-combobox"
 import { AdminPanel } from "@/app/admin-panel"
 import { useAccessSession } from "@/app/access-provider"
 import {
@@ -34,6 +36,7 @@ import { alumnusProfileUrl, canonicalWorkspaceUrl, controlledEmailReturnUrl, con
 import { initializeControlledEmail } from "@/lib/controlled-email-initialization"
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 import { programmeFilterOptions, type ProgrammeOption } from "@/lib/programme-options"
+import { contactReadiness, isActiveOutreach } from "@/lib/alumni-metrics"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -324,13 +327,7 @@ function relevanceBreakdown(person: Alumni, priorities: Record<string, string>, 
 }
 
 function operationalStatus(person: Alumni) {
-  const fields = person.verification
-  if (fields.profileMatch === "Mismatch") return "Mismatch"
-  const profileReliable = fields.profileMatch === "Confirmed" && fields.currentCompany === "Verified" && ["Verified", "Likely"].includes(fields.designation)
-  const verifiedChannel = fields.email === "Verified" || fields.phone === "Verified"
-  if (profileReliable && verifiedChannel) return "Contact-ready"
-  if (fields.profileMatch === "Confirmed" && (profileReliable || verifiedChannel)) return "Partially verified"
-  return "Needs verification"
+  return contactReadiness(person.verification)
 }
 
 function scoreTone(score: number) {
@@ -385,7 +382,7 @@ function contactDataLabel(person: Alumni, channel: "email" | "phone") {
 }
 
 function StatCard({ icon: Icon, label, value, delta, help }: { icon: typeof UsersRound; label: string; value: string; delta: string; help?: string }) {
-  return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span title={help}>{delta}{help ? " ⓘ" : ""}</span></div></article>
+  return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span>{delta}{help && <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" className="kpi-help" aria-label={`What ${label} means`}><Info aria-hidden="true" /></button></TooltipTrigger><TooltipContent side="bottom" className="kpi-help-content">{help}</TooltipContent></Tooltip></TooltipProvider>}</span></div></article>
 }
 
 function parseCsv(content: string) {
@@ -490,7 +487,6 @@ export default function Home() {
   const [responseNotes, setResponseNotes] = useState("")
   const [followUpDate, setFollowUpDate] = useState("")
   const [birthdayCorrection, setBirthdayCorrection] = useState("")
-  const [targetSearch, setTargetSearch] = useState("")
   const [targetAlumnusId, setTargetAlumnusId] = useState<number | null>(null)
   const [routeRecommendation, setRouteRecommendation] = useState<RouteRecommendation | null>(null)
   const [routeLoading, setRouteLoading] = useState(false)
@@ -703,8 +699,7 @@ export default function Home() {
 
   const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score || a.name.localeCompare(b.name)).slice(0, 5)
   const targetAlumni = alumni.filter(person => person.company === activeTargetCompany).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
-  const targetOptions = targetAlumni.filter(person => !targetSearch || `${person.name} ${person.title}`.toLowerCase().includes(targetSearch.toLowerCase()))
-  const activeOutreach = alumni.filter(person => person.status !== "Not contacted").length
+  const activeOutreach = alumni.filter(person => isActiveOutreach(person.status)).length
   const contactReadyCount = alumni.filter(person => operationalStatus(person) === "Contact-ready").length
   const today = new Date().toISOString().slice(0, 10)
   const tomorrowDate = new Date(); tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1)
@@ -759,14 +754,8 @@ export default function Home() {
     setRouteMessage("")
   }
 
-  function targetOptionLabel(person: Alumni) {
-    return `${person.name} — ${person.title}`
-  }
-
-  function changeTargetQuery(value: string) {
-    setTargetSearch(value)
-    const exact = targetAlumni.find(person => targetOptionLabel(person).toLowerCase() === value.trim().toLowerCase())
-    setTargetAlumnusId(exact?.id ?? null)
+  function selectTargetAlumnus(id: number | null) {
+    setTargetAlumnusId(id)
     setRouteRecommendation(null)
     setRouteMessage("")
   }
@@ -1735,14 +1724,14 @@ export default function Home() {
 
             {session.canOperate && <section className="panel route-panel route-planner">
               <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div></div>
-              <div className="route-controls route-controls-overview"><label><span>Target company</span><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue placeholder="No mapped companies" /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><label><span>Target alumnus</span><Input role="combobox" aria-expanded="false" list="overview-target-alumni" value={targetSearch} onChange={event => changeTargetQuery(event.target.value)} placeholder="Search or select an alumnus..." /><datalist id="overview-target-alumni">{targetAlumni.map(person => <option key={person.id} value={targetOptionLabel(person)} />)}</datalist></label><Button title={!targetAlumnusId ? "Select a target alumnus from the suggestions first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
+              <div className="route-controls route-controls-overview"><label><span>Target company</span><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue placeholder="No mapped companies" /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><AlumnusCombobox options={targetAlumni} value={targetAlumnusId} onValueChange={selectTargetAlumnus} /><Button title={!targetAlumnusId ? "Select a target alumnus from the suggestions first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
               {routeMessage && <p className="route-message">{routeMessage}</p>}
             </section>}
           </TabsContent>
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal results</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div></div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal alumni directory</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div></div>
               {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
                 <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
@@ -1826,7 +1815,7 @@ export default function Home() {
                 <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(targetAlumni.length, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
               </article>
               <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? targetAlumni.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="contact-card" onClick={() => openAlumnusProfile(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em>{person.assessment.iimlRelationship} IIML relationship</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> }) : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
-              {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Route for a specific alumnus</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Search by name or role" aria-label="Search target alumni" /><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select><Button title={!targetAlumnusId ? "Select a target alumnus first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {activeTargetCompany} before requesting a route.</small>}</article>}
+              {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Plan outreach</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><AlumnusCombobox options={targetAlumni} value={targetAlumnusId} onValueChange={selectTargetAlumnus} /><Button title={!targetAlumnusId ? "Select a target alumnus first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {activeTargetCompany} before requesting a route.</small>}</article>}
               <article className="panel account-history"><div className="panel-heading"><div><p className="eyebrow">Institutional memory</p><h2>Account history</h2></div></div><div className="empty-state"><History /><h3>No company engagement recorded</h3><p>Verified outreach and placement history will appear here when it is added.</p></div></article>
             </section>}
           </TabsContent>

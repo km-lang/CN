@@ -63,7 +63,7 @@ button { cursor: pointer; }
 .page-heading { display: flex; justify-content: space-between; align-items: end; gap: 2rem; margin-bottom: .9rem; }
 .page-heading h1 { font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 3.2vw, 3.4rem); line-height: 1.05; letter-spacing: -.045em; margin: .3rem 0 0; max-width: 800px; color: #0b2235; }
 .eyebrow { margin: 0; color: #8c1d2c; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; font-size: .72rem; }
-.product-tabs { gap: 0; }
+.product-tabs { display: contents; }
 .main-tabs { position: sticky; top: 0; z-index: 30; width: 100%; justify-content: flex-start; border-bottom: 1px solid #cbd5dc; overflow-x: auto; border-radius: 0; padding: .2rem 0 0; background: color-mix(in srgb, var(--background) 96%, transparent); box-shadow: 0 6px 14px #0b22350a; backdrop-filter: blur(10px); }
 .main-tabs [data-slot="tabs-trigger"] { flex: 0 0 auto; padding: .75rem 1.1rem; font-size: .9rem; }
 .main-tabs [data-slot="tabs-trigger"][data-state="active"] { color: #8c1d2c; font-weight: 800; }
@@ -78,6 +78,10 @@ button { cursor: pointer; }
 .stat-card p { font-size: .8rem; color: #647483; font-weight: 700; }
 .stat-card strong { font-size: 1.65rem; line-height: 1.1; margin: .2rem 0; letter-spacing: -.035em; }
 .stat-card span { font-size: .75rem; color: #738391; }
+.kpi-help { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-left: .25rem; padding: 0; border: 0; border-radius: 50%; color: #536b7a; background: transparent; vertical-align: middle; }
+.kpi-help:hover, .kpi-help:focus-visible { color: #8c1d2c; background: #f2e5e8; outline: 2px solid #9e3341; outline-offset: 1px; }
+.kpi-help svg { width: 14px; height: 14px; }
+.kpi-help-content { max-width: 320px; line-height: 1.45; }
 .panel { border-radius: 16px; }
 .overview-grid { display: grid; grid-template-columns: 1.65fr .75fr; gap: 1rem; margin-top: 1rem; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.35rem; border-bottom: 1px solid #e3e8ec; }
@@ -596,10 +600,26 @@ button { cursor: pointer; }
 .route-controls-overview { grid-template-columns: minmax(220px, .8fr) minmax(300px, 1.4fr) auto; }
 .route-controls label, .dialog-field { display: grid; gap: .32rem; }
 .route-controls label > span, .dialog-field > span { color: #526674; font-size: .75rem; font-weight: 800; }
+.alumnus-combobox-field { display: grid; gap: .32rem; min-width: 0; }
+.alumnus-combobox-field > span { color: #526674; font-size: .75rem; font-weight: 800; }
+.alumnus-combobox-trigger { width: 100%; justify-content: space-between; overflow: hidden; background: white; }
+.alumnus-combobox-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alumnus-combobox-content { width: var(--radix-popover-trigger-width); min-width: 280px; padding: .45rem; }
+.alumnus-combobox-search { position: relative; }
+.alumnus-combobox-search > svg { position: absolute; left: .65rem; top: 50%; width: 15px; transform: translateY(-50%); color: #71818e; z-index: 1; }
+.alumnus-combobox-search input { padding-left: 2rem; }
+.alumnus-combobox-options { display: grid; max-height: 260px; overflow-y: auto; margin-top: .35rem; }
+.alumnus-combobox-options button { display: flex; align-items: center; justify-content: space-between; gap: .7rem; width: 100%; padding: .62rem .65rem; border: 0; border-radius: 8px; color: #223846; background: transparent; text-align: left; }
+.alumnus-combobox-options button:hover, .alumnus-combobox-options button:focus-visible { background: #f2f5f7; outline: none; }
+.alumnus-combobox-options strong, .alumnus-combobox-options small { display: block; }
+.alumnus-combobox-options strong { font-size: .8rem; }
+.alumnus-combobox-options small { margin-top: .12rem; color: #71818e; font-size: .7rem; }
+.alumnus-combobox-options button > svg { width: 15px; color: #8c1d2c; flex: 0 0 auto; }
+.alumnus-combobox-options > p { margin: 0; padding: .8rem; color: #71818e; font-size: .76rem; text-align: center; }
 .route-controls button { min-height: 40px; }
 .route-message { margin: 0 1.35rem 1rem; color: #8c1d2c; font-size: .78rem; }
 .company-route-card { display: grid; align-content: start; gap: .65rem; padding-bottom: 1.1rem; }
-.company-route-card > input, .company-route-card > [data-slot="select-trigger"], .company-route-card > button, .company-route-card > small { margin-inline: 1.15rem; width: auto; }
+.company-route-card > .alumnus-combobox-field, .company-route-card > button, .company-route-card > small { margin-inline: 1.15rem; width: auto; }
 .company-route-card > small { color: #7b8994; font-size: .72rem; }
 .profile-route-button { width: 100%; margin-top: .75rem; }
 .route-dialog { width: min(920px, calc(100vw - 3rem)) !important; max-width: 920px !important; overflow-x: hidden; }
