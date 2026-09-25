@@ -361,7 +361,7 @@ export async function PATCH(request: Request) {
     if (payload.action === "update_data_quality" && Number.isInteger(payload.id)) {
       const context = await authorizeRequest(request, "OPERATE_PCOM");
       const actor = context.displayName;
-      const allowed = new Set(["Needs assessment", "Current", "Conflict — manual verification required", "Manually verified"]);
+      const allowed = new Set(["Needs assessment", "Reviewed", "Current", "Conflict — manual verification required", "Manually verified"]);
       const professionalDataStatus = allowed.has(text(payload.professionalDataStatus)) ? text(payload.professionalDataStatus) : "Needs assessment";
       const professionalDataNote = text(payload.professionalDataNote).slice(0, 1000);
       const [updated] = await db.update(alumni).set({ professionalDataStatus, professionalDataNote, updatedBy: actor, updatedAt: now }).where(eq(alumni.id, payload.id!)).returning();
