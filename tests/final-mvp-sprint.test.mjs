@@ -196,11 +196,11 @@ function signalsRuntime() {
 }
 
 test("final readiness supports any selected alumnus and reports missing stable identity", () => {
-  assert.match(page, /Select approved alumnus/)
-  assert.match(page, /Stable Lusha ID available/)
+  assert.match(page, /Alumnus with a verified Lusha identity/)
+  assert.match(page, /<AlumnusCombobox[^>]+options=\{alumni\}/)
   assert.match(page, /Lusha contact identity required before Professional Signals can be checked/)
   assert.doesNotMatch(page, /person\.name === "Sahil Bansal"/)
-  assert.match(page, /signalsActive && <Button/)
+  assert.match(page, /disabled=\{!signalsActive \|\| !signalsTarget\?\.lushaPersonId\}/)
 })
 
 test("final readiness Admin alone sees component-level operational status", () => {

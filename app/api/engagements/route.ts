@@ -18,7 +18,7 @@ import { createMailDraft, mailConfiguration, mailMode, sendMail } from "@/lib/ma
 import { reusableManualEmailEvent } from "@/lib/controlled-email-draft";
 import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
 
-const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Skipped"]);
+const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Completed", "Skipped"]);
 const actionableBirthdayStates = new Set(["Confirmed internally", "Manually confirmed", "PDL sourced"]);
 
 async function audit(eventId: number, context: SecurityContext, action: string, details = "") {

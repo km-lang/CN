@@ -393,6 +393,26 @@ function missingLushaChannels(person: Alumni): ("email" | "phone")[] {
   return (["email", "phone"] as const).filter(channel => !person[channel] || person.verification[channel] !== "Verified")
 }
 
+function engagementEmptyState(filter: string) {
+  if (filter === "Birthdays") return ["No birthdays require action", "No birthdays require action in the selected period."]
+  if (filter === "Professional Signals") return ["No professional signals require review", "New promotions and company changes will appear here for human review."]
+  if (filter === "Follow-ups") return ["No follow-ups are due", "Scheduled follow-ups will appear here when they become due."]
+  if (filter === "Assigned to Me") return ["Nothing is assigned to you", "Take ownership of an open engagement to add it to this queue."]
+  if (filter === "Completed") return ["No completed engagements", "Completed engagement history will appear here."]
+  if (filter === "Skipped") return ["No skipped engagements", "Skipped items will remain available here for audit history."]
+  return ["No actions need attention", "New and follow-up engagement work will appear here."]
+}
+
+function outreachRationale(person: Alumni) {
+  const reasons: string[] = []
+  if (["HR", "General Management"].includes(person.function)) reasons.push(`${person.function} leader`)
+  else if (/VP|Director|CXO|Chief|Partner/i.test(person.seniority)) reasons.push("Senior decision-maker")
+  if (!["Unknown / Not assessed", "Minimal / record only"].includes(person.assessment.iimlRelationship)) reasons.push(`${person.assessment.iimlRelationship} IIML relationship`)
+  if (["Responded", "Meeting set"].includes(person.status)) reasons.push("Previously responsive")
+  if (!["Unknown / Not assessed", "No known route", "Weak evidence of connection"].includes(person.assessment.warmIntroPotential)) reasons.push("Warm route available")
+  return reasons.slice(0, 2).join(" · ") || "No outreach rationale recorded."
+}
+
 function StatCard({ icon: Icon, label, value, delta, help }: { icon: typeof UsersRound; label: string; value: string; delta: string; help?: string }) {
   return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span>{delta}{help && <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" className="kpi-help" aria-label={`What ${label} means`}><Info aria-hidden="true" /></button></TooltipTrigger><TooltipContent side="bottom" className="kpi-help-content">{help}</TooltipContent></Tooltip></TooltipProvider>}</span></div></article>
 }
@@ -517,6 +537,10 @@ export default function Home() {
   const [lushaRevealConfirmOpen, setLushaRevealConfirmOpen] = useState(false)
   const [professionalNoteDrafts, setProfessionalNoteDrafts] = useState<Record<number, string>>({})
   const [privacyNoteDrafts, setPrivacyNoteDrafts] = useState<Record<number, string>>({})
+  const [outreachSearch, setOutreachSearch] = useState("")
+  const [outreachCompany, setOutreachCompany] = useState("All companies")
+  const [outreachStatus, setOutreachStatus] = useState("All")
+  const [outreachRelevance, setOutreachRelevance] = useState("All")
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -1676,6 +1700,23 @@ export default function Home() {
   const selectedUpcomingEngagements = selectedEngagementHistory.filter(event => !isCompletedEngagement(event.status))
   const selectedCompletedEngagements = selectedEngagementHistory.filter(event => isCompletedEngagement(event.status))
   const companyEngagements = engagements.filter(event => event.alumnus && event.alumnus.company === activeTargetCompany)
+  const visibleOutreach = alumni.filter(person => {
+    const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
+    if (outreachSearch && !`${person.name} ${person.title}`.toLowerCase().includes(outreachSearch.toLowerCase())) return false
+    if (outreachCompany !== "All companies" && person.company !== outreachCompany) return false
+    if (outreachStatus !== "All" && person.status !== outreachStatus) return false
+    if (outreachRelevance === "75–100" && relevance < 75) return false
+    if (outreachRelevance === "50–74" && (relevance < 50 || relevance >= 75)) return false
+    if (outreachRelevance === "Below 50" && relevance >= 50) return false
+    return true
+  }).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
+
+  function clearOutreachFilters() {
+    setOutreachSearch("")
+    setOutreachCompany("All companies")
+    setOutreachStatus("All")
+    setOutreachRelevance("All")
+  }
   const selectedEngagementBusy = selectedEngagement ? pendingEngagementKeys.has(`event:${selectedEngagement.id}`) : false
   const comparisonAlumnus = comparisonResult ? alumni.find(person => person.id === comparisonResult.linkedInternalAlumnusId) ?? null : null
   const comparisonRows = comparisonResult && comparisonAlumnus ? [
@@ -1840,14 +1881,11 @@ export default function Home() {
               <div className="demo-user"><label>Signed-in owner</label><strong>{session.displayName}</strong><small>Actions use your authenticated identity</small></div>
             </section>
 
-            <section className="signals-readiness"><div><Sparkles /><span><strong>Professional Signals</strong><small>Individual promotions and job/company changes only</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsActive ? "LIVE · entitlement confirmed" : signalsStatus?.entitlement === "not_entitled" ? "OFF · account not entitled" : "Professional Signals are prepared but not activated."}</span><small>Signals enter human review and never overwrite alumni profiles automatically.</small>{session.canOperate && <div className="signals-selector"><Select value={signalsAlumnusId ? String(signalsAlumnusId) : ""} onValueChange={value => setSignalsAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select approved alumnus" /></SelectTrigger><SelectContent>{alumni.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.lushaPersonId ? "Stable Lusha ID available" : "Lusha ID required"}</SelectItem>)}</SelectContent></Select>{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}{signalsActive && <Button title={!signalsTarget ? "Select an alumnus first." : !signalsTarget.lushaPersonId ? "Requires a stored Lusha contact ID." : undefined} size="sm" disabled={!signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check Professional Signals</Button>}</div>}</section>
-            {signalsMessage && <div className="discovery-message">{signalsMessage}</div>}
-
             <section className="engagement-stats">
-              <article><BellRing /><span>New professional signals<strong>{professionalEvents.filter(event => event.status === "New").length}</strong></span></article>
-              <article><Cake /><span>Birthdays today<strong>{birthdaysToday.length}</strong></span></article>
-              <article><UserRoundCheck /><span>Assigned to me<strong>{assignedToMe.length}</strong></span></article>
-              <article><CalendarClock /><span>Follow-ups due<strong>{followUpsDue.length}</strong></span></article>
+              <button onClick={() => setEngagementFilter("Professional Signals")}><BellRing /><span>New professional signals<strong>{professionalEvents.filter(event => event.status === "New").length}</strong></span></button>
+              <button onClick={() => setEngagementFilter("Birthdays")}><Cake /><span>Birthdays today<strong>{birthdaysToday.length}</strong></span></button>
+              <button onClick={() => setEngagementFilter("Assigned to Me")}><UserRoundCheck /><span>Assigned to me<strong>{assignedToMe.length}</strong></span></button>
+              <button onClick={() => setEngagementFilter("Follow-ups")}><CalendarClock /><span>Follow-ups due<strong>{followUpsDue.length}</strong></span></button>
             </section>
 
             <section className="panel engagement-panel">
@@ -1856,11 +1894,13 @@ export default function Home() {
                 <div className={`mail-mode mail-${mailMode}`}><Mail /> {mailMode === "mock" ? "Mock mail · sending disabled" : mailConfigured ? "Live mail · configured" : "Live mail · credentials missing"}</div>
               </div>
 
+              {engagementFilter === "Professional Signals" && <><section className="signals-readiness"><div><Sparkles /><span><strong>Check Professional Signals</strong><small>Promotions and company changes only · review before profile updates</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsActive ? "LIVE · entitlement confirmed" : signalsStatus?.mode === "mock" ? "Signals disabled in local development" : signalsStatus?.entitlement === "not_entitled" ? "OFF · account not entitled" : signalsStatus?.configured ? "OFF · activation pending" : "OFF · not configured"}</span><small>Selecting an alumnus never calls Lusha. A provider request requires the explicit action and final confirmation.</small>{session.canOperate && <div className="signals-selector"><AlumnusCombobox label="Alumnus with a verified Lusha identity" options={alumni} value={signalsAlumnusId} onValueChange={setSignalsAlumnusId} placeholder="Search or select an alumnus..." />{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}<Button title={!signalsTarget ? "Select an alumnus first." : !signalsTarget.lushaPersonId ? "Requires a stored Lusha contact ID." : !signalsActive ? "Professional Signals are not active in this environment." : undefined} size="sm" disabled={!signalsActive || !signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check for signals</Button></div>}</section>{signalsMessage && <div className="discovery-message">{signalsMessage}</div>}</>}
+
               {engagementFilter === "Birthdays" && <div className="birthday-filters">
                 <Select value={birthdayWindow} onValueChange={setBirthdayWindow}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Today", "Tomorrow", "Next 7 Days", "This Month", "All upcoming"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Select value={birthdayCompany} onValueChange={setBirthdayCompany}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select>
                 <Select value={birthdayEmailFilter} onValueChange={setBirthdayEmailFilter}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All email states">All email states</SelectItem><SelectItem value="Email available">Email available</SelectItem><SelectItem value="Email unavailable">Email unavailable</SelectItem></SelectContent></Select>
-                <div className="birthday-bulk-summary"><span>{selectedBirthdayIds.length} selected</span><Button variant="outline" disabled={!selectedBirthdayIds.length || engagementLoading} onClick={() => void previewSelectedBirthdays()}><Eye /> Preview Selected Emails</Button></div>
+                <div className="birthday-bulk-summary"><span>{selectedBirthdayIds.length} selected</span><Button title={!selectedBirthdayIds.length ? "Select at least one eligible birthday engagement to preview emails." : undefined} variant="outline" disabled={!selectedBirthdayIds.length || engagementLoading} onClick={() => void previewSelectedBirthdays()}><Eye /> Preview Selected Emails</Button></div>
               </div>}
 
               {engagementMessage && <div className="engagement-message"><Activity /><span>{engagementMessage}</span><button aria-label="Dismiss message" onClick={() => setEngagementMessage("")}><XCircle /></button></div>}
@@ -1873,28 +1913,29 @@ export default function Home() {
                 const canEmail = event.eventType === "Professional Signal" ? Boolean(event.alumnus?.email) && !completed : birthdayReady(event)
                 const eventBusy = pendingEngagementKeys.has(`event:${event.id}`)
                 return <article key={event.id} className={`engagement-card ${completed ? "completed" : ""}`}>
-                  {event.eventType === "Birthday" && <input type="checkbox" aria-label={`Select ${event.alumnus?.name} birthday`} disabled={!birthdayReady(event)} checked={selectedBirthdayIds.includes(event.id)} onChange={() => toggleBirthdaySelection(event.id)} />}
-                  <div className={`event-icon event-${event.eventType.toLowerCase().replaceAll(" ", "-")}`}>{event.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</div>
-                  <div className="event-copy"><div className="event-person"><strong>{event.alumnus?.name ?? "Unknown alumnus"}</strong><span>{event.alumnus?.company} · {event.alumnus?.title}</span></div><h3>{event.eventTitle}</h3><p>{event.eventDescription}</p><div className="event-meta"><span>{displayEventDate(event.eventDate)}</span><span>Source: {event.source}</span>{event.birthday && <span>{event.birthday.status}</span>}{event.eventType === "Birthday" && <span>{birthdayReady(event) ? "Email ready" : emailMissing ? "Email unavailable" : "Review required"}</span>}</div></div>
-                  <div className="event-state"><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span><EngagementStatusBadge status={event.status} />{event.assignedTo && <small>Assigned to <strong>{event.assignedTo}</strong></small>}{event.actionTakenBy && <small>Already engaged by <strong>{event.actionTakenBy}</strong></small>}{event.skipReason && <small>{event.skipReason}</small>}</div>
+                  <div className="event-identity"><span className={`event-icon event-${event.eventType.toLowerCase().replaceAll(" ", "-")}`}>{event.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</span><span><small>Alumnus</small><strong>{event.alumnus?.name ?? "Unknown alumnus"}</strong><em>{event.alumnus?.title} · {event.alumnus?.company}</em></span>{event.eventType === "Birthday" && <input type="checkbox" aria-label={`Select ${event.alumnus?.name} birthday`} disabled={!birthdayReady(event)} checked={selectedBirthdayIds.includes(event.id)} onChange={() => toggleBirthdaySelection(event.id)} />}</div>
+                  <div className="event-copy"><small>Engagement</small><h3>{event.eventTitle}</h3><p>{event.eventDescription}</p>{event.eventType === "Birthday" && <span className={`birthday-eligibility ${birthdayReady(event) ? "eligible" : "ineligible"}`}>{birthdayReady(event) ? "Eligible" : emailMissing ? "Cannot email — no stored email" : `Cannot email — ${event.preference === "Unknown" ? "birthday permission unknown" : "permission or birthday verification required"}`}</span>}</div>
+                  <div className="event-context"><small>Context</small><EngagementStatusBadge status={event.status} /><span>{displayEventDate(event.eventDate)}</span><span>Source: {event.source}</span>{event.assignedTo && <em>Assigned to {event.assignedTo}</em>}{event.skipReason && <em>{event.skipReason}</em>}</div>
+                  <div className="event-state"><small>Placement relevance</small><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></div>
                   <div className="event-actions">
                     {!completed && !event.assignedTo && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id)}>Take Ownership</Button>}
                     {!completed && event.assignedTo && event.assignedTo !== currentDemoUser && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id, { force: true })}>Reassign to Me</Button>}
                     {!completed && event.eventType === "Birthday" && emailMissing && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void getBirthdayEmail(event)}>Get Email via Lusha</Button>}
                     {canEmail && <Button size="sm" disabled={eventBusy} onClick={() => void previewEngagement(event)}>{event.eventType === "Birthday" ? <Cake /> : <Mail />} {event.eventType === "Birthday" ? "Preview Wish" : "Send Congratulations"}</Button>}
-                    <Button variant="ghost" size="sm" disabled={eventBusy} onClick={() => void openEngagement(event)}>{completed ? "View Engagement" : "Review"}</Button>
+                    <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void openEngagement(event)}>{completed ? "View Engagement" : "Review"}</Button>
                   </div>
                 </article>
               })}</div>
-              {!visibleEngagements.length && <div className="empty-state"><CheckCircle2 /><h3>No engagement events in this view</h3><p>Choose another queue filter or refresh the shared workspace.</p></div>}
+              {!visibleEngagements.length && (() => { const [title, copy] = engagementEmptyState(engagementFilter); return <div className="empty-state"><CheckCircle2 /><h3>{title}</h3><p>{copy}</p></div> })()}
             </section>
           </TabsContent>
 
           <TabsContent value="outreach" className="tab-panel">
             <section className="panel outreach-panel">
               <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved centrally and shared across committee members.</span></div></div>
-              <div className="pipeline-summary">{statusOptions.map(status => <div key={status}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></div>)}</div>
-              <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this person</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{[...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score).map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{person.note}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>
+              <div className="pipeline-summary"><button className={outreachStatus === "All" ? "active" : ""} onClick={() => setOutreachStatus("All")}><span>All</span><strong>{alumni.length}</strong></button>{statusOptions.map(status => <button className={outreachStatus === status ? "active" : ""} key={status} onClick={() => setOutreachStatus(status)}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></button>)}</div>
+              <div className="outreach-filters"><div className="search-field"><Search /><Input value={outreachSearch} onChange={event => setOutreachSearch(event.target.value)} placeholder="Search alumnus" aria-label="Search outreach alumni" /></div><Select value={outreachCompany} onValueChange={setOutreachCompany}><SelectTrigger aria-label="Filter outreach by company"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select><Select value={outreachStatus} onValueChange={setOutreachStatus}><SelectTrigger aria-label="Filter by outreach status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All">All statuses</SelectItem>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><Select value={outreachRelevance} onValueChange={setOutreachRelevance}><SelectTrigger aria-label="Filter by Placement Relevance"><SelectValue /></SelectTrigger><SelectContent>{["All", "75–100", "50–74", "Below 50"].map(item => <SelectItem key={item} value={item}>{item === "All" ? "All Placement Relevance" : item}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={clearOutreachFilters}>Clear</Button></div>
+              <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this alumnus?</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{visibleOutreach.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{outreachRationale(person)}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>{!visibleOutreach.length && <div className="empty-state"><Search /><h3>No alumni match these Outreach filters</h3><p>Clear or adjust the filters to return to the full pipeline.</p></div>}
             </section>
           </TabsContent>
 

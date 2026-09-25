@@ -214,8 +214,7 @@ button { cursor: pointer; }
 .timeline-item svg { width: 15px; }
 .timeline-item strong { font-size: .78rem; }
 .timeline-item p { margin: .15rem 0 0; color: #6f7f8b; font-size: .82rem; }
-.pipeline-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: #dfe5e9; border-bottom: 1px solid #dfe5e9; }
-.pipeline-summary > div { background: white; padding: 1rem 1.35rem; display: flex; justify-content: space-between; align-items: center; }
+.pipeline-summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; padding: .4rem; background: #f3f6f8; border-bottom: 1px solid #dfe5e9; }
 .pipeline-summary strong { font-size: 1.4rem; }
 .reason-cell { max-width: 430px; white-space: normal !important; color: #61727f; font-size: .78rem; line-height: 1.45; }
 .status-select { min-width: 142px; }
@@ -496,7 +495,8 @@ button { cursor: pointer; }
 .demo-user [data-slot="select-trigger"] { background: white; }
 .demo-user small { grid-column: 2; color: #87949d; font-size: .72rem; }
 .engagement-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: .8rem; margin-bottom: 1rem; }
-.engagement-stats article { min-height: 86px; display: flex; align-items: center; gap: .75rem; padding: .95rem 1rem; background: white; border: 1px solid #dce3e8; border-radius: 13px; box-shadow: 0 5px 20px #1530420a; }
+.engagement-stats button { min-height: 86px; display: flex; align-items: center; gap: .75rem; padding: .95rem 1rem; color: inherit; text-align: left; background: white; border: 1px solid #dce3e8; border-radius: 13px; box-shadow: 0 5px 20px #1530420a; }
+.engagement-stats button:hover, .engagement-stats button:focus-visible { border-color: #bdccd5; background: #fbfcfd; outline: 2px solid #9e3341; outline-offset: 1px; }
 .engagement-stats svg { width: 20px; color: #8c1d2c; }
 .engagement-stats span, .engagement-stats strong { display: block; }
 .engagement-stats span { color: #6b7b87; font-size: .78rem; }
@@ -519,23 +519,29 @@ button { cursor: pointer; }
 .engagement-message svg { width: 16px; }
 .engagement-message button { border: 0; background: transparent; color: #6f7f8b; padding: 0; }
 .engagement-list { display: grid; }
-.engagement-card { display: grid; grid-template-columns: auto 42px minmax(260px, 1fr) minmax(150px, .35fr) minmax(190px, auto); align-items: center; gap: .85rem; padding: 1rem 1.1rem; border-bottom: 1px solid #e5eaed; }
+.engagement-card { display: grid; grid-template-columns: minmax(190px, 1.05fr) minmax(240px, 1.35fr) minmax(155px, .85fr) minmax(120px, .45fr) minmax(170px, auto); align-items: start; gap: 1rem; padding: 1rem 1.1rem; border-bottom: 1px solid #e5eaed; }
 .engagement-card:last-child { border-bottom: 0; }
 .engagement-card:hover { background: #fbfcfd; }
 .engagement-card.completed { background: #fafbfb; }
-.engagement-card > input { width: 16px; height: 16px; accent-color: #8c1d2c; }
+.event-identity { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: .65rem; min-width: 0; }
+.event-identity > span:nth-child(2) { min-width: 0; }
+.event-identity small, .event-copy > small, .event-context > small, .event-state > small { display: block; color: #87949d; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.event-identity strong, .event-identity em { display: block; overflow-wrap: normal; word-break: normal; }
+.event-identity strong { margin-top: .15rem; color: #172f3f; font-size: .84rem; }
+.event-identity em { margin-top: .12rem; color: #7b8994; font-size: .7rem; font-style: normal; line-height: 1.35; }
+.event-identity > input { width: 16px; height: 16px; accent-color: #8c1d2c; }
 .event-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 11px; }
 .event-icon svg { width: 18px; }
 .event-birthday { color: #8c1d2c; background: #f2e5e8; }
 .event-professional-signal { color: #315b79; background: #e4edf4; }
-.event-copy h3 { margin: .35rem 0 .18rem; color: #213746; font-size: .92rem; }
+.event-copy { min-width: 0; }
+.event-copy h3 { margin: .2rem 0 .18rem; color: #213746; font-size: .92rem; overflow-wrap: normal; word-break: normal; }
 .event-copy > p { margin: 0; color: #61727f; font-size: .8rem; line-height: 1.45; }
-.event-person { display: flex; align-items: baseline; gap: .45rem; flex-wrap: wrap; }
-.event-person strong { color: #172f3f; font-size: .84rem; }
-.event-person span { color: #7b8994; font-size: .74rem; }
-.event-meta { display: flex; gap: .55rem; flex-wrap: wrap; margin-top: .45rem; }
-.event-meta span { color: #7b8994; font-size: .7rem; }
-.event-meta span + span { padding-left: .55rem; border-left: 1px solid #dce3e7; }
+.birthday-eligibility { display: inline-flex; margin-top: .45rem; padding: .22rem .45rem; border-radius: 99px; font-size: .66rem; font-weight: 800; }
+.birthday-eligibility.eligible { color: #0c6b53; background: #dcf4eb; }
+.birthday-eligibility.ineligible { color: #765819; background: #fff0c9; }
+.event-context { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem; min-width: 0; }
+.event-context > span:not(.engagement-status), .event-context > em { color: #6e7e89; font-size: .68rem; font-style: normal; line-height: 1.35; }
 .event-state { display: flex; align-items: flex-start; flex-direction: column; gap: .4rem; }
 .event-state small { color: #6e7e89; font-size: .7rem; line-height: 1.35; }
 .event-state small strong { color: #314655; }
@@ -760,12 +766,13 @@ button { cursor: pointer; }
   .search-field { grid-column: 1 / -1; }
   .account-history { grid-column: auto; }
   .engagement-stats { grid-template-columns: 1fr 1fr; }
-  .engagement-card { grid-template-columns: auto 42px 1fr; align-items: start; }
-  .engagement-card .event-state, .engagement-card .event-actions { grid-column: 3; }
+  .engagement-card { grid-template-columns: 1fr 1fr; align-items: start; }
+  .engagement-card .event-state, .engagement-card .event-actions { grid-column: auto; }
   .engagement-card .event-actions { justify-content: flex-start; }
   .birthday-filters { grid-template-columns: 1fr 1fr; }
   .birthday-bulk-summary { justify-content: flex-start; }
   .route-controls, .external-search-summary { grid-template-columns: 1fr 1fr; }
+  .outreach-filters { grid-template-columns: 1fr 1fr; }
   .manual-grid { grid-template-columns: 1fr 1fr; }
   .admin-add-user, .admin-programme-add { grid-template-columns: 1fr 1fr; }
   .directory-external-discovery { align-items: stretch; flex-direction: column; }
@@ -825,8 +832,8 @@ button { cursor: pointer; }
   .demo-user { min-width: 0; }
   .engagement-stats, .birthday-filters { grid-template-columns: 1fr; }
   .engagement-filterbar { align-items: flex-start; flex-direction: column; }
-  .engagement-card { grid-template-columns: auto 36px 1fr; padding: .9rem .75rem; }
-  .event-state, .event-actions { grid-column: 2 / -1 !important; }
+  .engagement-card { grid-template-columns: 1fr; padding: .9rem .75rem; }
+  .event-state, .event-actions { grid-column: 1 !important; }
   .birthday-overview { grid-template-columns: 42px 1fr; }
   .birthday-overview > svg { display: none; }
   .event-detail-summary { grid-template-columns: 38px 1fr; }
@@ -851,6 +858,7 @@ button { cursor: pointer; }
   .signals-selector > [data-slot="select-trigger"] { width: 100%; }
   .readiness-grid { grid-template-columns: 1fr; }
   .anonymize-confirm { width: 100%; }
+  .outreach-filters { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 430px) {
@@ -860,3 +868,7 @@ button { cursor: pointer; }
   .panel-heading, .directory-heading { padding-inline: .9rem; }
   .route-controls { padding-inline: .9rem; }
 }
+.outreach-filters { display: grid; grid-template-columns: minmax(220px, 1.3fr) repeat(3, minmax(150px, .8fr)) auto; gap: .6rem; padding: .9rem 1.25rem; border-bottom: 1px solid #e5eaed; background: #f8fafb; }
+.pipeline-summary button { display: flex; align-items: center; justify-content: space-between; gap: .55rem; padding: .75rem; border: 1px solid transparent; border-radius: 10px; color: inherit; background: transparent; }
+.pipeline-summary button:hover, .pipeline-summary button.active { border-color: #d7a4aa; background: #fff9fa; }
+.pipeline-summary button > span:not(.status-badge) { color: #536674; font-size: .75rem; font-weight: 800; }

@@ -57,7 +57,7 @@ test("5. duplicate sends are prevented atomically", () => {
 test("6. confirmed birthdays with email are classified as ready", () => {
   assert.match(route, /Confirmed internally/);
   assert.match(page, /birthdayReady/);
-  assert.match(page, /Email ready/);
+  assert.match(page, /birthdayReady\(event\) \? "Eligible"/);
 });
 
 test("7. preview personalises a template and mock send returns a receipt", async () => {
@@ -110,9 +110,10 @@ test("14. follow-ups have a due date, owner and shared status", () => {
   assert.match(route, /assignedTo: event\.assignedTo \|\| actor/);
 });
 
-test("15. profile view shows upcoming events and unified history", () => {
-  assert.match(page, /Upcoming engagements/);
-  assert.match(page, /Unified engagement history/);
+test("15. profile separates open work from completed engagement history", () => {
+  assert.match(page, /Needs attention/);
+  assert.match(page, /Engagement history/);
+  assert.match(page, /selectedCompletedEngagements/);
   assert.match(page, /providerHistory\.filter/);
 });
 

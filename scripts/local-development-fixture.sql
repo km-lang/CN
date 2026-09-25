@@ -31,9 +31,9 @@ INSERT INTO `alumni` (
 ) VALUES (
   15, 'local-fixture-sahil-bansal', 'Sahil Bansal', 'SB', 2012, 2012, 'PGP',
   'Local Fixture Company', 'Director', 'Strategy', 'Director', 'India',
-  'sahil.bansal@example.test', 'Local fixture', 'Verified', 'Reviewed', 'Locally verified',
+  'sahil.bansal@example.test', 'Manual verification', 'Verified', 'Reviewed', 'Manually verified',
   'Contacted', 'Unknown / Not assessed', 'Confirmed relationship available', 65, 'Confirmed',
-  'Verified', 'Verified', 'Local fixture', 'Local Development Admin'
+  'Verified', 'Verified', 'Internal alumni database', 'Local Development Admin'
 )
 ON CONFLICT(`id`) DO UPDATE SET
   `profile_key` = excluded.`profile_key`,
@@ -69,9 +69,9 @@ INSERT INTO `alumni` (
 ) VALUES (
   22, 'local-fixture-priya-sharma', 'Priya Sharma', 'PS', 2015, 2015, 'PGP',
   'Local Fixture Company', 'Vice President', 'HR', 'Vice President', 'Mumbai, India',
-  'priya.sharma@example.test', 'Local fixture', 'Verified', 'Reviewed', 'Locally verified', 'Responded',
+  'priya.sharma@example.test', 'Manual verification', 'Verified', 'Reviewed', 'Manually verified', 'Responded',
   'Strong', 'Confirmed direct connection to decision-maker', 85, 'Confirmed',
-  'Verified', 'Verified', 'Local fixture', 'Local Development Admin'
+  'Verified', 'Verified', 'Internal alumni database', 'Local Development Admin'
 )
 ON CONFLICT(`id`) DO UPDATE SET
   `profile_key` = excluded.`profile_key`,
@@ -104,7 +104,7 @@ INSERT INTO `alumni_relationships` (
 ) VALUES (
   22, 15, 'Confirmed relationship',
   'Prior introduction confirmed by a committee member.',
-  1, 1, 'Local development data', 'Local Development Admin'
+  1, 1, 'Committee-confirmed relationship', 'Local Development Admin'
 )
 ON CONFLICT(`intermediary_alumnus_id`, `target_alumnus_id`) DO UPDATE SET
   `relationship_type` = excluded.`relationship_type`,
@@ -120,7 +120,7 @@ INSERT INTO `engagement_events` (
 ) VALUES (
   151, 'local-priya-promotion-signal', 22, 'Local Fixture Company', 'Professional Signal', 'Promotion',
   'Promotion requires review', 'Priya Sharma was promoted to Vice President.',
-  'Local development data', 'local-signal-151', '2026-09-25', 'New',
+  'Professional Signals', 'local-signal-151', '2026-09-25', 'New',
   'Local Development Admin', 'Local Development Admin'
 )
 ON CONFLICT(`id`) DO UPDATE SET
@@ -136,10 +136,49 @@ ON CONFLICT(`id`) DO UPDATE SET
   `event_date` = excluded.`event_date`,
   `status` = excluded.`status`;
 
+INSERT INTO `birthday_data` (`alumnus_id`, `birth_month_day`, `source`, `status`, `last_verified_at`, `last_updated_by`) VALUES
+  (22, '09-25', 'Alumni-confirmed record', 'Confirmed internally', '2026-09-20T10:00:00.000Z', 'Local Development Admin'),
+  (15, '09-27', 'Internal alumni database', 'Confirmed internally', '2026-09-20T10:00:00.000Z', 'Local Development Admin')
+ON CONFLICT(`alumnus_id`) DO UPDATE SET
+  `birth_month_day` = excluded.`birth_month_day`,
+  `source` = excluded.`source`,
+  `status` = excluded.`status`,
+  `last_verified_at` = excluded.`last_verified_at`,
+  `last_updated_by` = excluded.`last_updated_by`;
+
+INSERT INTO `alumni_privacy_controls` (`alumnus_id`, `general_contact_status`, `professional_engagement_status`, `birthday_engagement_status`, `consent_source`, `notes`, `updated_by`) VALUES
+  (22, 'Standard engagement allowed', 'Professional engagement only', 'Birthday engagement allowed', 'Alumni-confirmed', '', 'Local Development Admin'),
+  (15, 'Professional engagement only', 'Professional engagement only', 'Unknown', 'Internal institutional record', '', 'Local Development Admin')
+ON CONFLICT(`alumnus_id`) DO UPDATE SET
+  `general_contact_status` = excluded.`general_contact_status`,
+  `professional_engagement_status` = excluded.`professional_engagement_status`,
+  `birthday_engagement_status` = excluded.`birthday_engagement_status`,
+  `consent_source` = excluded.`consent_source`,
+  `notes` = excluded.`notes`,
+  `updated_by` = excluded.`updated_by`;
+
+INSERT INTO `engagement_events` (
+  `id`, `event_key`, `alumnus_id`, `company`, `event_type`, `event_subtype`, `event_title`,
+  `event_description`, `source`, `source_reference_id`, `event_date`, `status`, `assigned_to`,
+  `follow_up_required`, `follow_up_date`, `skip_reason`, `created_by`, `last_updated_by`
+) VALUES
+  (152, 'local-priya-birthday-2026', 22, 'Local Fixture Company', 'Birthday', 'Birthday', 'Priya Sharma birthday', 'Review a birthday message before sending.', 'Internal alumni database', 'birthday-22-2026', '2026-09-25', 'New', '', 0, '', '', 'Local Development Admin', 'Local Development Admin'),
+  (153, 'local-sahil-birthday-2026', 15, 'Local Fixture Company', 'Birthday', 'Birthday', 'Sahil Bansal birthday', 'Birthday is confirmed but communication permission is unknown.', 'Internal alumni database', 'birthday-15-2026', '2026-09-27', 'New', '', 0, '', '', 'Local Development Admin', 'Local Development Admin'),
+  (154, 'local-priya-follow-up', 22, 'Local Fixture Company', 'Manual Relationship', 'Follow-up', 'Placement conversation follow-up', 'A committee follow-up is due for review.', 'Manual PCOM selection', 'manual-follow-up-22', '2026-09-25', 'Follow-up Due', 'Local Development Admin', 1, '2026-09-25', '', 'Local Development Admin', 'Local Development Admin'),
+  (155, 'local-sahil-skipped', 15, 'Local Fixture Company', 'Manual Relationship', 'Institutional outreach', 'Earlier outreach opportunity', 'This item remains available as skipped audit history.', 'Manual PCOM selection', 'manual-skipped-15', '2026-09-10', 'Skipped', '', 0, '', 'Already covered through another relationship', 'Local Development Admin', 'Local Development Admin')
+ON CONFLICT(`id`) DO UPDATE SET
+  `event_key` = excluded.`event_key`,
+  `status` = excluded.`status`,
+  `assigned_to` = excluded.`assigned_to`,
+  `follow_up_required` = excluded.`follow_up_required`,
+  `follow_up_date` = excluded.`follow_up_date`,
+  `skip_reason` = excluded.`skip_reason`,
+  `last_updated_by` = excluded.`last_updated_by`;
+
 INSERT INTO `communication_preferences` (
   `alumnus_id`, `engagement_type`, `status`, `source`, `updated_by`
 ) VALUES (
-  15, 'Professional', 'Allowed', 'Local fixture', 'Local Development Admin'
+  15, 'Professional', 'Allowed', 'Internal institutional record', 'Local Development Admin'
 )
 ON CONFLICT(`alumnus_id`, `engagement_type`) DO UPDATE SET
   `status` = excluded.`status`,
@@ -168,6 +207,20 @@ ON CONFLICT(`id`) DO UPDATE SET
   `status` = excluded.`status`,
   `version` = excluded.`version`;
 
+INSERT INTO `message_templates` (`id`, `template_key`, `name`, `event_type`, `subject`, `body`, `status`, `version`, `updated_by`) VALUES (
+  2, 'local-birthday-wish', 'Birthday wish', 'Birthday', 'Birthday wishes from IIM Lucknow',
+  'Hello {{name}},\n\nWishing you a very happy birthday.\n\nRegards,\nPlacement Committee, IIM Lucknow',
+  'Approved', 1, 'Local Development Admin'
+)
+ON CONFLICT(`id`) DO UPDATE SET
+  `template_key` = excluded.`template_key`,
+  `name` = excluded.`name`,
+  `event_type` = excluded.`event_type`,
+  `subject` = excluded.`subject`,
+  `body` = excluded.`body`,
+  `status` = excluded.`status`,
+  `version` = excluded.`version`;
+
 INSERT INTO `engagement_events` (
   `id`, `event_key`, `alumnus_id`, `company`, `event_type`, `event_subtype`, `event_title`,
   `event_description`, `source`, `source_reference_id`, `event_date`, `status`,
@@ -182,7 +235,7 @@ INSERT INTO `engagement_events` (
   'Historical outreach',
   'Completed historical email',
   'A completed historical email used to verify that a new legitimate draft may be prepared.',
-  'Local fixture',
+  'Institutional mail history',
   'local-history-150',
   '2026-08-01',
   'Completed',
