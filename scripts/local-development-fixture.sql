@@ -231,7 +231,7 @@ INSERT INTO `engagement_events` (
   'local-fixture-sahil-completed-email',
   15,
   'Local Fixture Company',
-  'Professional Signal',
+  'Manual Relationship',
   'Historical outreach',
   'Completed historical email',
   'A completed historical email used to verify that a new legitimate draft may be prepared.',
@@ -252,6 +252,7 @@ INSERT INTO `engagement_events` (
 ON CONFLICT(`id`) DO UPDATE SET
   `event_key` = excluded.`event_key`,
   `alumnus_id` = excluded.`alumnus_id`,
+  `event_type` = excluded.`event_type`,
   `status` = excluded.`status`,
   `action_taken_at` = excluded.`action_taken_at`,
   `action_type` = excluded.`action_type`,
