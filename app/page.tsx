@@ -30,7 +30,7 @@ import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
 import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
-import { alumnusProfileUrl, canonicalWorkspaceUrl, controlledEmailReturnUrl, controlledEmailUrl, parseControlledEmailIntent, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
+import { alumnusProfileUrl, canonicalWorkspaceUrl, controlledEmailReturnUrl, controlledEmailUrl, engagementEventUrl, parseControlledEmailIntent, parseEngagementEventId, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
 import { initializeControlledEmail } from "@/lib/controlled-email-initialization"
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 
@@ -217,7 +217,7 @@ type RouteRecommendation = {
   target: { id: number; name: string; initials: string; company: string; title: string }
   intermediary: { id: number; name: string; initials: string; company: string; title: string } | null
   evidence: string
-  factors: { usableContact: boolean; reliableProfile: boolean; directAttempts: number; directResponses: number; confirmedIntermediary: boolean }
+  factors: { usableContact: boolean; verifiedContact: boolean; reliableProfile: boolean; directAttempts: number; directResponses: number; confirmedIntermediary: boolean; relationshipType: string; successfulIntroductions: number }
 }
 type ManualForm = { name: string; programme: string; batch: string; company: string; title: string; function: string; seniority: string; location: string; linkedinUrl: string; email: string; phone: string; relationship: string; note: string; status: OutreachStatus }
 type ManualMatch = { id: number; name: string; programme: string; batch: number; company: string; title: string }
@@ -383,8 +383,8 @@ function contactDataLabel(person: Alumni, channel: "email" | "phone") {
   return { status, detail }
 }
 
-function StatCard({ icon: Icon, label, value, delta }: { icon: typeof UsersRound; label: string; value: string; delta: string }) {
-  return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span>{delta}</span></div></article>
+function StatCard({ icon: Icon, label, value, delta, help }: { icon: typeof UsersRound; label: string; value: string; delta: string; help?: string }) {
+  return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span title={help}>{delta}{help ? " ⓘ" : ""}</span></div></article>
 }
 
 function parseCsv(content: string) {
@@ -469,6 +469,7 @@ export default function Home() {
   const [birthdayCompany, setBirthdayCompany] = useState("All companies")
   const [birthdayEmailFilter, setBirthdayEmailFilter] = useState("All email states")
   const [selectedEngagement, setSelectedEngagement] = useState<EngagementEvent | null>(null)
+  const openEngagementRef = useRef<(event: EngagementEvent) => Promise<void>>(async () => {})
   const [selectedBirthdayIds, setSelectedBirthdayIds] = useState<number[]>([])
   const [engagementLoading, setEngagementLoading] = useState(false)
   const engagementWorkCountRef = useRef(0)
@@ -549,6 +550,7 @@ export default function Home() {
   }, [session.canAdminister, session.canOperate])
 
   const routeState = profileRouteState(routeSearch)
+  const engagementEventId = parseEngagementEventId(routeSearch)
   const controlledEmailIntent = useMemo(() => parseControlledEmailIntent(routeSearch), [routeSearch])
   const activeTab = controlledEmailIntent ? "engagement" : routeState.tab ?? "overview"
   const selected = activeTab === "directory" && routeState.profileAlumnusId
@@ -695,7 +697,7 @@ export default function Home() {
     return matchesInternalFilters(person, filters, relevance, operationalStatus(person))
   }).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score), [alumni, companyPriorities, engagements, filters])
 
-  const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score).slice(0, 5)
+  const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score || a.name.localeCompare(b.name)).slice(0, 5)
   const targetAlumni = alumni.filter(person => person.company === activeTargetCompany).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
   const targetOptions = targetAlumni.filter(person => !targetSearch || `${person.name} ${person.title}`.toLowerCase().includes(targetSearch.toLowerCase()))
   const activeOutreach = alumni.filter(person => person.status !== "Not contacted").length
@@ -707,6 +709,7 @@ export default function Home() {
   const nextWeek = nextWeekDate.toISOString().slice(0, 10)
   const birthdayEvents = engagements.filter(event => event.eventType === "Birthday")
   const professionalEvents = engagements.filter(event => event.eventType === "Professional Signal")
+  const actionableProfessionalEvents = professionalEvents.filter(event => !["Action Taken", "Response Received", "Closed", "Skipped", "Completed"].includes(event.status))
   const signalsTarget = alumni.find(person => person.id === signalsAlumnusId) ?? null
   const signalsActive = Boolean(signalsStatus?.liveEnabled && signalsStatus.entitlement === "confirmed")
   const birthdaysToday = birthdayEvents.filter(event => event.eventDate === today)
@@ -721,6 +724,7 @@ export default function Home() {
     && ["Confirmed internally", "Manually confirmed", "PDL sourced"].includes(event.birthday?.status ?? "")
     && ["Standard engagement allowed", "Birthday engagement allowed"].includes(event.preference)
     && !["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status)
+  const reviewableBirthdaysNextWeek = birthdaysNextWeek.filter(birthdayReady)
   const visibleEngagements = engagements.filter(event => {
     if (engagementFilter === "Professional Signals" && event.eventType !== "Professional Signal") return false
     if (engagementFilter === "Birthdays" && event.eventType !== "Birthday") return false
@@ -744,6 +748,18 @@ export default function Home() {
   function changeTargetCompany(company: string) {
     setTargetCompany(company)
     setTargetAlumnusId(null)
+    setRouteRecommendation(null)
+    setRouteMessage("")
+  }
+
+  function targetOptionLabel(person: Alumni) {
+    return `${person.name} — ${person.title}`
+  }
+
+  function changeTargetQuery(value: string) {
+    setTargetSearch(value)
+    const exact = targetAlumni.find(person => targetOptionLabel(person).toLowerCase() === value.trim().toLowerCase())
+    setTargetAlumnusId(exact?.id ?? null)
     setRouteRecommendation(null)
     setRouteMessage("")
   }
@@ -1127,6 +1143,25 @@ export default function Home() {
     setSelectedEngagement(event)
     setBirthdayCorrection(event.birthday?.birthMonthDay ?? "")
     await postEngagement("view", event.id)
+  }
+  openEngagementRef.current = openEngagement
+
+  useEffect(() => {
+    if (!engagementEventId || selectedEngagement?.id === engagementEventId) return
+    const event = engagements.find(item => item.id === engagementEventId)
+    if (!event) return
+    const timer = window.setTimeout(() => void openEngagementRef.current(event), 0)
+    return () => window.clearTimeout(timer)
+  }, [engagementEventId, engagements, selectedEngagement?.id])
+
+  function openEngagementFromOverview(event: EngagementEvent) {
+    setEngagementFilter("Professional Signals")
+    navigateWorkspace(engagementEventUrl(window.location.href, event.id))
+  }
+
+  function closeEngagement() {
+    setSelectedEngagement(null)
+    if (engagementEventId) navigateWorkspace(workspaceTabUrl(window.location.href, "engagement"), "replace")
   }
 
   async function previewEngagement(event: EngagementEvent) {
@@ -1645,30 +1680,30 @@ export default function Home() {
             <section className="stats-grid" aria-label="Key metrics">
               <StatCard icon={UsersRound} label="Alumni mapped" value={`${alumni.length}`} delta="Shared master database" />
               <StatCard icon={Building2} label="Companies covered" value={`${companies.length}`} delta="Calculated from current records" />
-              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumni.length}`} delta="Based on field verification" />
-              <StatCard icon={Target} label="Active outreach" value={`${activeOutreach}`} delta="Visible to all committee members" />
+              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumni.length}`} delta="Based on field verification" help="Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone." />
+              <StatCard icon={Target} label="Active outreach" value={`${activeOutreach}`} delta="Visible to all committee members" help="Includes shared outreach states Contacted, Responded, and Meeting set." />
             </section>
 
             <section className="overview-grid">
               <article className="panel lead-panel">
-                <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Highest-value alumni leads</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => changeWorkspaceTab("directory")}>View all <ArrowUpRight /></Button></div>
+                <div className="panel-heading"><div><p className="eyebrow">Recommended next</p><h2>Top alumni for outreach</h2><span>Ranked by Placement Relevance</span></div><Button variant="ghost" size="sm" onClick={() => changeWorkspaceTab("directory")}>View all <ArrowUpRight /></Button></div>
                 <div className="lead-list">{topLeads.map((person, index) => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <button key={person.id} className="lead-row" onClick={() => openAlumnusProfile(person)}><span className="rank">0{index + 1}</span><span className="avatar">{person.initials}</span><span className="lead-copy"><strong>{person.name}</strong><small>{person.title} · {person.company}</small></span><span className={`score-pill ${scoreTone(relevance)}`} title="Placement Relevance">{relevance}/100</span><ChevronRight aria-hidden="true" /></button> })}</div>
               </article>
 
-              {session.canOperate && <aside className="panel signal-panel">
-                <div className="signal-orbit"><Sparkles /><span>{professionalEvents.filter(event => !["Closed", "Skipped"].includes(event.status)).length}</span></div><p className="eyebrow">Professional signals</p><h2>Shared reasons to reach out</h2>
-                {professionalEvents.slice(0, 3).map(event => <button key={event.id} className="signal-item signal-button" onClick={() => { changeWorkspaceTab("engagement"); void openEngagement(event) }}><div>{event.eventSubtype === "Promotion" ? <ArrowUpRight /> : <BriefcaseBusiness />}</div><p><strong>{event.alumnus?.name}</strong> {event.eventDescription.replace(`${event.alumnus?.name} `, "")}<small><EngagementStatusBadge status={event.status} />{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></button>)}
-                <Button variant="ghost" size="sm" className="signal-review" onClick={() => { setEngagementFilter("Professional Signals"); changeWorkspaceTab("engagement") }}>Review signals <ChevronRight /></Button>
+              {session.canOperate && <aside className={`panel signal-panel ${actionableProfessionalEvents.length ? "signal-panel-active" : "signal-panel-empty"}`}>
+                {actionableProfessionalEvents.length ? <><div className="signal-orbit"><Sparkles /><span>{actionableProfessionalEvents.length}</span></div><p className="eyebrow">Professional signals</p><h2>Signals requiring review</h2>
+                  {actionableProfessionalEvents.slice(0, 3).map(event => <button key={event.id} className="signal-item signal-button" onClick={() => openEngagementFromOverview(event)}><div>{event.eventSubtype === "Promotion" ? <ArrowUpRight /> : <BriefcaseBusiness />}</div><p><strong>{event.alumnus?.name}</strong> · {event.eventSubtype || event.eventTitle} <ChevronRight /><small><EngagementStatusBadge status={event.status} /></small></p></button>)}
+                  <Button variant="ghost" size="sm" className="signal-review" onClick={() => { setEngagementFilter("Professional Signals"); changeWorkspaceTab("engagement") }}>View all signals <ChevronRight /></Button></> : <><p className="eyebrow">Professional signals</p><h2>No signals requiring review</h2><p className="signal-empty-copy">Promotions and company changes requiring attention will appear here.</p><Button variant="ghost" size="sm" className="signal-history-link" onClick={() => { setEngagementFilter("Professional Signals"); changeWorkspaceTab("engagement") }}>View signal history</Button></>}
               </aside>}
             </section>
 
-            {session.canOperate && <button className="panel birthday-overview" onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); changeWorkspaceTab("engagement") }}>
-              <span className="birthday-overview-icon"><Cake /></span><span><p className="eyebrow">Birthday engagement</p><strong>{birthdaysToday.length} today · {birthdaysNextWeek.length} in the next 7 days</strong><small>{birthdayEvents.filter(birthdayReady).length} ready for review and sending</small></span><ChevronRight />
+            {session.canOperate && <button className={`panel birthday-overview ${birthdaysNextWeek.length || reviewableBirthdaysNextWeek.length ? "birthday-overview-active" : "birthday-overview-empty"}`} onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); changeWorkspaceTab("engagement") }}>
+              <span className="birthday-overview-icon"><Cake /></span><span><p className="eyebrow">Birthday engagement</p><strong>{birthdaysToday.length} today · {birthdaysNextWeek.length} in the next 7 days</strong><small>{reviewableBirthdaysNextWeek.length} ready for review</small></span><ChevronRight />
             </button>}
 
             {session.canOperate && <section className="panel route-panel route-planner">
-              <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div><span className="route-score">Target-specific</span></div>
-              <div className="route-controls"><label><span>Target company</span><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue placeholder="No mapped companies" /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><label><span>Search mapped alumni</span><Input value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Type a name or role" /></label><label><span>Who do you want to reach?</span><Select value={targetAlumnusId ? String(targetAlumnusId) : ""} onValueChange={value => setTargetAlumnusId(Number(value))}><SelectTrigger><SelectValue placeholder="Select a target alumnus" /></SelectTrigger><SelectContent>{targetOptions.map(person => <SelectItem key={person.id} value={String(person.id)}>{person.name} — {person.title} · {relevanceBreakdown(person, companyPriorities, engagements).score}/100</SelectItem>)}</SelectContent></Select></label><Button title={!targetAlumnusId ? "Select a target alumnus first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
+              <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div></div>
+              <div className="route-controls route-controls-overview"><label><span>Target company</span><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue placeholder="No mapped companies" /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><label><span>Target alumnus</span><Input role="combobox" aria-expanded="false" list="overview-target-alumni" value={targetSearch} onChange={event => changeTargetQuery(event.target.value)} placeholder="Search or select an alumnus..." /><datalist id="overview-target-alumni">{targetAlumni.map(person => <option key={person.id} value={targetOptionLabel(person)} />)}</datalist></label><Button title={!targetAlumnusId ? "Select a target alumnus from the suggestions first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
               {routeMessage && <p className="route-message">{routeMessage}</p>}
             </section>}
           </TabsContent>
@@ -1905,7 +1940,7 @@ export default function Home() {
               <label><span>Warm-introduction potential</span><Select disabled={!session.canOperate} value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
-            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
+            <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>Placement Committee relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior Placement Committee engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
             {session.canOperate && <section className="profile-section privacy-section"><h3>Privacy and contact preferences</h3><p className="section-help">Unknown is not affirmative consent. Send eligibility is checked again on the server.</p><div className="assessment-grid"><label><span>General contact</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional engagement</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday engagement</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Consent/source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Privacy note</span><Textarea value={privacyNoteDrafts[selected.id] ?? selected.privacy?.notes ?? ""} onChange={event => setPrivacyNoteDrafts(current => ({ ...current, [selected.id]: event.target.value }))} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></section>}
             {session.canOperate && <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setEngagementFilter("Needs Action"); changeWorkspaceTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { changeWorkspaceTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => { const usage = providerUsageLabel(item); return <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {usage.label === "—" ? usage.label : `${usage.label} credits`}</small></p></div> })}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>}
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last data check: {selected.verified}</small></div><div className="verification-list">
@@ -1929,7 +1964,7 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(selectedEngagement)} onOpenChange={open => { if (!open) setSelectedEngagement(null) }}>
+      <Dialog open={Boolean(selectedEngagement)} onOpenChange={open => { if (!open) closeEngagement() }}>
         <DialogContent className="engagement-dialog">
           {selectedEngagement && <>
             <DialogHeader><DialogTitle>{selectedEngagement.eventTitle}</DialogTitle><DialogDescription>{selectedEngagement.alumnus?.name} · {selectedEngagement.alumnus?.company} · {selectedEngagement.eventType}</DialogDescription></DialogHeader>
@@ -1989,9 +2024,9 @@ export default function Home() {
         <DialogContent className="route-dialog">
           {routeRecommendation && <><DialogHeader><DialogTitle>Recommended outreach route</DialogTitle><DialogDescription>Target: {routeRecommendation.target.name} · {routeRecommendation.target.title}</DialogDescription></DialogHeader>
             <div className={`route-result route-result-${routeRecommendation.routeType.toLowerCase().replaceAll(" ", "-")}`}><span>{routeRecommendation.routeType}</span><h3>{routeRecommendation.routeType === "Warm" ? `Via ${routeRecommendation.intermediary?.name}` : routeRecommendation.routeType === "Direct" ? `Contact ${routeRecommendation.target.name} directly` : "Profile enrichment or relationship evidence required"}</h3><p>{routeRecommendation.rationale}</p></div>
-            <div className="route-flow route-dialog-flow"><div className="route-node active"><span>PC</span><p><strong>PlaceCom</strong><small>Initiates outreach</small></p></div>{routeRecommendation.intermediary && <><div className="route-link"><span>Warm introduction</span><Network /></div><div className="route-node"><span>{routeRecommendation.intermediary.initials}</span><p><strong>{routeRecommendation.intermediary.name}</strong><small>{routeRecommendation.intermediary.title}</small></p></div></>}<div className="route-link"><span>{routeRecommendation.routeType === "Direct" ? "Direct outreach" : routeRecommendation.routeType === "Warm" ? "Confirmed route" : "No credible path"}</span><ChevronRight /></div><div className="route-node"><span>{routeRecommendation.target.initials}</span><p><strong>{routeRecommendation.target.name}</strong><small>{routeRecommendation.target.title}</small></p></div></div>
-            <div className="route-evidence"><strong>Evidence used</strong><p>{routeRecommendation.evidence}</p><small>Contact route: {routeRecommendation.factors.usableContact ? "available" : "unavailable"} · Profile reliability: {routeRecommendation.factors.reliableProfile ? "sufficient" : "needs review"} · Confirmed intermediary: {routeRecommendation.factors.confirmedIntermediary ? "yes" : "no"}</small></div>
-            <DialogFooter><Button variant="outline" onClick={() => setRouteRecommendation(null)}>Close</Button><Button onClick={() => { const person = alumni.find(item => item.id === routeRecommendation.target.id); setRouteRecommendation(null); if (person) openAlumnusProfile(person) }}>Open Target Profile</Button></DialogFooter></>}
+            <div className={`route-flow route-dialog-flow route-flow-${routeRecommendation.routeType.toLowerCase().replaceAll(" ", "-")}`}><div className="route-node active"><span>PC</span><p><strong>Placement Committee</strong><small>Starts outreach</small></p></div>{routeRecommendation.intermediary && <><div className="route-link"><span>Warm introduction</span><ChevronRight /></div><div className="route-node"><span>{routeRecommendation.intermediary.initials}</span><p><strong>{routeRecommendation.intermediary.name}</strong><small>Confirmed introducer</small></p></div></>}<div className="route-link"><span>{routeRecommendation.routeType === "Direct" ? "Direct outreach" : routeRecommendation.routeType === "Warm" ? "Introduction" : "No eligible route"}</span><ChevronRight /></div><div className="route-node"><span>{routeRecommendation.target.initials}</span><p><strong>{routeRecommendation.target.name}</strong><small>Target alumnus</small></p></div></div>
+            <div className="route-evidence"><strong>Why this route?</strong><dl><div><dt>Relationship evidence</dt><dd>{routeRecommendation.evidence}</dd></div><div><dt>Direct contact</dt><dd>{routeRecommendation.factors.usableContact ? routeRecommendation.factors.verifiedContact ? "Verified contact available" : "Stored contact; verification incomplete" : "Not available"}</dd></div>{routeRecommendation.intermediary && <div><dt>Introducer</dt><dd>{routeRecommendation.intermediary.name} · {routeRecommendation.factors.relationshipType || "Confirmed relationship"}</dd></div>}<div><dt>Profile data</dt><dd>{routeRecommendation.factors.reliableProfile ? "Sufficiently verified" : "Needs review"}</dd></div></dl></div>
+            <DialogFooter><Button variant="outline" onClick={() => setRouteRecommendation(null)}>Close</Button>{routeRecommendation.intermediary && <Button variant="outline" onClick={() => { const person = alumni.find(item => item.id === routeRecommendation.intermediary?.id); setRouteRecommendation(null); if (person) openAlumnusProfile(person) }}>View {routeRecommendation.intermediary.name}&apos;s profile</Button>}<Button onClick={() => { const person = alumni.find(item => item.id === routeRecommendation.target.id); setRouteRecommendation(null); if (person) openAlumnusProfile(person) }}>View {routeRecommendation.target.name}&apos;s profile</Button></DialogFooter></>}
         </DialogContent>
       </Dialog>
 
@@ -2004,7 +2039,7 @@ export default function Home() {
           {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via PDL</Button>{providerModes.lusha === "live" ? <Button variant="outline" onClick={() => { setManualOpen(false); prepareLushaEmail(manualSaved) }}>Prepare Email Reveal</Button> : <><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></>}</div></div> : <div className="manual-form">
             <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Input value={manualForm.programme} onChange={event => updateManualField("programme", event.target.value)} /></label><label><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
             <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
-            <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML / PlaceCom relationship</span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
+            <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML / Placement Committee relationship</span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
             {manualMessage && <div className="manual-message">{manualMessage}</div>}
             {manualMatches.length > 0 && <div className="manual-matches"><strong>Possible existing alumnus</strong>{manualMatches.map(match => <div key={match.id}><span className="avatar small">{match.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</span><p><strong>{match.name}</strong><small>{match.programme} {match.batch || ""} · {match.company} · {match.title}</small></p><Button variant="outline" size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Compare</Button><Button size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Use Existing</Button></div>)}</div>}
           </div>}

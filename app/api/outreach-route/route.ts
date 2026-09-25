@@ -5,22 +5,6 @@ import { activityLog, alumni, alumniRelationships, engagementEvents } from "@/db
 import { appConfig } from "@/lib/app-config";
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
-async function ensureDemoRelationship() {
-  const db = getDb();
-  const [neha] = await db.select().from(alumni).where(eq(alumni.name, "Neha Kapoor")).limit(1);
-  const [siddharth] = await db.select().from(alumni).where(eq(alumni.name, "Siddharth Jain")).limit(1);
-  if (!neha || !siddharth) return;
-  await db.insert(alumniRelationships).values({
-    intermediaryAlumnusId: siddharth.id,
-    targetAlumnusId: neha.id,
-    relationshipType: "Confirmed professional relationship",
-    evidence: "Manually confirmed professional relationship; Siddharth previously supported a PlaceCom introduction.",
-    confirmed: true,
-    successfulIntroductions: 1,
-    source: "Demonstration relationship evidence",
-  }).onConflictDoNothing();
-}
-
 function relationshipStrength(value: string) {
   return ["Very strong", "Strong"].includes(value);
 }
@@ -36,7 +20,6 @@ export async function POST(request: Request) {
     if (!Number.isInteger(payload.targetAlumnusId)) {
       return Response.json({ error: "Select a target alumnus before requesting a route." }, { status: 400 });
     }
-    await ensureDemoRelationship();
     const db = getDb();
     const actor = context.displayName;
     const targetId = Number(payload.targetAlumnusId);
@@ -58,6 +41,7 @@ export async function POST(request: Request) {
       .sort((a, b) => b.relation.successfulIntroductions - a.relation.successfulIntroductions)[0];
 
     const usableContact = Boolean(target.email || target.phone);
+    const verifiedContact = target.emailVerification === "Verified" || target.phoneVerification === "Verified";
     const reliableProfile = target.confidence >= 70 && target.profileMatch !== "Mismatch";
     const directResponses = targetHistory.filter(event => event.responseReceived).length;
     const directAttempts = targetHistory.filter(event => event.actionTakenAt && event.eventType !== "Birthday").length;
@@ -69,14 +53,14 @@ export async function POST(request: Request) {
     if (credible && poorDirectResponsiveness) {
       routeType = "Warm";
       intermediary = credible.person!;
-      rationale = `${target.name} has weak direct-response evidence. ${intermediary.name} has a confirmed relationship with ${target.name}, a strong PlaceCom relationship and ${credible.relation.successfulIntroductions} recorded successful introduction${credible.relation.successfulIntroductions === 1 ? "" : "s"}.`;
+      rationale = `${target.name} has weak direct-response evidence. ${intermediary.name} has a confirmed relationship and strong Placement Committee engagement, so a warm introduction is recommended.`;
     } else if (usableContact && reliableProfile) {
       routeType = "Direct";
-      rationale = `${target.name} has a usable contact route and sufficiently reliable professional data${responsive(target.status) ? ", with positive direct-response history" : ""}. ${credible ? "The recorded intermediary does not currently offer a material advantage" : "No confirmed intermediary relationship is recorded"}, so direct outreach remains the shortest credible path.`;
+      rationale = `${target.name} has a usable contact route and sufficiently reliable profile data${responsive(target.status) ? ", with positive response history" : ""}. Direct outreach is the shortest credible path.`;
     } else if (credible) {
       routeType = "Warm";
       intermediary = credible.person!;
-      rationale = `${target.name} does not currently have a sufficiently usable direct contact route. ${intermediary.name} has a confirmed relationship and strong PlaceCom engagement, so a warm introduction is the credible route.`;
+      rationale = `${target.name} does not have a sufficiently verified direct contact route. ${intermediary.name} has a confirmed relationship and strong Placement Committee engagement, so a warm introduction is recommended.`;
     } else {
       routeType = "No eligible route";
       rationale = `${target.name} does not have a sufficiently usable direct contact route, and no confirmed intermediary relationship is recorded. Refresh or enrich the profile before outreach.`;
@@ -95,8 +79,12 @@ export async function POST(request: Request) {
       rationale,
       target: { id: target.id, name: target.name, initials: target.initials, company: target.company, title: target.title },
       intermediary: intermediary ? { id: intermediary.id, name: intermediary.name, initials: intermediary.initials, company: intermediary.company, title: intermediary.title } : null,
-      evidence: credible ? credible.relation.evidence : "No confirmed intermediary evidence recorded.",
-      factors: { usableContact, reliableProfile, directAttempts, directResponses, confirmedIntermediary: Boolean(credible) },
+      evidence: credible
+        ? credible.relation.successfulIntroductions > 0
+          ? `Prior introduction confirmed by a committee member (${credible.relation.successfulIntroductions} recorded).`
+          : credible.relation.relationshipType
+        : "No confirmed intermediary relationship is recorded.",
+      factors: { usableContact, verifiedContact, reliableProfile, directAttempts, directResponses, confirmedIntermediary: Boolean(credible), relationshipType: credible?.relation.relationshipType ?? "", successfulIntroductions: credible?.relation.successfulIntroductions ?? 0 },
     });
   } catch (error) {
     const denied = accessErrorResponse(error);

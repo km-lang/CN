@@ -11,7 +11,8 @@ const discoveryProvider = await readFile(new URL("../lib/pdl-discovery.ts", impo
 const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
 
 test("acceptance 1: outreach routing requires an explicitly selected target alumnus", () => {
-  assert.match(page, /Who do you want to reach\?/);
+  assert.match(page, /Target alumnus/);
+  assert.match(page, /Search or select an alumnus/);
   assert.match(page, /disabled=\{!targetAlumnusId \|\| routeLoading\}/);
   assert.match(routeApi, /Select a target alumnus before requesting a route/);
 });

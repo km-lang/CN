@@ -55,7 +55,14 @@ export function workspaceTabUrl(href: string, tab: string) {
   const url = new URL(href)
   for (const key of EMAIL_STATE_KEYS) url.searchParams.delete(key)
   url.searchParams.delete("profileAlumnusId")
+  url.searchParams.delete("engagementEventId")
   url.searchParams.set("tab", VALID_TABS.has(tab) ? tab : "overview")
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
+export function engagementEventUrl(href: string, eventId: number) {
+  const url = new URL(workspaceTabUrl(href, "engagement"), href)
+  if (Number.isInteger(eventId) && eventId > 0) url.searchParams.set("engagementEventId", String(eventId))
   return `${url.pathname}${url.search}${url.hash}`
 }
 
@@ -75,6 +82,11 @@ export function profileRouteState(search: string) {
     profileAlumnusId: Number.isInteger(profileAlumnusId) && profileAlumnusId > 0 ? profileAlumnusId : null,
     tab: VALID_TABS.has(tab ?? "") ? tab : null,
   }
+}
+
+export function parseEngagementEventId(search: string) {
+  const eventId = Number(new URLSearchParams(search).get("engagementEventId"))
+  return Number.isInteger(eventId) && eventId > 0 ? eventId : null
 }
 
 export function canonicalWorkspaceUrl(
@@ -98,6 +110,10 @@ export function canonicalWorkspaceUrl(
     const profileAlumnusId = Number(url.searchParams.get("profileAlumnusId"))
     if (tab !== "directory" || !Number.isInteger(profileAlumnusId) || profileAlumnusId < 1) {
       url.searchParams.delete("profileAlumnusId")
+    }
+    const engagementEventId = Number(url.searchParams.get("engagementEventId"))
+    if (tab !== "engagement" || !access.canOperate || !Number.isInteger(engagementEventId) || engagementEventId < 1) {
+      url.searchParams.delete("engagementEventId")
     }
   }
 

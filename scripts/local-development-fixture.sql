@@ -25,12 +25,15 @@ ON CONFLICT(`id`) DO UPDATE SET
 INSERT INTO `alumni` (
   `id`, `profile_key`, `name`, `initials`, `batch`, `graduation_year`, `programme`,
   `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`,
-  `email_verification`, `professional_data_status`, `verified_label`, `source`, `updated_by`
+  `email_verification`, `professional_data_status`, `verified_label`, `outreach_status`,
+  `iiml_relationship`, `warm_intro_potential`, `confidence`, `profile_match`,
+  `current_company_verification`, `designation_verification`, `source`, `updated_by`
 ) VALUES (
   15, 'local-fixture-sahil-bansal', 'Sahil Bansal', 'SB', 2012, 2012, 'PGP',
   'Local Fixture Company', 'Director', 'Strategy', 'Director', 'India',
   'sahil.bansal@example.test', 'Local fixture', 'Verified', 'Reviewed', 'Locally verified',
-  'Local fixture', 'Local Development Admin'
+  'Contacted', 'Unknown / Not assessed', 'Confirmed relationship available', 65, 'Confirmed',
+  'Verified', 'Verified', 'Local fixture', 'Local Development Admin'
 )
 ON CONFLICT(`id`) DO UPDATE SET
   `profile_key` = excluded.`profile_key`,
@@ -47,18 +50,28 @@ ON CONFLICT(`id`) DO UPDATE SET
   `email` = excluded.`email`,
   `email_source` = excluded.`email_source`,
   `email_verification` = excluded.`email_verification`,
+  `outreach_status` = excluded.`outreach_status`,
+  `iiml_relationship` = excluded.`iiml_relationship`,
+  `warm_intro_potential` = excluded.`warm_intro_potential`,
+  `confidence` = excluded.`confidence`,
+  `profile_match` = excluded.`profile_match`,
+  `current_company_verification` = excluded.`current_company_verification`,
+  `designation_verification` = excluded.`designation_verification`,
   `source` = excluded.`source`,
   `updated_by` = excluded.`updated_by`;
 
 INSERT INTO `alumni` (
   `id`, `profile_key`, `name`, `initials`, `batch`, `graduation_year`, `programme`,
   `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`,
-  `email_verification`, `professional_data_status`, `verified_label`, `source`, `updated_by`
+  `email_verification`, `professional_data_status`, `verified_label`, `outreach_status`,
+  `iiml_relationship`, `warm_intro_potential`, `confidence`, `profile_match`,
+  `current_company_verification`, `designation_verification`, `source`, `updated_by`
 ) VALUES (
   22, 'local-fixture-priya-sharma', 'Priya Sharma', 'PS', 2015, 2015, 'PGP',
   'Local Fixture Company', 'Vice President', 'HR', 'Vice President', 'Mumbai, India',
-  'priya.sharma@example.test', 'Local fixture', 'Verified', 'Reviewed', 'Locally verified',
-  'Local fixture', 'Local Development Admin'
+  'priya.sharma@example.test', 'Local fixture', 'Verified', 'Reviewed', 'Locally verified', 'Responded',
+  'Strong', 'Confirmed direct connection to decision-maker', 85, 'Confirmed',
+  'Verified', 'Verified', 'Local fixture', 'Local Development Admin'
 )
 ON CONFLICT(`id`) DO UPDATE SET
   `profile_key` = excluded.`profile_key`,
@@ -75,8 +88,53 @@ ON CONFLICT(`id`) DO UPDATE SET
   `email` = excluded.`email`,
   `email_source` = excluded.`email_source`,
   `email_verification` = excluded.`email_verification`,
+  `outreach_status` = excluded.`outreach_status`,
+  `iiml_relationship` = excluded.`iiml_relationship`,
+  `warm_intro_potential` = excluded.`warm_intro_potential`,
+  `confidence` = excluded.`confidence`,
+  `profile_match` = excluded.`profile_match`,
+  `current_company_verification` = excluded.`current_company_verification`,
+  `designation_verification` = excluded.`designation_verification`,
   `source` = excluded.`source`,
   `updated_by` = excluded.`updated_by`;
+
+INSERT INTO `alumni_relationships` (
+  `intermediary_alumnus_id`, `target_alumnus_id`, `relationship_type`, `evidence`,
+  `confirmed`, `successful_introductions`, `source`, `updated_by`
+) VALUES (
+  22, 15, 'Confirmed relationship',
+  'Prior introduction confirmed by a committee member.',
+  1, 1, 'Local development data', 'Local Development Admin'
+)
+ON CONFLICT(`intermediary_alumnus_id`, `target_alumnus_id`) DO UPDATE SET
+  `relationship_type` = excluded.`relationship_type`,
+  `evidence` = excluded.`evidence`,
+  `confirmed` = excluded.`confirmed`,
+  `successful_introductions` = excluded.`successful_introductions`,
+  `source` = excluded.`source`,
+  `updated_by` = excluded.`updated_by`;
+
+INSERT INTO `engagement_events` (
+  `id`, `event_key`, `alumnus_id`, `company`, `event_type`, `event_subtype`, `event_title`,
+  `event_description`, `source`, `source_reference_id`, `event_date`, `status`, `created_by`, `last_updated_by`
+) VALUES (
+  151, 'local-priya-promotion-signal', 22, 'Local Fixture Company', 'Professional Signal', 'Promotion',
+  'Promotion requires review', 'Priya Sharma was promoted to Vice President.',
+  'Local development data', 'local-signal-151', '2026-09-25', 'New',
+  'Local Development Admin', 'Local Development Admin'
+)
+ON CONFLICT(`id`) DO UPDATE SET
+  `event_key` = excluded.`event_key`,
+  `alumnus_id` = excluded.`alumnus_id`,
+  `company` = excluded.`company`,
+  `event_type` = excluded.`event_type`,
+  `event_subtype` = excluded.`event_subtype`,
+  `event_title` = excluded.`event_title`,
+  `event_description` = excluded.`event_description`,
+  `source` = excluded.`source`,
+  `source_reference_id` = excluded.`source_reference_id`,
+  `event_date` = excluded.`event_date`,
+  `status` = excluded.`status`;
 
 INSERT INTO `communication_preferences` (
   `alumnus_id`, `engagement_type`, `status`, `source`, `updated_by`

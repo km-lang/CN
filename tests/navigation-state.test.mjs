@@ -44,6 +44,14 @@ test("profile history URLs remain deterministic for consecutive selection, close
   assert.deepEqual(navigation.profileRouteState(new URL(second, "https://network.example").search), { profileAlumnusId: 22, tab: "directory" })
 })
 
+test("engagement signal URLs identify one event and are removed outside Engagement", () => {
+  const event = navigation.engagementEventUrl("https://network.example/?tab=overview", 151)
+  assert.equal(event, "/?tab=engagement&engagementEventId=151")
+  assert.equal(navigation.parseEngagementEventId(new URL(event, "https://network.example").search), 151)
+  assert.equal(navigation.canonicalWorkspaceUrl("https://network.example/?tab=directory&engagementEventId=151"), "/?tab=directory")
+  assert.equal(navigation.workspaceTabUrl(`https://network.example${event}`, "overview"), "/?tab=overview")
+})
+
 test("same-field persistence is serialized and only the newest result reconciles the UI", async () => {
   const coordinator = new mutations.PersistedMutationCoordinator()
   let active = 0
