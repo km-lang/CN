@@ -83,7 +83,8 @@ test("acceptance 11: Data Import separates bulk import from manual entry", () =>
 test("acceptance 12: manual entry checks possible duplicates before insertion", () => {
   assert.match(workspaceApi, /action === "manual_check"/);
   assert.match(workspaceApi, /requiresConfirmation: true/);
-  assert.match(page, /Continue as New/);
+  assert.match(page, /Different person · Continue/);
+  assert.match(workspaceApi, /matches\.some\(match => match\.exact\)/);
 });
 
 test("acceptance 13: manual add records its source and consumes no provider credit", () => {
@@ -123,5 +124,5 @@ test("acceptance 18: Lusha contact provenance and response history are explicit"
   assert.match(enrichmentApi, /source: "Lusha"/);
   assert.match(enrichmentApi, /Email Enrichment/);
   assert.match(enrichmentApi, /Phone Enrichment/);
-  assert.match(page, /“Lusha sourced” means the provider returned the contact/);
+  assert.match(page, /Provider-sourced data is identified separately and does not imply independent deliverability/);
 });

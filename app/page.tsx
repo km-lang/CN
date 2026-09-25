@@ -37,6 +37,7 @@ import { initializeControlledEmail } from "@/lib/controlled-email-initialization
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 import { programmeFilterOptions, type ProgrammeOption } from "@/lib/programme-options"
 import { contactReadiness, isActiveOutreach } from "@/lib/alumni-metrics"
+import { parseCsv, parseXlsx, validateImport, type ImportReviewRow } from "@/lib/alumni-import"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -224,7 +225,7 @@ type RouteRecommendation = {
   factors: { usableContact: boolean; verifiedContact: boolean; reliableProfile: boolean; directAttempts: number; directResponses: number; confirmedIntermediary: boolean; relationshipType: string; successfulIntroductions: number }
 }
 type ManualForm = { name: string; programme: string; batch: string; company: string; title: string; function: string; seniority: string; location: string; linkedinUrl: string; email: string; phone: string; relationship: string; note: string; status: OutreachStatus }
-type ManualMatch = { id: number; name: string; programme: string; batch: number; company: string; title: string }
+type ManualMatch = { id: number; name: string; programme: string; batch: number; company: string; title: string; reasons: string[]; exact: boolean }
 type RefreshField = { field: string; label: string; oldValue: string; newValue: string }
 type RefreshResult = { alumnusId: number; alumnusName: string; status: string; reviewStatus: string; reviewId?: number; creditsUsed: number; responseSummary: string; fields: RefreshField[] }
 type LushaContactPreview = {
@@ -417,33 +418,6 @@ function StatCard({ icon: Icon, label, value, delta, help }: { icon: typeof User
   return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span>{delta}{help && <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" className="kpi-help" aria-label={`What ${label} means`}><Info aria-hidden="true" /></button></TooltipTrigger><TooltipContent side="bottom" className="kpi-help-content">{help}</TooltipContent></Tooltip></TooltipProvider>}</span></div></article>
 }
 
-function parseCsv(content: string) {
-  const rows: string[][] = []
-  let row: string[] = []
-  let cell = ""
-  let quoted = false
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index]
-    const next = content[index + 1]
-    if (character === '"' && quoted && next === '"') { cell += '"'; index += 1; continue }
-    if (character === '"') { quoted = !quoted; continue }
-    if (character === "," && !quoted) { row.push(cell.trim()); cell = ""; continue }
-    if ((character === "\n" || character === "\r") && !quoted) {
-      if (character === "\r" && next === "\n") index += 1
-      row.push(cell.trim()); cell = ""
-      if (row.some(value => value)) rows.push(row)
-      row = []
-      continue
-    }
-    cell += character
-  }
-  row.push(cell.trim())
-  if (row.some(value => value)) rows.push(row)
-  if (rows.length < 2) throw new Error("The CSV must contain a header row and at least one alumnus.")
-  const headers = rows[0].map(header => header.replace(/^\uFEFF/, "").trim())
-  return rows.slice(1).map(values => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])))
-}
-
 export default function Home() {
   const session = useAccessSession()
   const currentDemoUser = session.displayName
@@ -460,6 +434,9 @@ export default function Home() {
   const [latestImport, setLatestImport] = useState<LatestImport | null>(null)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
+  const [importReview, setImportReview] = useState<{ rows: ImportReviewRow[]; counts: { detected: number; newRecords: number; existingMatches: number; needsAttention: number; duplicates: number }; blocking: boolean; sheetName?: string } | null>(null)
+  const [approvedImportUpdates, setApprovedImportUpdates] = useState<string[]>([])
+  const [importMessage, setImportMessage] = useState("")
   const [providerModes, setProviderModes] = useState<Record<Provider, ProviderMode>>({ pdl: "mock", lusha: "mock" })
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ pdl: { used: 0, limit: 100, remaining: 100, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
   const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
@@ -524,7 +501,7 @@ export default function Home() {
   const [routeLoading, setRouteLoading] = useState(false)
   const [routeMessage, setRouteMessage] = useState("")
   const [manualOpen, setManualOpen] = useState(false)
-  const [manualForm, setManualForm] = useState<ManualForm>({ name: "", programme: "PGP", batch: "", company: "", title: "", function: "Other", seniority: "Not assessed", location: "", linkedinUrl: "", email: "", phone: "", relationship: "Unknown / Not assessed", note: "", status: "Not contacted" })
+  const [manualForm, setManualForm] = useState<ManualForm>({ name: "", programme: "PGP", batch: "", company: "", title: "", function: "Not assessed", seniority: "Not assessed", location: "", linkedinUrl: "", email: "", phone: "", relationship: "Unknown / Not assessed", note: "", status: "Not contacted" })
   const [manualMatches, setManualMatches] = useState<ManualMatch[]>([])
   const [manualSaved, setManualSaved] = useState<Alumni | null>(null)
   const [manualLoading, setManualLoading] = useState(false)
@@ -956,19 +933,47 @@ export default function Home() {
     URL.revokeObjectURL(url)
   }
 
+  async function readImportFile() {
+    if (!importFile) throw new Error("Choose a CSV or Excel file first.")
+    const extension = importFile.name.toLowerCase().split(".").pop()
+    if (extension === "csv") return { records: parseCsv(await importFile.text()), sheetName: undefined }
+    if (extension === "xlsx") return parseXlsx(await importFile.arrayBuffer())
+    throw new Error("Choose a .csv or .xlsx alumni file.")
+  }
+
+  async function validateImportFile() {
+    setImporting(true)
+    setImportMessage("")
+    try {
+      const parsed = await readImportFile()
+      const review = validateImport(parsed.records, alumni, programmeChoices.map(option => option.value))
+      setImportReview({ ...review, sheetName: parsed.sheetName })
+      setApprovedImportUpdates([])
+      setImportMessage(review.blocking ? "Resolve the blocking rows before importing." : "Validation complete. Review new records and any existing-record differences before importing.")
+    } catch (error) {
+      setImportReview(null)
+      setImportMessage(error instanceof Error ? error.message : "Unable to validate the selected file.")
+    } finally {
+      setImporting(false)
+    }
+  }
+
   async function importAlumni() {
-    if (!importFile) { setWorkspaceMessage("Choose a CSV file first."); return }
+    if (!importFile || !importReview) { setImportMessage("Validate and review the selected file first."); return }
+    if (importReview.blocking) { setImportMessage("Resolve the blocking rows before importing."); return }
     setImporting(true)
     try {
-      const records = parseCsv(await importFile.text())
-      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "import", filename: importFile.name, records }) })
-      const data = await response.json() as { imported?: number; error?: string }
+      const parsed = await readImportFile()
+      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "import", filename: importFile.name, records: parsed.records, approvedUpdateKeys: approvedImportUpdates }) })
+      const data = await response.json() as { imported?: number; updated?: number; protectedFields?: number; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
-      setWorkspaceMessage(`${data.imported ?? records.length} alumni records imported into the shared database.`)
+      setImportMessage(`${data.imported ?? 0} new alumni added${data.updated ? ` · ${data.updated} existing records safely updated` : ""}${data.protectedFields ? ` · ${data.protectedFields} verified fields preserved` : ""}.`)
       setImportFile(null)
+      setImportReview(null)
+      setApprovedImportUpdates([])
       await loadWorkspace()
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to import the selected file.")
+      setImportMessage(error instanceof Error ? error.message : "Unable to import the selected file.")
     } finally {
       setImporting(false)
     }
@@ -1942,23 +1947,24 @@ export default function Home() {
           <TabsContent value="data-import" className="tab-panel">
             <section className="import-layout">
               <article className="panel import-panel">
-                <div className="panel-heading"><div><p className="eyebrow">Bulk import</p><h2>Upload CSV</h2><span>Best for adding or updating many alumni at once.</span></div><div className="database-badge"><Database /> Shared database</div></div>
+                <div className="panel-heading"><div><p className="eyebrow">Bulk import</p><h2>Upload alumni file</h2><span>Validate and review CSV or Excel data before anything is saved.</span></div><div className="database-badge"><Database /> Shared database</div></div>
                 <div className="import-body">
                   <div className="upload-zone">
                     <FileSpreadsheet />
-                    <div><strong>{importFile ? importFile.name : "Choose an alumni CSV file"}</strong><span>Required: name, batch and company. Existing records are matched by name, batch and company.</span></div>
-                    <input aria-label="Choose alumni CSV file" type="file" accept=".csv,text/csv" onChange={event => setImportFile(event.target.files?.[0] ?? null)} />
+                    <div><strong>{importFile ? importFile.name : "Choose a CSV or Excel file"}</strong><span>Required: name, graduation year / batch and company. Excel uses the first worksheet and reads cell values only.</span></div>
+                    <input className="file-input" aria-label="Choose CSV or Excel alumni file" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => { setImportFile(event.target.files?.[0] ?? null); setImportReview(null); setApprovedImportUpdates([]); setImportMessage("") }} />
                   </div>
-                  <div className="import-actions"><Button variant="outline" onClick={downloadTemplate}><Download /> Download template</Button><Button title={!importFile ? "Choose a CSV file first." : importing ? "The selected file is still being imported." : undefined} onClick={importAlumni} disabled={!importFile || importing}>{importing ? <LoaderCircle className="spin" /> : <Upload />} {importing ? "Importing" : "Import to shared database"}</Button></div>
-                  {workspaceMessage && <div className="workspace-message"><Cloud /> <span>{workspaceMessage}</span></div>}
+                  <div className="import-actions"><Button variant="outline" onClick={downloadTemplate}><Download /> Download CSV template</Button><span><Button title={!importFile ? "Choose a CSV or Excel file first." : undefined} variant="outline" onClick={() => void validateImportFile()} disabled={!importFile || importing}>{importing && !importReview ? <LoaderCircle className="spin" /> : <CheckCircle2 />} Validate</Button><Button title={!importReview ? "Validate and review the file first." : importReview.blocking ? "Resolve blocking validation errors first." : undefined} onClick={() => void importAlumni()} disabled={!importReview || importReview.blocking || importing}>{importing && importReview ? <LoaderCircle className="spin" /> : <Upload />} Import reviewed records</Button></span></div>
+                  {importReview && <div className="import-review"><div className="import-review-summary"><span><strong>{importReview.counts.detected}</strong> rows detected</span><span><strong>{importReview.counts.newRecords}</strong> new alumni</span><span><strong>{importReview.counts.existingMatches}</strong> existing matches</span><span><strong>{importReview.counts.needsAttention}</strong> need attention</span><span><strong>{importReview.counts.duplicates}</strong> duplicates in file</span></div>{importReview.sheetName && <p>Excel worksheet used: <strong>{importReview.sheetName}</strong>. Other worksheets are not imported.</p>}<div className="import-review-rows">{importReview.rows.filter(row => row.kind !== "new" || row.issues.length).map(row => <div key={`${row.index}-${row.key}`} className={`import-review-row import-${row.kind}`}><span>Row {row.index}</span><strong>{row.record.name || "Unnamed row"}</strong><small>{row.kind === "duplicate" ? "Duplicate within this file" : row.issues.length ? row.issues.join(" · ") : row.kind === "existing" ? `Existing match${row.changedFields.length ? ` · changed: ${row.changedFields.join(", ")}` : " · no changes"}` : "Ready to add"}</small>{row.kind === "existing" && row.changedFields.length > 0 && <label><input type="checkbox" checked={approvedImportUpdates.includes(row.key)} onChange={() => setApprovedImportUpdates(current => current.includes(row.key) ? current.filter(key => key !== row.key) : [...current, row.key])} /> Apply safe changes; preserve verified fields</label>}</div>)}</div></div>}
+                  {importMessage && <div className="workspace-message" role="status"><Cloud /> <span>{importMessage}</span></div>}
                 </div>
               </article>
 
               <article className="panel manual-entry-card"><div className="manual-entry-icon"><Plus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualForm(current => ({ ...current, programme: activeProgrammeChoices.some(option => option.value === current.programme) ? current.programme : activeProgrammeChoices[0]?.value ?? "" })); setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><Plus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
 
               <aside className="panel database-panel">
-                <div className="database-hero"><Database /><div><p className="eyebrow">Central data state</p><h2>{alumni.length} alumni records</h2><span>{companies.length} companies in one shared workspace</span></div></div>
-                <div className="database-facts"><div><span>Persistence</span><strong>Across users and devices</strong></div><div><span>Duplicate control</span><strong>Name + batch + company</strong></div><div><span>Maximum batch</span><strong>250 records per import</strong></div><div><span>Current source</span><strong>{latestImport?.filename ?? "No alumni data imported"}</strong></div></div>
+                <div className="database-hero"><Database /><div><p className="eyebrow">Shared alumni database</p><h2>{alumni.length} alumni · {companies.length} companies</h2><span>One governed workspace</span></div></div>
+                <div className="database-facts"><div><span>Maximum import</span><strong>250 rows</strong></div><div><span>Duplicate matching</span><strong>Email, profile URL, or name + year + company</strong></div><div><span>Database</span><strong>Ready ✓</strong></div><div><span>Latest CSV/Excel import</span><strong>{latestImport?.filename ?? "None yet"}</strong></div></div>
                 <div className="latest-import"><CheckCircle2 /><div><strong>{latestImport ? "Latest import completed" : "Database ready"}</strong><span>{latestImport ? `${latestImport.rowCount} records by ${latestImport.importedBy}` : "No uploaded file has been recorded yet."}</span></div></div>
               </aside>
             </section>
@@ -2115,13 +2121,13 @@ export default function Home() {
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
         <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? `The record is now in ${appConfig.name}. Provider actions remain optional.` : "Enter what is known. Name plus an email, profile URL, or company and graduation year is required."}</DialogDescription></DialogHeader>
           {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via PDL</Button>{providerModes.lusha === "live" ? <Button variant="outline" onClick={() => { setManualOpen(false); prepareLushaEmail(manualSaved) }}>Prepare Email Reveal</Button> : <><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></>}</div></div> : <div className="manual-form">
-            <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Select value={manualForm.programme} onValueChange={value => updateManualField("programme", value)}><SelectTrigger><SelectValue placeholder="Select programme" /></SelectTrigger><SelectContent>{activeProgrammeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label><label><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
-            <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
-            <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML / Placement Committee relationship</span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
+            <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Select value={manualForm.programme} onValueChange={value => updateManualField("programme", value)}><SelectTrigger><SelectValue placeholder="Select programme" /></SelectTrigger><SelectContent>{activeProgrammeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label><label><span>Graduation year / batch</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
+            <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
+            <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML relationship <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" className="inline-help" aria-label="About IIML relationship"><Info /></button></TooltipTrigger><TooltipContent>Captures Placement Committee and alumni relationship context.</TooltipContent></Tooltip></TooltipProvider></span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
             {manualMessage && <div className="manual-message">{manualMessage}</div>}
-            {manualMatches.length > 0 && <div className="manual-matches"><strong>Possible existing alumnus</strong>{manualMatches.map(match => <div key={match.id}><span className="avatar small">{match.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</span><p><strong>{match.name}</strong><small>{match.programme} {match.batch || ""} · {match.company} · {match.title}</small></p><Button variant="outline" size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Compare</Button><Button size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Use Existing</Button></div>)}</div>}
+            {manualMatches.length > 0 && <div className="manual-matches"><strong>{manualMatches.some(match => match.exact) ? "Existing alumnus found" : "Possible existing alumnus"}</strong>{manualMatches.map(match => <div key={match.id}><span className="avatar small">{match.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</span><p><strong>{match.name}</strong><small>{match.programme} {match.batch || ""} · {match.company} · {match.title}</small><em>Matched by {match.reasons.join(" and ")}</em></p><Button variant="outline" size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Compare</Button><Button size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Use Existing</Button></div>)}</div>}
           </div>}
-          <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); openAlumnusProfile(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && <Button variant="outline" onClick={() => void saveManualAlumnus(true)}>Continue as New</Button>}<Button disabled={manualLoading} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add</Button></>}</DialogFooter>
+          <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); openAlumnusProfile(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && !manualMatches.some(match => match.exact) && <Button variant="outline" onClick={() => void saveManualAlumnus(true)}>Different person · Continue</Button>}<TooltipProvider><Tooltip><TooltipTrigger asChild><Button disabled={manualLoading} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add Alumnus</Button></TooltipTrigger><TooltipContent>Checks the internal alumni database for possible duplicates before adding this record. No PDL or Lusha call is made.</TooltipContent></Tooltip></TooltipProvider></>}</DialogFooter>
         </DialogContent>
       </Dialog>
 

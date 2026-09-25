@@ -30,14 +30,18 @@ function possibleManualMatches(record: ImportedRecord, people: (typeof alumni.$i
   const linkedin = normalized(normalizeProfessionalProfileUrl(record.linkedinUrl ?? record.linkedin_url));
   const company = normalized(record.company);
   const batch = number(record.batch ?? record.graduationYear ?? record.graduation_year);
-  return people.filter(person => {
-    if (email && normalized(person.email) === email) return true;
-    if (linkedin && normalized(person.linkedinUrl) === linkedin) return true;
-    if (name !== normalized(person.name)) return false;
-    return (batch > 0 && (person.batch === batch || person.graduationYear === batch))
-      || (company && normalized(person.company) === company)
-      || (!batch && !company);
-  }).slice(0, 5).map(person => ({ id: person.id, name: person.name, programme: person.programme, batch: person.batch, company: person.company, title: person.title }));
+  return people.map(person => {
+    const reasons: string[] = [];
+    if (email && normalized(person.email) === email) reasons.push("email");
+    if (linkedin && normalized(person.linkedinUrl) === linkedin) reasons.push("professional profile URL");
+    const sameName = name === normalized(person.name);
+    if (sameName) reasons.push("name");
+    if (sameName && batch > 0 && (person.batch === batch || person.graduationYear === batch)) reasons.push("graduation year / batch");
+    if (sameName && company && normalized(person.company) === company) reasons.push("current company");
+    const exact = reasons.includes("email") || reasons.includes("professional profile URL") || (reasons.includes("name") && reasons.includes("graduation year / batch") && reasons.includes("current company"));
+    const possible = exact || (sameName && reasons.length > 1) || (sameName && !batch && !company);
+    return possible ? { id: person.id, name: person.name, programme: person.programme, batch: person.batch, company: person.company, title: person.title, reasons, exact } : null;
+  }).filter((person): person is NonNullable<typeof person> => Boolean(person)).slice(0, 5);
 }
 
 function normaliseManualRecord(record: ImportedRecord, actor: string, continueAsNew: boolean) {
@@ -63,7 +67,7 @@ function normaliseManualRecord(record: ImportedRecord, actor: string, continueAs
     company,
     title: text(record.title, "Role not recorded"),
     rawTitle: text(record.title),
-    function: text(record.function, "Other"),
+    function: text(record.function, "Not assessed"),
     seniority: text(record.seniority, "Not assessed"),
     location: text(record.location, "Not recorded"),
     confidence: 50,
@@ -189,6 +193,7 @@ function normaliseRecord(record: ImportedRecord, filename: string, actor: string
     return allowedVerification.has(result) ? result : fallback;
   };
 
+  const importSource = filename.toLowerCase().endsWith(".xlsx") ? "Excel import" : "CSV import";
   return {
     profileKey: profileKey(record),
     name,
@@ -200,7 +205,7 @@ function normaliseRecord(record: ImportedRecord, filename: string, actor: string
     company,
     title: text(record.title, "Role not recorded"),
     rawTitle: text(record.rawTitle ?? record.raw_title ?? record.title),
-    function: text(record.function, "Other"),
+    function: text(record.function, "Not assessed"),
     seniority: text(record.seniority, "Not assessed"),
     location: text(record.location, "Not recorded"),
     previous: text(record.previous ?? record.previous_companies),
@@ -215,8 +220,8 @@ function normaliseRecord(record: ImportedRecord, filename: string, actor: string
     discoveryDate: text(record.discoveryDate ?? record.discovery_date),
     lastPdlRefresh: text(record.lastPdlRefresh ?? record.last_pdl_refresh),
     lastLushaEnrichment: text(record.lastLushaEnrichment ?? record.last_lusha_enrichment),
-    emailSource: text(record.emailSource ?? record.email_source),
-    phoneSource: text(record.phoneSource ?? record.phone_source),
+    emailSource: text(record.email) ? importSource : "",
+    phoneSource: text(record.phone) ? importSource : "",
     emailRetrievedAt: text(record.emailRetrievedAt ?? record.email_retrieved_at),
     phoneRetrievedAt: text(record.phoneRetrievedAt ?? record.phone_retrieved_at),
     verified: text(record.verified, "Not yet verified"),
@@ -228,10 +233,10 @@ function normaliseRecord(record: ImportedRecord, filename: string, actor: string
     profileMatch: verification(record.profileMatch ?? record.profile_match ?? fieldVerification.profileMatch),
     currentCompanyVerification: verification(record.currentCompany ?? record.current_company_verification ?? fieldVerification.currentCompany),
     designationVerification: verification(record.designation ?? record.designation_verification ?? fieldVerification.designation),
-    emailVerification: verification(record.emailVerification ?? record.email_verification ?? fieldVerification.email),
-    phoneVerification: verification(record.phoneVerification ?? record.phone_verification ?? fieldVerification.phone),
+    emailVerification: "Unverified",
+    phoneVerification: "Unverified",
     locationVerification: verification(record.locationVerification ?? record.location_verification ?? fieldVerification.location),
-    source: filename,
+    source: importSource,
     updatedBy: actor,
     updatedAt: new Date().toISOString(),
   };
@@ -268,7 +273,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM");
-    const payload = await request.json() as { action?: string; filename?: string; records?: ImportedRecord[]; record?: ImportedRecord; continueAsNew?: boolean };
+    const payload = await request.json() as { action?: string; filename?: string; records?: ImportedRecord[]; record?: ImportedRecord; continueAsNew?: boolean; approvedUpdateKeys?: string[] };
     const db = getDb();
     const actor = context.displayName;
 
@@ -278,6 +283,9 @@ export async function POST(request: Request) {
       const people = await db.select().from(alumni);
       const matches = possibleManualMatches(payload.record, people);
       if (payload.action === "manual_check") return Response.json({ matches });
+      if (matches.some(match => match.exact)) {
+        return Response.json({ error: "An exact existing alumnus was found. Use the existing record instead of creating a duplicate.", matches }, { status: 409 });
+      }
       if (matches.length && !payload.continueAsNew) {
         return Response.json({ error: "A possible existing alumnus needs review before saving.", requiresConfirmation: true, matches }, { status: 409 });
       }
@@ -294,16 +302,57 @@ export async function POST(request: Request) {
     }
     const filename = text(payload.filename, "Manual import");
     const records = payload.records.map(record => normaliseRecord(record, filename, actor));
+    const keys = records.map(record => record.profileKey);
+    if (new Set(keys).size !== keys.length) return Response.json({ error: "The file contains duplicate alumni rows. Remove duplicates and validate again." }, { status: 400 });
+    const approved = new Set(payload.approvedUpdateKeys ?? []);
+    const people = await db.select().from(alumni);
+    let imported = 0;
+    let updated = 0;
+    let protectedFields = 0;
     for (const record of records) {
-      await db.insert(alumni).values(record).onConflictDoUpdate({
-        target: alumni.profileKey,
-        set: record,
-      });
+      const existing = people.find(person => person.profileKey === record.profileKey)
+        ?? people.find(person => record.email && normalized(person.email) === normalized(record.email))
+        ?? people.find(person => record.linkedinUrl && normalized(person.linkedinUrl) === normalized(record.linkedinUrl));
+      if (!existing) {
+        await db.insert(alumni).values(record);
+        imported += 1;
+        continue;
+      }
+      if (!approved.has(record.profileKey)) continue;
+      const changes: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: new Date().toISOString(), source: record.source };
+      const changed: Array<{ field: string; oldValue: string; newValue: string }> = [];
+      const apply = (field: keyof typeof record, current: unknown, allowed: boolean) => {
+        const next = record[field];
+        if (!next || normalized(current) === normalized(next)) return;
+        if (!allowed) { protectedFields += 1; return; }
+        (changes as Record<string, unknown>)[field] = next;
+        changed.push({ field: String(field), oldValue: text(current), newValue: text(next) });
+      };
+      apply("programme", existing.programme, !existing.programme || existing.programme === "Not recorded");
+      apply("education", existing.education, !existing.education);
+      apply("company", existing.company, existing.currentCompanyVerification === "Unverified");
+      apply("title", existing.title, existing.designationVerification === "Unverified");
+      apply("rawTitle", existing.rawTitle, existing.designationVerification === "Unverified");
+      apply("function", existing.function, existing.designationVerification === "Unverified" || existing.function === "Not assessed");
+      apply("seniority", existing.seniority, existing.designationVerification === "Unverified" || existing.seniority === "Not assessed");
+      apply("location", existing.location, existing.locationVerification === "Unverified");
+      apply("previous", existing.previous, !existing.previous);
+      apply("experience", existing.experience, !existing.experience);
+      apply("linkedinUrl", existing.linkedinUrl, !existing.linkedinUrl);
+      apply("email", existing.email, !existing.email);
+      apply("phone", existing.phone, !existing.phone);
+      if (changes.email) { changes.emailSource = record.emailSource; changes.emailVerification = "Unverified"; }
+      if (changes.phone) { changes.phoneSource = record.phoneSource; changes.phoneVerification = "Unverified"; }
+      if (changed.length) {
+        await db.update(alumni).set(changes).where(eq(alumni.id, existing.id));
+        for (const item of changed) await db.insert(fieldChangeHistory).values({ alumnusId: existing.id, field: item.field, oldValue: item.oldValue, newValue: item.newValue, source: record.source, providerAction: "Reviewed alumni import", initiatedBy: actor });
+        updated += 1;
+      }
     }
     await db.insert(importRuns).values({ filename, rowCount: records.length, importedBy: actor });
-    await db.insert(activityLog).values({ action: "import", entityType: "alumni", entityId: filename, actor, details: `${records.length} records imported` });
-    await writeSecurityAudit(context, { action: "alumni_imported", entityType: "import", entityId: filename, metadata: { recordCount: records.length } });
-    return Response.json({ imported: records.length, filename }, { status: 201 });
+    await db.insert(activityLog).values({ action: "import", entityType: "alumni", entityId: filename, actor, details: `${imported} created; ${updated} safely updated; ${protectedFields} protected fields preserved` });
+    await writeSecurityAudit(context, { action: "alumni_imported", entityType: "import", entityId: filename, metadata: { recordCount: records.length, imported, updated, protectedFields } });
+    return Response.json({ imported, updated, protectedFields, filename }, { status: 201 });
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
