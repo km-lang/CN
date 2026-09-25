@@ -8,6 +8,7 @@ import { chatGPTSignInPath, getChatGPTUser } from "@/app/chatgpt-auth"
 import { appConfig, assetPath, withBasePath } from "@/lib/app-config"
 import { APP_SESSION_COOKIE, cookieValue, verifyAppSessionToken } from "@/lib/auth-session"
 import type { AccessSession } from "@/lib/access-types"
+import { isLoopbackHost, localDevelopmentAuthEnabled, localDevelopmentSecurityContext } from "@/lib/local-development"
 import { AccessError, resolveSessionIdentity, toAccessSession } from "@/lib/security"
 
 export const dynamic = "force-dynamic"
@@ -26,9 +27,11 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const requestHeaders = await headers()
   const token = cookieValue(requestHeaders.get("cookie"), APP_SESSION_COOKIE)
-  let session: AccessSession | null = null
+  let session: AccessSession | null = localDevelopmentAuthEnabled() && isLoopbackHost(requestHeaders.get("host"))
+    ? toAccessSession(localDevelopmentSecurityContext(), "")
+    : null
   let accessMessage = ""
-  if (token) {
+  if (!session && token) {
     try {
       const claims = await verifyAppSessionToken(token)
       if (!claims) throw new AccessError("Your authentication session has expired. Please sign in again.", 401, "invalid_session")

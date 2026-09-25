@@ -174,9 +174,12 @@ The live discovery adapter uses the PDL v5 Person Search API with the canonical 
 
 1. Install Node.js 22.13 or newer.
 2. Run `npm ci`.
-3. Run `npm run dev` for development.
-4. Run `npm run lint`, `npm run build`, and `npm test` before release.
-5. After any schema change, run `npm run db:generate` and deploy the new migration.
+3. Run `npm run local:setup` to apply migrations to an isolated local D1 database and load the alumnus 15 regression fixture.
+4. Run `npm run dev:local` for credential-free loopback development at `http://localhost:3000`.
+5. Run `npm run lint`, `npm run build`, and `npm test` before release.
+6. After any schema change, run `npm run db:generate` and deploy the new migration.
+
+`dev:local` enables a development-only Admin identity on loopback hosts. The bypass cannot activate in a production build or on a non-loopback host. It also explicitly disables live PDL, Lusha Contact, Lusha Professional Signals, and Gmail delivery. Local mail uses the mock adapter. Do not add production credentials to local environment files.
 
 ## Source layout
 
