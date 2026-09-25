@@ -57,7 +57,7 @@ test("disabled workflow controls explain their missing prerequisites", () => {
   for (const explanation of [
     "Select a target alumnus first.",
     "Requires a stored Lusha contact ID.",
-    "Choose a CSV file first.",
+    "Choose a CSV or Excel file first.",
     "Requires an eligible stored email.",
     "available PDL application credits",
     "Enter an institutional email address first.",
