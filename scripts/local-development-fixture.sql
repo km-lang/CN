@@ -36,6 +36,42 @@ ON CONFLICT(`id`) DO UPDATE SET
   `profile_key` = excluded.`profile_key`,
   `name` = excluded.`name`,
   `initials` = excluded.`initials`,
+  `batch` = excluded.`batch`,
+  `graduation_year` = excluded.`graduation_year`,
+  `programme` = excluded.`programme`,
+  `company` = excluded.`company`,
+  `title` = excluded.`title`,
+  `function` = excluded.`function`,
+  `seniority` = excluded.`seniority`,
+  `location` = excluded.`location`,
+  `email` = excluded.`email`,
+  `email_source` = excluded.`email_source`,
+  `email_verification` = excluded.`email_verification`,
+  `source` = excluded.`source`,
+  `updated_by` = excluded.`updated_by`;
+
+INSERT INTO `alumni` (
+  `id`, `profile_key`, `name`, `initials`, `batch`, `graduation_year`, `programme`,
+  `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`,
+  `email_verification`, `professional_data_status`, `verified_label`, `source`, `updated_by`
+) VALUES (
+  22, 'local-fixture-priya-sharma', 'Priya Sharma', 'PS', 2015, 2015, 'PGP',
+  'Local Fixture Company', 'Vice President', 'HR', 'Vice President', 'Mumbai, India',
+  'priya.sharma@example.test', 'Local fixture', 'Verified', 'Reviewed', 'Locally verified',
+  'Local fixture', 'Local Development Admin'
+)
+ON CONFLICT(`id`) DO UPDATE SET
+  `profile_key` = excluded.`profile_key`,
+  `name` = excluded.`name`,
+  `initials` = excluded.`initials`,
+  `batch` = excluded.`batch`,
+  `graduation_year` = excluded.`graduation_year`,
+  `programme` = excluded.`programme`,
+  `company` = excluded.`company`,
+  `title` = excluded.`title`,
+  `function` = excluded.`function`,
+  `seniority` = excluded.`seniority`,
+  `location` = excluded.`location`,
   `email` = excluded.`email`,
   `email_source` = excluded.`email_source`,
   `email_verification` = excluded.`email_verification`,

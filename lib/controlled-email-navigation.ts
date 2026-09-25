@@ -1,6 +1,15 @@
 const VALID_TABS = new Set(["overview", "directory", "companies", "engagement", "outreach", "data-import", "enrichment", "admin"])
 const EMAIL_STATE_KEYS = ["compose", "alumnusId", "returnAlumnusId", "returnTab"]
 
+export type WorkspaceAccess = { canOperate: boolean; canAdminister: boolean }
+
+function permittedTab(tab: string, access: WorkspaceAccess) {
+  if (!VALID_TABS.has(tab)) return "overview"
+  if (["engagement", "outreach", "data-import"].includes(tab) && !access.canOperate) return "overview"
+  if (tab === "admin" && !access.canAdminister) return "overview"
+  return tab
+}
+
 export type ControlledEmailIntent = {
   alumnusId: number
   returnAlumnusId: number
@@ -66,4 +75,32 @@ export function profileRouteState(search: string) {
     profileAlumnusId: Number.isInteger(profileAlumnusId) && profileAlumnusId > 0 ? profileAlumnusId : null,
     tab: VALID_TABS.has(tab ?? "") ? tab : null,
   }
+}
+
+export function canonicalWorkspaceUrl(
+  href: string,
+  access: WorkspaceAccess = { canOperate: true, canAdminister: true },
+) {
+  const url = new URL(href)
+  const intent = parseControlledEmailIntent(url.search)
+  const requestedTab = url.searchParams.get("tab") ?? "overview"
+  let tab = permittedTab(requestedTab, access)
+
+  if (intent && access.canOperate) {
+    tab = "engagement"
+    url.searchParams.set("compose", "email")
+    url.searchParams.set("alumnusId", String(intent.alumnusId))
+    url.searchParams.set("returnAlumnusId", String(intent.returnAlumnusId))
+    url.searchParams.set("returnTab", permittedTab(intent.returnTab, access))
+    url.searchParams.delete("profileAlumnusId")
+  } else {
+    for (const key of EMAIL_STATE_KEYS) url.searchParams.delete(key)
+    const profileAlumnusId = Number(url.searchParams.get("profileAlumnusId"))
+    if (tab !== "directory" || !Number.isInteger(profileAlumnusId) || profileAlumnusId < 1) {
+      url.searchParams.delete("profileAlumnusId")
+    }
+  }
+
+  url.searchParams.set("tab", tab)
+  return `${url.pathname}${url.search}${url.hash}`
 }

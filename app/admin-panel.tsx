@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Activity, ShieldCheck, Trash2, UserPlus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { apiPath } from "@/lib/app-config"
 import type { ApplicationRole } from "@/lib/access-types"
+import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 
 type AdminIdentity = { id: number; provider: "google_workspace" | "chatgpt"; verifiedEmail: string; providerDomain: string; lastAuthenticatedAt: string }
 type AdminUser = { id: number; externalIdentity: string; displayName: string; email: string; role: ApplicationRole; enabled: boolean; createdAt: string; updatedAt: string; lastLoginAt: string; identities: AdminIdentity[] }
@@ -97,6 +98,25 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [signalsValidation, setSignalsValidation] = useState<SignalsEntitlementValidation | null>(null)
   const [mailValidation, setMailValidation] = useState<GmailConnectivityValidation | null>(null)
   const [lifecycleDrafts, setLifecycleDrafts] = useState<Record<number, string>>({})
+  const persistedMutationsRef = useRef(new PersistedMutationCoordinator())
+  const pendingMutationCountsRef = useRef(new Map<string, number>())
+  const [pendingMutationKeys, setPendingMutationKeys] = useState<Set<string>>(new Set())
+
+  function beginPersistedMutation(key: string) {
+    pendingMutationCountsRef.current.set(key, (pendingMutationCountsRef.current.get(key) ?? 0) + 1)
+    setPendingMutationKeys(current => new Set(current).add(key))
+  }
+
+  function finishPersistedMutation(key: string) {
+    const remaining = Math.max(0, (pendingMutationCountsRef.current.get(key) ?? 1) - 1)
+    if (remaining) pendingMutationCountsRef.current.set(key, remaining)
+    else pendingMutationCountsRef.current.delete(key)
+    setPendingMutationKeys(current => {
+      const next = new Set(current)
+      if (!remaining) next.delete(key)
+      return next
+    })
+  }
 
   const load = useCallback(async () => {
     const response = await fetch(apiPath("/api/admin"), { cache: "no-store" })
@@ -174,16 +194,39 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
 
   async function updateUserRole(user: AdminUser, role: ApplicationRole) {
     const previousRole = user.role
+    const mutationKey = `user:${user.id}:role`
     setData(current => ({ ...current, users: current.users.map(candidate => candidate.id === user.id ? { ...candidate, role } : candidate) }))
-    const saved = await action({ action: "change_role", userId: user.id, role })
-    if (!saved) setData(current => ({ ...current, users: current.users.map(candidate => candidate.id === user.id ? { ...candidate, role: previousRole } : candidate) }))
+    beginPersistedMutation(mutationKey)
+    const result = await persistedMutationsRef.current.run(mutationKey, previousRole, async () => {
+      const response = await fetch(apiPath("/api/admin"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "change_role", userId: user.id, role }) })
+      const body = await response.json() as { user?: AdminUser; error?: string }
+      if (!response.ok || !body.user) throw new Error(body.error || "Unable to change the user role.")
+      return body.user.role
+    })
+    if (result.latest) {
+      const resolvedRole = result.ok ? result.value : result.rollback
+      setData(current => ({ ...current, users: current.users.map(candidate => candidate.id === user.id ? { ...candidate, role: resolvedRole } : candidate) }))
+      setMessage(result.ok ? "User role saved and audited." : result.error instanceof Error ? result.error.message : "Unable to change the user role.")
+    }
+    finishPersistedMutation(mutationKey)
   }
 
   async function updateLifecycle(person: { id: number; lifecycle?: string }, status: string) {
     const previousStatus = lifecycleDrafts[person.id] ?? person.lifecycle ?? "Active"
+    const mutationKey = `alumnus:${person.id}:lifecycle`
     setLifecycleDrafts(current => ({ ...current, [person.id]: status }))
-    const saved = await action({ action: "update_lifecycle", alumnusId: person.id, status })
-    if (!saved) setLifecycleDrafts(current => ({ ...current, [person.id]: previousStatus }))
+    beginPersistedMutation(mutationKey)
+    const result = await persistedMutationsRef.current.run(mutationKey, previousStatus, async () => {
+      const response = await fetch(apiPath("/api/admin"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_lifecycle", alumnusId: person.id, status }) })
+      const body = await response.json() as { lifecycle?: { status: string }; error?: string }
+      if (!response.ok || !body.lifecycle) throw new Error(body.error || "Unable to update the lifecycle state.")
+      return body.lifecycle.status
+    })
+    if (result.latest) {
+      setLifecycleDrafts(current => ({ ...current, [person.id]: result.ok ? result.value : result.rollback }))
+      setMessage(result.ok ? "Lifecycle state saved and audited." : result.error instanceof Error ? result.error.message : "Unable to update the lifecycle state.")
+    }
+    finishPersistedMutation(mutationKey)
   }
 
   async function authorizeUser(confirmSimilarEmail = false) {
@@ -263,7 +306,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       <div className="panel-heading"><div><h2>Authorize a user</h2><span>Authorize the institutional email first. A verified Google Workspace or recovery identity is linked only after successful sign-in.</span></div></div>
       <div className="admin-add-user"><Input placeholder="Display name" value={form.displayName} onChange={event => { setForm({ ...form, displayName: event.target.value }); setSimilarEmailWarning(null) }} /><Input type="email" placeholder="Institutional email" value={form.email} onChange={event => { setForm({ ...form, email: event.target.value }); setSimilarEmailWarning(null) }} /><Select value={form.role} onValueChange={role => setForm({ ...form, role: role as ApplicationRole })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem><SelectItem value="ADMIN">Admin</SelectItem></SelectContent></Select><Button title={!form.email ? "Enter an institutional email address first." : loading ? "Another administration change is still saving." : undefined} disabled={loading || !form.email} onClick={() => void authorizeUser()}><UserPlus /> Authorize</Button></div>
       {similarEmailWarning && <div className="admin-similar-warning"><div><strong>Possible similar authorized user found:</strong><span>{similarEmailWarning.similarUser.email}</span><strong>You entered:</strong><span>{similarEmailWarning.enteredEmail}</span><small>Review the address carefully. This warning does not automatically block authorization.</small></div><div><Button variant="outline" disabled={loading} onClick={() => void authorizeUser(true)}>Continue anyway</Button><Button variant="ghost" disabled={loading} onClick={() => setSimilarEmailWarning(null)}>Cancel</Button></div></div>}
-      <Table><TableHeader><TableRow><TableHead>User</TableHead><TableHead>Linked sign-in</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Last login</TableHead><TableHead>Action</TableHead></TableRow></TableHeader><TableBody>{data.users.map(user => <TableRow key={user.id}><TableCell><strong>{user.displayName}</strong><small className="review-status">{user.email}</small></TableCell><TableCell>{user.identities.length ? user.identities.map(identity => <span key={identity.id} className="identity-provider">{identity.provider === "google_workspace" ? "Institutional Google" : "ChatGPT recovery"}<small>{identity.verifiedEmail}</small></span>) : <span className="review-status">Pending first sign-in</span>}</TableCell><TableCell><Select value={user.role} onValueChange={role => void updateUserRole(user, role as ApplicationRole)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ADMIN">Admin</SelectItem><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem></SelectContent></Select></TableCell><TableCell><span className={`history-status ${user.enabled ? "history-success" : "history-blocked"}`}>{user.enabled ? "Active" : "Disabled"}</span></TableCell><TableCell>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "Not signed in"}</TableCell><TableCell><Button title={loading ? "Another administration change is still saving." : undefined} size="sm" variant="outline" disabled={loading} onClick={() => void action({ action: "set_user_status", userId: user.id, enabled: !user.enabled })}>{user.enabled ? "Disable" : "Enable"}</Button></TableCell></TableRow>)}</TableBody></Table>
+      <Table><TableHeader><TableRow><TableHead>User</TableHead><TableHead>Linked sign-in</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Last login</TableHead><TableHead>Action</TableHead></TableRow></TableHeader><TableBody>{data.users.map(user => { const roleMutationKey = `user:${user.id}:role`; return <TableRow key={user.id}><TableCell><strong>{user.displayName}</strong><small className="review-status">{user.email}</small></TableCell><TableCell>{user.identities.length ? user.identities.map(identity => <span key={identity.id} className="identity-provider">{identity.provider === "google_workspace" ? "Institutional Google" : "ChatGPT recovery"}<small>{identity.verifiedEmail}</small></span>) : <span className="review-status">Pending first sign-in</span>}</TableCell><TableCell><Select value={user.role} onValueChange={role => void updateUserRole(user, role as ApplicationRole)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ADMIN">Admin</SelectItem><SelectItem value="PCOM">PCOM</SelectItem><SelectItem value="DEVELOPER">Developer</SelectItem></SelectContent></Select>{pendingMutationKeys.has(roleMutationKey) && <small className="review-status">Saving latest role…</small>}</TableCell><TableCell><span className={`history-status ${user.enabled ? "history-success" : "history-blocked"}`}>{user.enabled ? "Active" : "Disabled"}</span></TableCell><TableCell>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "Not signed in"}</TableCell><TableCell><Button title={loading ? "Another administration change is still saving." : undefined} size="sm" variant="outline" disabled={loading} onClick={() => void action({ action: "set_user_status", userId: user.id, enabled: !user.enabled })}>{user.enabled ? "Disable" : "Enable"}</Button></TableCell></TableRow> })}</TableBody></Table>
     </section>
 
     <section className="panel admin-section">
@@ -299,7 +342,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
 
     <section className="panel admin-section">
       <div className="panel-heading"><div><h2>Data lifecycle</h2><span>Archive or request deletion without removing historical audit references.</span></div></div>
-      <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Lifecycle state</TableHead><TableHead>Protected anonymization</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => <TableRow key={person.id}><TableCell>{person.name}<small className="review-status">Record #{person.id}</small></TableCell><TableCell><Select value={lifecycleDrafts[person.id] ?? person.lifecycle ?? "Active"} onValueChange={status => void updateLifecycle(person, status)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Active">Active</SelectItem><SelectItem value="Archived">Archived</SelectItem><SelectItem value="Deletion requested">Deletion requested</SelectItem>{person.lifecycle === "Anonymized" && <SelectItem value="Anonymized">Anonymized</SelectItem>}</SelectContent></Select></TableCell><TableCell>{anonymizeId === person.id ? <div className="anonymize-confirm"><Input value={confirmation} onChange={event => setConfirmation(event.target.value)} placeholder={`ANONYMIZE ${person.id}`} /><Button title={confirmation !== `ANONYMIZE ${person.id}` ? `Type ANONYMIZE ${person.id} to confirm.` : loading ? "Another administration change is still saving." : undefined} variant="outline" disabled={confirmation !== `ANONYMIZE ${person.id}` || loading} onClick={() => void action({ action: "anonymize_alumnus", alumnusId: person.id, confirmation }).then(() => { setAnonymizeId(null); setConfirmation("") })}>Confirm anonymization</Button><Button variant="ghost" onClick={() => { setAnonymizeId(null); setConfirmation("") }}>Cancel</Button></div> : <Button title={person.lifecycle === "Anonymized" ? "This record is already anonymized and cannot be anonymized again." : undefined} size="sm" variant="ghost" disabled={person.lifecycle === "Anonymized"} onClick={() => setAnonymizeId(person.id)}>Anonymize…</Button>}</TableCell></TableRow>)}</TableBody></Table>
+      <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Lifecycle state</TableHead><TableHead>Protected anonymization</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const lifecycleMutationKey = `alumnus:${person.id}:lifecycle`; return <TableRow key={person.id}><TableCell>{person.name}<small className="review-status">Record #{person.id}</small></TableCell><TableCell><Select value={lifecycleDrafts[person.id] ?? person.lifecycle ?? "Active"} onValueChange={status => void updateLifecycle(person, status)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Active">Active</SelectItem><SelectItem value="Archived">Archived</SelectItem><SelectItem value="Deletion requested">Deletion requested</SelectItem>{person.lifecycle === "Anonymized" && <SelectItem value="Anonymized">Anonymized</SelectItem>}</SelectContent></Select>{pendingMutationKeys.has(lifecycleMutationKey) && <small className="review-status">Saving latest lifecycle state…</small>}</TableCell><TableCell>{anonymizeId === person.id ? <div className="anonymize-confirm"><Input value={confirmation} onChange={event => setConfirmation(event.target.value)} placeholder={`ANONYMIZE ${person.id}`} /><Button title={confirmation !== `ANONYMIZE ${person.id}` ? `Type ANONYMIZE ${person.id} to confirm.` : loading ? "Another administration change is still saving." : undefined} variant="outline" disabled={confirmation !== `ANONYMIZE ${person.id}` || loading} onClick={() => void action({ action: "anonymize_alumnus", alumnusId: person.id, confirmation }).then(() => { setAnonymizeId(null); setConfirmation("") })}>Confirm anonymization</Button><Button variant="ghost" onClick={() => { setAnonymizeId(null); setConfirmation("") }}>Cancel</Button></div> : <Button title={person.lifecycle === "Anonymized" ? "This record is already anonymized and cannot be anonymized again." : undefined} size="sm" variant="ghost" disabled={person.lifecycle === "Anonymized"} onClick={() => setAnonymizeId(person.id)}>Anonymize…</Button>}</TableCell></TableRow> })}</TableBody></Table>
     </section>
 
     <section className="panel admin-section">

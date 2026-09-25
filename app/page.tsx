@@ -30,8 +30,9 @@ import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
 import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
-import { alumnusProfileUrl, controlledEmailReturnUrl, controlledEmailUrl, parseControlledEmailIntent, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
+import { alumnusProfileUrl, canonicalWorkspaceUrl, controlledEmailReturnUrl, controlledEmailUrl, parseControlledEmailIntent, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
 import { initializeControlledEmail } from "@/lib/controlled-email-initialization"
+import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -470,11 +471,14 @@ export default function Home() {
   const [selectedEngagement, setSelectedEngagement] = useState<EngagementEvent | null>(null)
   const [selectedBirthdayIds, setSelectedBirthdayIds] = useState<number[]>([])
   const [engagementLoading, setEngagementLoading] = useState(false)
+  const engagementWorkCountRef = useRef(0)
+  const pendingEngagementKeysRef = useRef(new Set<string>())
+  const [pendingEngagementKeys, setPendingEngagementKeys] = useState<Set<string>>(new Set())
   const [engagementMessage, setEngagementMessage] = useState("")
   const [mailPreview, setMailPreview] = useState<MailPreview | null>(null)
   const [mailSendConfirmOpen, setMailSendConfirmOpen] = useState(false)
   const composeGenerationRef = useRef(0)
-  const mutationGenerationRef = useRef(new Map<string, number>())
+  const persistedMutationsRef = useRef(new PersistedMutationCoordinator())
   const pendingSyncCountRef = useRef(0)
   const [composeState, setComposeState] = useState<{ status: "idle" | "loading" | "ready" | "error" | "cancelled"; message: string }>({ status: "idle", message: "" })
   const [composeRetry, setComposeRetry] = useState(0)
@@ -500,6 +504,8 @@ export default function Home() {
   const [lushaTarget, setLushaTarget] = useState<Alumni | null>(null)
   const [lushaPreview, setLushaPreview] = useState<LushaContactPreview | null>(null)
   const [lushaRevealConfirmOpen, setLushaRevealConfirmOpen] = useState(false)
+  const [professionalNoteDrafts, setProfessionalNoteDrafts] = useState<Record<number, string>>({})
+  const [privacyNoteDrafts, setPrivacyNoteDrafts] = useState<Record<number, string>>({})
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -525,6 +531,12 @@ export default function Home() {
 
   useEffect(() => {
     const applyRouteState = () => {
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
+      const canonical = canonicalWorkspaceUrl(window.location.href, {
+        canOperate: session.canOperate,
+        canAdminister: session.canAdminister,
+      })
+      if (canonical !== current) window.history.replaceState({}, "", canonical)
       setRouteSearch(window.location.search)
       setMailPreview(null)
       setMailSendConfirmOpen(false)
@@ -534,7 +546,7 @@ export default function Home() {
     applyRouteState()
     window.addEventListener("popstate", applyRouteState)
     return () => window.removeEventListener("popstate", applyRouteState)
-  }, [])
+  }, [session.canAdminister, session.canOperate])
 
   const routeState = profileRouteState(routeSearch)
   const controlledEmailIntent = useMemo(() => parseControlledEmailIntent(routeSearch), [routeSearch])
@@ -543,8 +555,17 @@ export default function Home() {
     ? alumni.find(person => person.id === routeState.profileAlumnusId) ?? null
     : null
 
+  useEffect(() => {
+    if (workspaceLoading || activeTab !== "directory" || !routeState.profileAlumnusId || selected) return
+    const destination = workspaceTabUrl(window.location.href, "directory")
+    window.history.replaceState({}, "", destination)
+    const timer = window.setTimeout(() => setRouteSearch(window.location.search), 0)
+    return () => window.clearTimeout(timer)
+  }, [activeTab, routeState.profileAlumnusId, selected, workspaceLoading])
+
   function navigateWorkspace(destination: string, mode: "push" | "replace" = "push") {
-    window.history[mode === "push" ? "pushState" : "replaceState"]({}, "", destination)
+    const canonical = canonicalWorkspaceUrl(new URL(destination, window.location.href).href, session)
+    window.history[mode === "push" ? "pushState" : "replaceState"]({}, "", canonical)
     setRouteSearch(window.location.search)
   }
 
@@ -589,6 +610,7 @@ export default function Home() {
   const loadEngagements = useCallback(async () => {
     if (!session.canOperate) return
     try {
+      engagementWorkCountRef.current += 1
       setEngagementLoading(true)
       const response = await fetch(API_ROUTES.engagements, { cache: "no-store" })
       const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; mode?: "mock" | "live"; mail?: { configured?: boolean }; error?: string }
@@ -602,9 +624,20 @@ export default function Home() {
     } catch (error) {
       setEngagementMessage(error instanceof Error ? error.message : "Unable to load the shared engagement queue.")
     } finally {
-      setEngagementLoading(false)
+      engagementWorkCountRef.current = Math.max(0, engagementWorkCountRef.current - 1)
+      setEngagementLoading(engagementWorkCountRef.current > 0)
     }
   }, [session.canOperate])
+
+  function beginEngagementWork() {
+    engagementWorkCountRef.current += 1
+    setEngagementLoading(true)
+  }
+
+  function finishEngagementWork() {
+    engagementWorkCountRef.current = Math.max(0, engagementWorkCountRef.current - 1)
+    setEngagementLoading(engagementWorkCountRef.current > 0)
+  }
 
   useEffect(() => {
     if (!session.canOperate) return
@@ -729,43 +762,39 @@ export default function Home() {
     setSyncing(pendingSyncCountRef.current > 0)
   }
 
-  function nextMutation(key: string) {
-    const generation = (mutationGenerationRef.current.get(key) ?? 0) + 1
-    mutationGenerationRef.current.set(key, generation)
-    return generation
-  }
-
-  function isLatestMutation(key: string, generation: number) {
-    return mutationGenerationRef.current.get(key) === generation
-  }
-
   async function saveAlumnus(id: number, changes: { status?: OutreachStatus; assessment?: Partial<Alumni["assessment"]> }) {
     const previous = alumni.find(person => person.id === id)
     if (!previous) return
     const assessmentKeys = Object.keys(changes.assessment ?? {}) as Array<keyof Alumni["assessment"]>
     const mutationKey = changes.status ? `alumnus:${id}:status` : `alumnus:${id}:assessment:${assessmentKeys.join(",")}`
-    const generation = nextMutation(mutationKey)
+    const initialConfirmed = changes.status
+      ? { status: previous.status } as { status?: OutreachStatus; assessment?: Partial<Alumni["assessment"]> }
+      : { assessment: Object.fromEntries(assessmentKeys.map(key => [key, previous.assessment[key]])) as Partial<Alumni["assessment"]> }
     replaceAlumnus({ ...previous, ...(changes.status ? { status: changes.status } : {}), assessment: { ...previous.assessment, ...changes.assessment } })
     beginSync()
-    try {
+    const result = await persistedMutationsRef.current.run(mutationKey, initialConfirmed, async () => {
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_alumnus", id, ...changes }) })
       const data = await response.json() as { alumnus?: Alumni; error?: string }
       if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the update.")
-      if (isLatestMutation(mutationKey, generation)) {
+      return changes.status
+        ? { status: data.alumnus.status }
+        : { assessment: Object.fromEntries(assessmentKeys.map(key => [key, data.alumnus!.assessment[key]])) as Partial<Alumni["assessment"]> }
+    })
+    try {
+      if (result.ok && result.latest) {
         setAlumni(current => current.map(person => person.id === id ? {
           ...person,
-          ...(changes.status ? { status: data.alumnus!.status } : {}),
-          assessment: assessmentKeys.length ? { ...person.assessment, ...Object.fromEntries(assessmentKeys.map(key => [key, data.alumnus!.assessment[key]])) } : person.assessment,
+          ...(result.value.status ? { status: result.value.status } : {}),
+          assessment: result.value.assessment ? { ...person.assessment, ...result.value.assessment } : person.assessment,
         } : person))
+        setWorkspaceMessage("Saved to the shared workspace.")
       }
-      setWorkspaceMessage("Saved to the shared workspace.")
-    } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save the update.")
-      if (isLatestMutation(mutationKey, generation)) {
+      if (!result.ok && result.latest) {
+        setWorkspaceMessage(result.error instanceof Error ? result.error.message : "Unable to save the update.")
         setAlumni(current => current.map(person => person.id === id ? {
           ...person,
-          ...(changes.status ? { status: previous.status } : {}),
-          assessment: assessmentKeys.length ? { ...person.assessment, ...Object.fromEntries(assessmentKeys.map(key => [key, previous.assessment[key]])) } : person.assessment,
+          ...(result.rollback.status ? { status: result.rollback.status } : {}),
+          assessment: result.rollback.assessment ? { ...person.assessment, ...result.rollback.assessment } : person.assessment,
         } : person))
       }
     } finally {
@@ -784,17 +813,25 @@ export default function Home() {
   async function updateCompanyPriority(name: string, priority: string) {
     const previous = companyPriorities[name]
     const mutationKey = `company:${name}:priority`
-    const generation = nextMutation(mutationKey)
     setCompanyPriorities(current => ({ ...current, [name]: priority }))
     beginSync()
-    try {
+    const result = await persistedMutationsRef.current.run<string | undefined>(mutationKey, previous, async () => {
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_priority", company: name, priority }) })
       const data = await response.json() as { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to save company priority.")
-      setWorkspaceMessage("Company priority saved for all committee members.")
-    } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save company priority.")
-      if (isLatestMutation(mutationKey, generation)) setCompanyPriorities(current => ({ ...current, [name]: previous }))
+      return priority
+    })
+    try {
+      if (result.ok && result.latest) setWorkspaceMessage("Company priority saved for all committee members.")
+      if (!result.ok && result.latest) {
+        setWorkspaceMessage(result.error instanceof Error ? result.error.message : "Unable to save company priority.")
+        setCompanyPriorities(current => {
+          if (result.rollback !== undefined) return { ...current, [name]: result.rollback }
+          const next = { ...current }
+          delete next[name]
+          return next
+        })
+      }
     } finally {
       finishSync()
     }
@@ -805,19 +842,27 @@ export default function Home() {
     const previousPrivacy = person.privacy ?? fallback
     const changedKeys = Object.keys(changes) as Array<keyof NonNullable<Alumni["privacy"]>>
     const mutationKey = `alumnus:${person.id}:privacy:${changedKeys.join(",")}`
-    const generation = nextMutation(mutationKey)
+    const initialConfirmed = Object.fromEntries(changedKeys.map(key => [key, previousPrivacy[key]])) as Partial<NonNullable<Alumni["privacy"]>>
     const privacy = { ...previousPrivacy, ...changes }
     replaceAlumnus({ ...person, privacy })
     beginSync()
-    try {
+    const result = await persistedMutationsRef.current.run(mutationKey, initialConfirmed, async () => {
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_privacy", id: person.id, privacy }) })
       const data = await response.json() as { privacy?: NonNullable<Alumni["privacy"]>; error?: string }
       if (!response.ok || !data.privacy) throw new Error(data.error || "Unable to save privacy preferences.")
-      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, privacy: { ...(item.privacy ?? fallback), ...Object.fromEntries(changedKeys.map(key => [key, data.privacy![key]])), updatedAt: data.privacy!.updatedAt, updatedBy: data.privacy!.updatedBy } } : item))
-      setWorkspaceMessage("Privacy preference saved and audited.")
-    } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save privacy preferences.")
-      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, privacy: { ...(item.privacy ?? fallback), ...Object.fromEntries(changedKeys.map(key => [key, previousPrivacy[key]])) } } : item))
+      return Object.fromEntries(changedKeys.map(key => [key, data.privacy![key]])) as Partial<NonNullable<Alumni["privacy"]>>
+    }, `alumnus:${person.id}:privacy-write`)
+    try {
+      if (result.ok && result.latest) {
+        setAlumni(current => current.map(item => item.id === person.id ? { ...item, privacy: { ...(item.privacy ?? fallback), ...result.value } } : item))
+        if (typeof result.value.notes === "string") setPrivacyNoteDrafts(current => ({ ...current, [person.id]: result.value.notes! }))
+        setWorkspaceMessage("Privacy preference saved and audited.")
+      }
+      if (!result.ok && result.latest) {
+        setWorkspaceMessage(result.error instanceof Error ? result.error.message : "Unable to save privacy preferences.")
+        setAlumni(current => current.map(item => item.id === person.id ? { ...item, privacy: { ...(item.privacy ?? fallback), ...result.rollback } } : item))
+        if (typeof result.rollback.notes === "string") setPrivacyNoteDrafts(current => ({ ...current, [person.id]: result.rollback.notes! }))
+      }
     } finally {
       finishSync()
     }
@@ -825,19 +870,26 @@ export default function Home() {
 
   async function updateProfessionalDataQuality(person: Alumni, status: string, note: string) {
     const mutationKey = `alumnus:${person.id}:professional-data-quality`
-    const generation = nextMutation(mutationKey)
     const previous = { status: person.professionalDataStatus, note: person.professionalDataNote }
     replaceAlumnus({ ...person, professionalDataStatus: status, professionalDataNote: note })
     beginSync()
-    try {
+    const result = await persistedMutationsRef.current.run(mutationKey, previous, async () => {
       const response = await fetch(API_ROUTES.workspace, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_data_quality", id: person.id, professionalDataStatus: status, professionalDataNote: note }) })
       const data = await response.json() as { alumnus?: Alumni; error?: string }
       if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the professional data-quality review.")
-      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, professionalDataStatus: data.alumnus!.professionalDataStatus, professionalDataNote: data.alumnus!.professionalDataNote } : item))
-      setWorkspaceMessage("Professional data-quality status saved without overwriting profile fields.")
-    } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Unable to save the professional data-quality review.")
-      if (isLatestMutation(mutationKey, generation)) setAlumni(current => current.map(item => item.id === person.id ? { ...item, professionalDataStatus: previous.status, professionalDataNote: previous.note } : item))
+      return { status: data.alumnus.professionalDataStatus, note: data.alumnus.professionalDataNote }
+    })
+    try {
+      if (result.ok && result.latest) {
+        setAlumni(current => current.map(item => item.id === person.id ? { ...item, professionalDataStatus: result.value.status, professionalDataNote: result.value.note } : item))
+        setProfessionalNoteDrafts(current => ({ ...current, [person.id]: result.value.note ?? "" }))
+        setWorkspaceMessage("Professional data-quality status saved without overwriting profile fields.")
+      }
+      if (!result.ok && result.latest) {
+        setWorkspaceMessage(result.error instanceof Error ? result.error.message : "Unable to save the professional data-quality review.")
+        setAlumni(current => current.map(item => item.id === person.id ? { ...item, professionalDataStatus: result.rollback.status, professionalDataNote: result.rollback.note } : item))
+        setProfessionalNoteDrafts(current => ({ ...current, [person.id]: result.rollback.note ?? "" }))
+      }
     } finally {
       finishSync()
     }
@@ -1040,7 +1092,11 @@ export default function Home() {
   }
 
   async function postEngagement(action: string, eventId?: number, extra: Record<string, unknown> = {}) {
-    setEngagementLoading(true)
+    const mutationKey = eventId ? `event:${eventId}` : `engagement:${action}`
+    if (pendingEngagementKeysRef.current.has(mutationKey)) return null
+    pendingEngagementKeysRef.current.add(mutationKey)
+    setPendingEngagementKeys(current => new Set(current).add(mutationKey))
+    beginEngagementWork()
     setEngagementMessage("")
     try {
       const response = await fetch(API_ROUTES.engagements, {
@@ -1061,7 +1117,9 @@ export default function Home() {
       setEngagementMessage(message)
       return null
     } finally {
-      setEngagementLoading(false)
+      pendingEngagementKeysRef.current.delete(mutationKey)
+      setPendingEngagementKeys(current => { const next = new Set(current); next.delete(mutationKey); return next })
+      finishEngagementWork()
     }
   }
 
@@ -1072,8 +1130,12 @@ export default function Home() {
   }
 
   async function previewEngagement(event: EngagementEvent) {
+    const mutationKey = `event:${event.id}`
+    if (pendingEngagementKeysRef.current.has(mutationKey)) return
+    pendingEngagementKeysRef.current.add(mutationKey)
+    setPendingEngagementKeys(current => new Set(current).add(mutationKey))
     const template = messageTemplates.find(item => item.eventType === event.eventType)
-    setEngagementLoading(true)
+    beginEngagementWork()
     try {
       const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
@@ -1087,7 +1149,9 @@ export default function Home() {
     } catch (error) {
       setEngagementMessage(error instanceof Error ? error.message : "Unable to prepare the email draft.")
     } finally {
-      setEngagementLoading(false)
+      pendingEngagementKeysRef.current.delete(mutationKey)
+      setPendingEngagementKeys(current => { const next = new Set(current); next.delete(mutationKey); return next })
+      finishEngagementWork()
     }
   }
 
@@ -1192,7 +1256,7 @@ export default function Home() {
   }
 
   async function previewSelectedBirthdays() {
-    setEngagementLoading(true)
+    beginEngagementWork()
     try {
       const response = await fetch(API_ROUTES.engagements, {
         method: "POST",
@@ -1205,7 +1269,7 @@ export default function Home() {
     } catch (error) {
       setEngagementMessage(error instanceof Error ? error.message : "Unable to review the selected birthday emails.")
     } finally {
-      setEngagementLoading(false)
+      finishEngagementWork()
     }
   }
 
@@ -1542,6 +1606,7 @@ export default function Home() {
   const selectedExperienceSummary = selected ? professionalExperienceSummary(selected.experience, selected.previous) : ""
   const selectedEngagementHistory = selected ? engagements.filter(event => event.alumnusId === selected.id) : []
   const selectedUpcomingEngagements = selectedEngagementHistory.filter(event => !["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status))
+  const selectedEngagementBusy = selectedEngagement ? pendingEngagementKeys.has(`event:${selectedEngagement.id}`) : false
   const comparisonAlumnus = comparisonResult ? alumni.find(person => person.id === comparisonResult.linkedInternalAlumnusId) ?? null : null
   const comparisonRows = comparisonResult && comparisonAlumnus ? [
     { field: "company", label: "Current company", internal: comparisonAlumnus.company, external: comparisonResult.currentCompany },
@@ -1734,17 +1799,18 @@ export default function Home() {
                 const completed = ["Action Taken", "Response Received", "Closed", "Skipped"].includes(event.status)
                 const emailMissing = !event.alumnus?.email
                 const canEmail = event.eventType === "Professional Signal" ? Boolean(event.alumnus?.email) && !completed : birthdayReady(event)
+                const eventBusy = pendingEngagementKeys.has(`event:${event.id}`)
                 return <article key={event.id} className={`engagement-card ${completed ? "completed" : ""}`}>
                   {event.eventType === "Birthday" && <input type="checkbox" aria-label={`Select ${event.alumnus?.name} birthday`} disabled={!birthdayReady(event)} checked={selectedBirthdayIds.includes(event.id)} onChange={() => toggleBirthdaySelection(event.id)} />}
                   <div className={`event-icon event-${event.eventType.toLowerCase().replaceAll(" ", "-")}`}>{event.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</div>
                   <div className="event-copy"><div className="event-person"><strong>{event.alumnus?.name ?? "Unknown alumnus"}</strong><span>{event.alumnus?.company} · {event.alumnus?.title}</span></div><h3>{event.eventTitle}</h3><p>{event.eventDescription}</p><div className="event-meta"><span>{displayEventDate(event.eventDate)}</span><span>Source: {event.source}</span>{event.birthday && <span>{event.birthday.status}</span>}{event.eventType === "Birthday" && <span>{birthdayReady(event) ? "Email ready" : emailMissing ? "Email unavailable" : "Review required"}</span>}</div></div>
                   <div className="event-state"><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span><EngagementStatusBadge status={event.status} />{event.assignedTo && <small>Assigned to <strong>{event.assignedTo}</strong></small>}{event.actionTakenBy && <small>Already engaged by <strong>{event.actionTakenBy}</strong></small>}{event.skipReason && <small>{event.skipReason}</small>}</div>
                   <div className="event-actions">
-                    {!completed && !event.assignedTo && <Button variant="outline" size="sm" onClick={() => void postEngagement("assign", event.id)}>Take Ownership</Button>}
-                    {!completed && event.assignedTo && event.assignedTo !== currentDemoUser && <Button variant="outline" size="sm" onClick={() => void postEngagement("assign", event.id, { force: true })}>Reassign to Me</Button>}
-                    {!completed && event.eventType === "Birthday" && emailMissing && <Button variant="outline" size="sm" onClick={() => void getBirthdayEmail(event)}>Get Email via Lusha</Button>}
-                    {canEmail && <Button size="sm" onClick={() => void previewEngagement(event)}>{event.eventType === "Birthday" ? <Cake /> : <Mail />} {event.eventType === "Birthday" ? "Preview Wish" : "Send Congratulations"}</Button>}
-                    <Button variant="ghost" size="sm" onClick={() => void openEngagement(event)}>{completed ? "View Engagement" : "Review"}</Button>
+                    {!completed && !event.assignedTo && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id)}>Take Ownership</Button>}
+                    {!completed && event.assignedTo && event.assignedTo !== currentDemoUser && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id, { force: true })}>Reassign to Me</Button>}
+                    {!completed && event.eventType === "Birthday" && emailMissing && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void getBirthdayEmail(event)}>Get Email via Lusha</Button>}
+                    {canEmail && <Button size="sm" disabled={eventBusy} onClick={() => void previewEngagement(event)}>{event.eventType === "Birthday" ? <Cake /> : <Mail />} {event.eventType === "Birthday" ? "Preview Wish" : "Send Congratulations"}</Button>}
+                    <Button variant="ghost" size="sm" disabled={eventBusy} onClick={() => void openEngagement(event)}>{completed ? "View Engagement" : "Review"}</Button>
                   </div>
                 </article>
               })}</div>
@@ -1827,11 +1893,11 @@ export default function Home() {
 
       <Sheet open={Boolean(selected)}>
         <SheetContent className="profile-sheet sm:max-w-xl" onClose={closeAlumnusProfile}>
-          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button title={!selected.email ? "Requires an eligible stored email." : engagementLoading ? "The email draft is still being prepared." : undefined} size="sm" variant="outline" disabled={!selected.email || engagementLoading} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
+          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button title={!selected.email ? "Requires an eligible stored email." : undefined} size="sm" variant="outline" disabled={!selected.email} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
           {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
             <div className="profile-scores"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             {selected.privacy?.generalContactStatus === "Do not contact" && <div className="do-not-contact-banner"><Ban /><div><strong>Do not contact</strong><span>All birthday, professional and outreach sends are blocked server-side for this alumnus.</span></div></div>}
-            {session.canOperate && <section className="profile-section data-quality-section"><h3>Professional data quality</h3><p className="section-help">Provider success does not prove freshness. Conflicts remain visible until a committee member verifies and approves any profile update.</p><Select value={selected.professionalDataStatus || "Needs assessment"} onValueChange={value => void updateProfessionalDataQuality(selected, value, selected.professionalDataNote || "")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Needs assessment", "Current", "Conflict — manual verification required", "Manually verified"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Textarea value={selected.professionalDataNote || ""} placeholder="Record conflicting sources and the manual verification needed." onChange={event => replaceAlumnus({ ...selected, professionalDataNote: event.target.value })} onBlur={event => void updateProfessionalDataQuality(selected, selected.professionalDataStatus || "Needs assessment", event.target.value)} /></section>}
+            {session.canOperate && <section className="profile-section data-quality-section"><h3>Professional data quality</h3><p className="section-help">Provider success does not prove freshness. Conflicts remain visible until a committee member verifies and approves any profile update.</p><Select value={selected.professionalDataStatus || "Needs assessment"} onValueChange={value => void updateProfessionalDataQuality(selected, value, professionalNoteDrafts[selected.id] ?? selected.professionalDataNote ?? "")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Needs assessment", "Current", "Conflict — manual verification required", "Manually verified"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Textarea value={professionalNoteDrafts[selected.id] ?? selected.professionalDataNote ?? ""} placeholder="Record conflicting sources and the manual verification needed." onChange={event => setProfessionalNoteDrafts(current => ({ ...current, [selected.id]: event.target.value }))} onBlur={event => void updateProfessionalDataQuality(selected, selected.professionalDataStatus || "Needs assessment", event.target.value)} /></section>}
             <details className="score-breakdown"><summary>Why this Placement Relevance score?</summary><div className="breakdown-list">{selectedBreakdown.items.map(item => <div key={item.label}><span>{item.label}<small>{item.weight}% weight</small></span><strong>{item.score}</strong><em>{(item.score * item.weight / 100).toFixed(1)}</em></div>)}</div><p>Weighted contributions are added and rounded to the nearest whole number.</p></details>
             <section className="profile-section"><h3>Assess alumnus</h3><p className="section-help">Choose qualitative evidence. {appConfig.name} converts each choice into an auditable score.</p><div className="assessment-grid">
               <label><span>Hiring influence</span><Select disabled={!session.canOperate} value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
@@ -1840,7 +1906,7 @@ export default function Home() {
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company]}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></section>
             <section className="profile-section"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
             <section className="profile-section"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{educationLabel(selected)}</strong></span></div><div><Network /><span>PlaceCom relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior PlaceCom engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{selected.note}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
-            {session.canOperate && <section className="profile-section privacy-section"><h3>Privacy and contact preferences</h3><p className="section-help">Unknown is not affirmative consent. Send eligibility is checked again on the server.</p><div className="assessment-grid"><label><span>General contact</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional engagement</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday engagement</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Consent/source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Privacy note</span><Textarea value={selected.privacy?.notes || ""} onChange={event => replaceAlumnus({ ...selected, privacy: { ...(selected.privacy ?? { generalContactStatus: "Unknown", professionalEngagementStatus: "Unknown", birthdayEngagementStatus: "Unknown", consentSource: "Unknown", notes: "", updatedAt: "", updatedBy: "" }), notes: event.target.value } })} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></section>}
+            {session.canOperate && <section className="profile-section privacy-section"><h3>Privacy and contact preferences</h3><p className="section-help">Unknown is not affirmative consent. Send eligibility is checked again on the server.</p><div className="assessment-grid"><label><span>General contact</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional engagement</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday engagement</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Consent/source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Privacy note</span><Textarea value={privacyNoteDrafts[selected.id] ?? selected.privacy?.notes ?? ""} onChange={event => setPrivacyNoteDrafts(current => ({ ...current, [selected.id]: event.target.value }))} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></section>}
             {session.canOperate && <section className="profile-section"><div className="profile-engagement-heading"><div><h3>Upcoming engagements</h3><small>{selectedUpcomingEngagements.length} need attention</small></div><Button size="sm" variant="ghost" onClick={() => { setEngagementFilter("Needs Action"); changeWorkspaceTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <div className="profile-event-list">{selectedUpcomingEngagements.map(event => <button key={event.id} onClick={() => { changeWorkspaceTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div> : <p className="section-help">No active engagement events.</p>}<h3 className="history-title">Unified engagement history</h3><div className="profile-timeline">{selectedEngagementHistory.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)).map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => { const usage = providerUsageLabel(item); return <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {usage.label === "—" ? usage.label : `${usage.label} credits`}</small></p></div> })}{!selectedEngagementHistory.some(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed", "Skipped"].includes(event.status)) && !providerHistory.some(item => item.alumnusName === selected.name) && <p className="section-help">No engagement or provider history recorded yet.</p>}</div></section>}
             <section className="profile-section"><div className="verification-heading"><div><h3>Contact and verification</h3><span className={`operational-status status-${operationalStatus(selected).toLowerCase().replaceAll(" ", "-")}`}>{operationalStatus(selected)}</span></div><small>Last data check: {selected.verified}</small></div><div className="verification-list">
               <div><span>Profile match</span><strong className={verificationTone(selected.verification.profileMatch)}>{selected.verification.profileMatch}</strong></div>
@@ -1873,20 +1939,20 @@ export default function Home() {
               {selectedEngagement.assignedTo && <div className="assignment-note"><UserRoundCheck /><span>Assigned to <strong>{selectedEngagement.assignedTo}</strong>{selectedEngagement.assignedAt ? ` since ${new Date(selectedEngagement.assignedAt).toLocaleString()}` : ""}</span></div>}
 
               {!['Action Taken', 'Response Received', 'Closed', 'Skipped'].includes(selectedEngagement.status) && <section className="dialog-action-section"><h3>Review and action</h3><div className="dialog-actions">
-                <Button variant="outline" onClick={() => void postEngagement("acknowledge", selectedEngagement.id)}>Acknowledge</Button>
-                <Button variant="outline" onClick={() => void postEngagement("assign", selectedEngagement.id, { force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>{selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser ? "Reassign to Me" : "Take Ownership"}</Button>
-                <Button variant="outline" onClick={() => void postEngagement("plan", selectedEngagement.id, { notes: "Follow-up action planned by the assigned committee member.", force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>Plan Action</Button>
-                {selectedEngagement.alumnus?.email ? <Button onClick={() => void previewEngagement(selectedEngagement)}><Mail /> {selectedEngagement.eventType === "Birthday" ? "Preview Birthday Wish" : "Preview Congratulations"}</Button> : <Button variant="outline" onClick={() => void getBirthdayEmail(selectedEngagement)}>Get Email via Lusha</Button>}
-                <Button variant="outline" onClick={() => void postEngagement("manual_action", selectedEngagement.id, { notes: "Engagement completed outside the platform." })}>Mark Action Taken</Button>
+                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("acknowledge", selectedEngagement.id)}>Acknowledge</Button>
+                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("assign", selectedEngagement.id, { force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>{selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser ? "Reassign to Me" : "Take Ownership"}</Button>
+                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("plan", selectedEngagement.id, { notes: "Follow-up action planned by the assigned committee member.", force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>Plan Action</Button>
+                {selectedEngagement.alumnus?.email ? <Button disabled={selectedEngagementBusy} onClick={() => void previewEngagement(selectedEngagement)}><Mail /> {selectedEngagement.eventType === "Birthday" ? "Preview Birthday Wish" : "Preview Congratulations"}</Button> : <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void getBirthdayEmail(selectedEngagement)}>Get Email via Lusha</Button>}
+                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("manual_action", selectedEngagement.id, { notes: "Engagement completed outside the platform." })}>Mark Action Taken</Button>
               </div></section>}
 
-              <section className="dialog-action-section"><h3>Response and follow-up</h3><div className="response-form"><Select value={responseType} onValueChange={setResponseType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Positive", "Neutral", "Negative", "Introduction offered", "Meeting requested", "Other"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Input value={followUpDate} onChange={event => setFollowUpDate(event.target.value)} type="date" aria-label="Follow-up date" /><Textarea value={responseNotes} onChange={event => setResponseNotes(event.target.value)} placeholder="Response or follow-up notes" /><div><Button variant="outline" onClick={() => void postEngagement("response", selectedEngagement.id, { responseType, notes: responseNotes, followUpRequired: Boolean(followUpDate), followUpDate })}>Record Response</Button><Button variant="outline" disabled={!followUpDate} onClick={() => void postEngagement("follow_up", selectedEngagement.id, { followUpDate })}>Add Follow-up</Button></div></div></section>
+              <section className="dialog-action-section"><h3>Response and follow-up</h3><div className="response-form"><Select value={responseType} onValueChange={setResponseType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Positive", "Neutral", "Negative", "Introduction offered", "Meeting requested", "Other"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Input value={followUpDate} onChange={event => setFollowUpDate(event.target.value)} type="date" aria-label="Follow-up date" /><Textarea value={responseNotes} onChange={event => setResponseNotes(event.target.value)} placeholder="Response or follow-up notes" /><div><Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("response", selectedEngagement.id, { responseType, notes: responseNotes, followUpRequired: Boolean(followUpDate), followUpDate })}>Record Response</Button><Button variant="outline" disabled={!followUpDate || selectedEngagementBusy} title={!followUpDate ? "Choose a follow-up date first." : undefined} onClick={() => void postEngagement("follow_up", selectedEngagement.id, { followUpDate })}>Add Follow-up</Button></div></div></section>
 
               {selectedEngagement.eventType === "Birthday" && <section className="dialog-action-section"><h3>Birthday data</h3><div className="birthday-data-row"><div><span>Birthday</span><strong>{selectedEngagement.birthday?.birthMonthDay || "Unknown"}</strong></div><div><span>Source</span><strong>{selectedEngagement.birthday?.source || "Not recorded"}</strong></div><div><span>Status</span><strong>{selectedEngagement.birthday?.status || "Unknown"}</strong></div></div><div className="birthday-correction"><Input value={birthdayCorrection} onChange={event => setBirthdayCorrection(event.target.value)} placeholder="MM-DD" aria-label="Correct birthday as MM-DD" /><Button variant="outline" onClick={() => void postEngagement("correct_birthday", selectedEngagement.id, { birthMonthDay: birthdayCorrection })}>Confirm Correction</Button></div></section>}
 
               <section className="dialog-action-section"><h3>Event activity</h3><div className="activity-timeline">{selectedEngagement.activity.map(item => <div key={item.id}><span>{new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><p><strong>{item.action.replaceAll("_", " ")}</strong>{item.details}<small>{item.actor} · {new Date(item.createdAt).toLocaleDateString()}</small></p></div>)}{!selectedEngagement.activity.length && <p className="section-help">No activity has been recorded yet.</p>}</div></section>
 
-              {!['Closed', 'Skipped'].includes(selectedEngagement.status) && <section className="danger-actions"><Button variant="outline" onClick={() => void postEngagement("skip", selectedEngagement.id, { reason: "Not relevant" })}><Ban /> Skip</Button>{selectedEngagement.eventType === "Professional Signal" && <Button variant="outline" onClick={() => void postEngagement("incorrect", selectedEngagement.id, { reason: "Provider signal requires correction" })}><XCircle /> Mark Signal Incorrect</Button>}<Button variant="ghost" onClick={() => void postEngagement("close", selectedEngagement.id)}>Close Event</Button></section>}
+              {!['Closed', 'Skipped'].includes(selectedEngagement.status) && <section className="danger-actions"><Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("skip", selectedEngagement.id, { reason: "Not relevant" })}><Ban /> Skip</Button>{selectedEngagement.eventType === "Professional Signal" && <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("incorrect", selectedEngagement.id, { reason: "Provider signal requires correction" })}><XCircle /> Mark Signal Incorrect</Button>}<Button variant="ghost" disabled={selectedEngagementBusy} onClick={() => void postEngagement("close", selectedEngagement.id)}>Close Event</Button></section>}
             </div>
           </>}
         </DialogContent>
