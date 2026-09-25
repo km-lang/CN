@@ -98,6 +98,12 @@ ON CONFLICT(`id`) DO UPDATE SET
   `source` = excluded.`source`,
   `updated_by` = excluded.`updated_by`;
 
+INSERT INTO `company_priorities` (`company`, `priority`, `updated_by`) VALUES
+  ('Example Company', 'Low Priority', 'Local Development Admin')
+ON CONFLICT(`company`) DO UPDATE SET
+  `priority` = excluded.`priority`,
+  `updated_by` = excluded.`updated_by`;
+
 INSERT INTO `alumni_relationships` (
   `intermediary_alumnus_id`, `target_alumnus_id`, `relationship_type`, `evidence`,
   `confirmed`, `successful_introductions`, `source`, `updated_by`

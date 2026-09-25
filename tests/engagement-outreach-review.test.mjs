@@ -51,6 +51,7 @@ test("Outreach counters and filters share the displayed result set", () => {
 
 test("local engagement fixtures cover signal, birthday, follow-up, ownership, completed and skipped queues", () => {
   for (const value of ["Professional Signal", "Birthday", "Follow-up Due", "assigned_to", "Completed", "Skipped"]) assert.match(fixture, new RegExp(value))
+  assert.match(fixture, /'Example Company', 'Low Priority'/)
 })
 
 test("completed historical email is not classified as a Professional Signal", () => {
