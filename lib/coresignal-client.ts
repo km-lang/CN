@@ -8,7 +8,7 @@ export const CORESIGNAL_COLLECT_PATH = "/cdapi/v2/employee_base/collect"
 export type CoresignalFailureKind = "authentication" | "rate_limit" | "timeout" | "unavailable" | "invalid_request" | "invalid_response"
 
 export class CoresignalProviderError extends Error {
-  constructor(message: string, public readonly kind: CoresignalFailureKind, public readonly status: number) { super(message) }
+  constructor(message: string, public readonly kind: CoresignalFailureKind, public readonly status: number, public readonly successfulOperationCredits = 0) { super(message) }
 }
 
 export function coresignalSearchContract() {
@@ -42,7 +42,7 @@ async function request(path: string, init: RequestInit, options: { fetcher?: typ
   try {
     response = await (options.fetcher ?? fetch)(`${CORESIGNAL_API_BASE}${path}`, {
       ...init,
-      headers: { Authorization: `Bearer ${key}`, accept: "application/json", ...(init.headers ?? {}) },
+      headers: { apikey: key, accept: "application/json", ...(init.headers ?? {}) },
       signal: controller.signal,
     })
   } catch (error) {
@@ -65,6 +65,6 @@ export function collectCoresignalEmployee(employeeId: string, options: { fetcher
 }
 
 export function safeCoresignalError(error: unknown) {
-  if (error instanceof CoresignalProviderError) return { message: error.message, kind: error.kind, status: error.status }
-  return { message: "Coresignal is temporarily unavailable.", kind: "unavailable" as const, status: 503 }
+  if (error instanceof CoresignalProviderError) return { message: error.message, kind: error.kind, status: error.status, successfulOperationCredits: error.successfulOperationCredits }
+  return { message: "Coresignal is temporarily unavailable.", kind: "unavailable" as const, status: 503, successfulOperationCredits: 0 }
 }

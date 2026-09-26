@@ -107,16 +107,17 @@ export async function POST(request: Request) {
     if (payload.action === "search") {
       const filters = { ...defaultDirectoryFilters(), ...payload.filters } as DirectoryFilters
       const remaining = await remainingApplicationUnits()
-      if (remaining < 1) return Response.json({ error: "External search was not run because the Coresignal application limit has been reached.", blocked: true, reason: "application_limit", filters, effectiveLimit: 0 }, { status: 429 })
+      const searchOperationReserve = coresignalProvider.mode() === "live" ? 1 : 0
+      if (remaining <= searchOperationReserve) return Response.json({ error: "External search was not run because the Coresignal application limit cannot cover a Search and at least one Collect operation.", blocked: true, reason: "application_limit", filters, effectiveLimit: 0 }, { status: 429 })
       const maximum = coresignalProvider.mode() === "live" ? coresignalLiveSearchMaximum() : 100
-      const validation = validateDiscoveryCount(payload.limit, remaining, maximum)
+      const validation = validateDiscoveryCount(payload.limit, remaining - searchOperationReserve, maximum)
       if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, filters, effectiveLimit: 0, maximumAllowed: validation.maximumAllowed }, { status: 400 })
       const people = await db.select().from(alumni).orderBy(alumni.name)
       let response
       try { response = await coresignalProvider.searchCandidates(filters, people, validation.requested) }
       catch (error) {
         const failure = safeCoresignalError(error)
-        await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", operation: "Education affiliation search", mode: coresignalProvider.mode(), status: "error", applicationUnits: 0, providerReportedCredits: null, usageState: "reconciliation_required", requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: failure.message, errorMessage: failure.message, requestedBy: actor })
+        await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", operation: "Education affiliation search", mode: coresignalProvider.mode(), status: "error", applicationUnits: failure.successfulOperationCredits, providerReportedCredits: null, usageState: failure.successfulOperationCredits ? "reconciliation_required" : "not_applicable", requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: failure.message, errorMessage: failure.message, requestedBy: actor })
         return Response.json({ error: failure.message, failureType: failure.kind, blocked: true, reason: "provider_error", filters, effectiveLimit: validation.requested }, { status: failure.status === 429 ? 429 : 502 })
       }
       const [search] = await db.insert(externalDiscoverySearches).values({ provider: PROFESSIONAL_DATA_PROVIDER, filtersJson: JSON.stringify(filters), criteriaSummary: criteriaSummary(filters), requestedCount: validation.requested, resultCount: response.profiles.length, creditsUsed: 0, mode: coresignalProvider.mode(), initiatedBy: actor }).returning()

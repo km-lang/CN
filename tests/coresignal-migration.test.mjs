@@ -63,6 +63,29 @@ test("Coresignal collect contract uses the stable employee ID", () => {
   assert.equal(mapped.providerPersonId, "421745303")
 })
 
+test("Search and Collect send the server-side apikey header and never use Bearer authorization", async () => {
+  const calls = []
+  const fetcher = async (url, init) => {
+    calls.push({ url: String(url), headers: new Headers(init.headers) })
+    return new Response(JSON.stringify(String(url).includes("/collect/") ? employee() : []), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  await client.searchCoresignalIiml({ fetcher })
+  await client.collectCoresignalEmployee("421745303", { fetcher })
+  assert.equal(calls.length, 2)
+  for (const call of calls) {
+    assert.equal(call.headers.get("apikey"), process.env.CORESIGNAL_API_KEY)
+    assert.equal(call.headers.has("authorization"), false)
+  }
+})
+
+test("Coresignal errors never return or log the secret value", async () => {
+  await assert.rejects(
+    () => client.searchCoresignalIiml({ fetcher: async () => new Response("secret provider payload", { status: 401 }) }),
+    error => !error.message.includes(process.env.CORESIGNAL_API_KEY) && !error.message.includes("secret provider payload"),
+  )
+  assert.doesNotMatch(discoveryRoute, /CORESIGNAL_API_KEY|provider payload/)
+})
+
 test("multiple mock search results are bounded by the application result limit", async () => {
   const filters = { name: "", company: "All companies", role: "", function: "All functions", seniority: "All levels", location: "", programme: "All programmes", batch: "", previousCompany: "", minRelevance: 0, minConfidence: 0, contactStatus: "All contact states", outreachStatus: "All outreach states", relationship: "All relationships" }
   const result = await adapter.coresignalProvider.searchCandidates(filters, [{ id: 15, name: "Sahil Bansal", batch: 2015, company: "Google", title: "Product Leader", function: "Product", seniority: "Director", location: "Bengaluru", linkedinUrl: "https://linkedin.com/in/sahilb" }], 3)
@@ -70,6 +93,21 @@ test("multiple mock search results are bounded by the application result limit",
   assert.equal(result.usage.applicationUnits, 3)
   assert.equal(result.usage.providerReportedUsage, null)
   assert.equal(limits.validateDiscoveryCount(4, 3, 20).ok, false)
+})
+
+test("successful Search and Collect operations each cost one direct API operation credit", () => {
+  assert.equal(adapter.successfulCoresignalOperationCredits(true, 0), 1)
+  assert.equal(adapter.successfulCoresignalOperationCredits(true, 3), 4)
+  assert.equal(adapter.successfulCoresignalOperationCredits(false, 0), 0)
+  assert.equal(adapter.successfulCoresignalOperationCredits(false, 3), 3)
+})
+
+test("failed non-200 requests are not recorded as successful operation credits", async () => {
+  await assert.rejects(
+    () => client.collectCoresignalEmployee("421745303", { fetcher: async () => new Response("unavailable", { status: 503 }) }),
+    error => error.successfulOperationCredits === 0,
+  )
+  assert.match(discoveryRoute, /applicationUnits: failure\.successfulOperationCredits/)
 })
 
 test("deleted people and deleted education are ignored while surviving education is retained", () => {

@@ -6,7 +6,7 @@ import { coresignalProvider } from "@/lib/coresignal-adapter";
 import { safeCoresignalError } from "@/lib/coresignal-client";
 import { getLushaAccountUsage, revealLushaEmail, searchLushaContact } from "@/lib/lusha-client";
 import { coresignalLiveRefreshMaximum } from "@/lib/provider-runtime";
-import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL, unknownProviderUsage, type ProfessionalRefreshResult } from "@/lib/professional-data";
+import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL, type ProfessionalRefreshResult } from "@/lib/professional-data";
 import { providerUsageState } from "@/lib/provider-usage";
 import { eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment";
 import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
@@ -244,7 +244,7 @@ export async function POST(request: Request) {
           result = await coresignalProvider.refreshProfile(person);
         } catch (error) {
           const failure = safeCoresignalError(error);
-          result = { status: "error", changes: {}, responseSummary: failure.message, errorMessage: failure.message, usage: unknownProviderUsage(1) };
+          result = { status: "error", changes: {}, responseSummary: failure.message, errorMessage: failure.message, usage: { applicationUnits: failure.successfulOperationCredits, providerReportedUsage: null, usageState: failure.successfulOperationCredits ? "reconciliation_required" : "not_applicable" } };
         }
         const [history] = await db.insert(providerResponseHistory).values({
           provider: PROFESSIONAL_DATA_PROVIDER, alumnusId: person.id, alumnusName: person.name, operation: "Professional profile collect", mode: coresignalProvider.mode(), status: result.status,

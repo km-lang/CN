@@ -1,28 +1,45 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import test from "node:test"
+import test, { after } from "node:test"
+import { fileURLToPath } from "node:url"
+import { createServer } from "vite"
 
-const route = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
+const root = fileURLToPath(new URL("..", import.meta.url))
+const vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true, hmr: false } })
+after(async () => vite.close())
+const helper = await vite.ssrLoadModule("/lib/alumni-search.ts")
+const config = await vite.ssrLoadModule("/lib/app-config.ts")
+const policy = await vite.ssrLoadModule("/lib/security-policy.ts")
+const client = await vite.ssrLoadModule("/lib/coresignal-client.ts")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8")
+const route = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
+const enrichment = await readFile(new URL("../app/api/enrichment/route.ts", import.meta.url), "utf8")
 const adapter = await readFile(new URL("../lib/coresignal-adapter.ts", import.meta.url), "utf8")
+const contacts = await readFile(new URL("../lib/enrichment-providers.ts", import.meta.url), "utf8")
+const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8")
+const person = (overrides = {}) => ({ name: "Aarav Mehta", company: "Google", title: "Director, Talent Acquisition", function: "HR", seniority: "Director", location: "Gurugram, India", programme: "PGP", batch: 2012, previous: "Microsoft", confidence: 88, status: "Not contacted", assessment: { iimlRelationship: "Strong" }, ...overrides })
 
-test("discovery uses Coresignal behind a professional-data adapter", () => {
-  assert.match(route, /coresignalProvider\.searchCandidates/)
-  assert.match(adapter, /ProfessionalDataProvider/)
-  assert.doesNotMatch(route, /pdlGet|People Data Labs/)
-})
-
-test("discovery stays review-first and duplicate-aware", () => {
-  assert.match(route, /Possible duplicate/)
-  assert.match(route, /Needs review/)
-  assert.match(route, /Only confirmed degree alumni that are clearly new/)
-  assert.match(page, /Compare professional profile/)
-  assert.match(page, /Keep Pending Review/)
-})
-
-test("professional discovery remains separate from Lusha contact enrichment", () => {
-  assert.match(page, /"Coresignal"\} sourced professional profile/)
-  assert.match(page, /Get Email via Lusha/)
-  assert.match(page, /Get Phone via Lusha/)
-  assert.doesNotMatch(route, /emailSource|phoneSource/)
-})
+test("1. company-only internal search matches mapped alumni", () => { const filters = { ...helper.defaultDirectoryFilters(), company: "Google" }; assert.equal(helper.matchesInternalFilters(person(), filters, 81, "Contact-ready"), true); assert.equal(helper.matchesInternalFilters(person({ company: "Amazon" }), filters, 81, "Contact-ready"), false) })
+test("2. combined function and seniority filters use AND", () => { const filters = { ...helper.defaultDirectoryFilters(), company: "Google", function: "HR", seniority: "Director+" }; assert.equal(helper.matchesInternalFilters(person(), filters, 81, "Contact-ready"), true); assert.equal(helper.matchesInternalFilters(person({ function: "Finance", title: "Finance Director" }), filters, 81, "Contact-ready"), false) })
+test("3. external discovery uses the canonical fixed IIML filter", () => { assert.deepEqual(client.coresignalSearchContract().body, { education_institution_professional_network_url: "https://www.linkedin.com/school/indian-institute-of-management-lucknow", active_experience: true }) })
+test("4. mock discovery covers mapped, degree, exchange, and review states", () => { for (const marker of ["cs-mapped-", "cs-degree-1", "cs-exchange-1", "cs-review-1"]) assert.match(adapter, new RegExp(marker)); assert.match(route, /Possible duplicate|Needs review/) })
+test("5. new external results require explicit approval", () => { assert.match(page, /Add Selected to \{appConfig\.name\}/); assert.match(route, /action === "approve"/) })
+test("6. duplicate and unqualified candidates cannot use batch approval", () => { assert.match(route, /result\.matchStatus !== "New"/); assert.match(route, /result\.affiliationStatus !== "Confirmed degree alumnus"/); assert.match(page, /Keep Separate/) })
+test("7. mapped alumni support comparison before refresh", () => { assert.match(page, /Compare professional profile/); assert.match(page, /Apply Selected Updates/) })
+test("8. discovery exposes normalized professional-profile references", () => { assert.match(page, /View LinkedIn Profile/); assert.match(page, /sourced professional profile/); assert.match(page, /target="_blank"/) })
+test("9. approved Coresignal records retain provenance and neutral contacts", () => { assert.match(route, /discoverySource: label/); assert.match(schema, /email: text\("email"\).*default\(""\)/); assert.match(schema, /phone: text\("phone"\).*default\(""\)/) })
+test("10. approved alumni expose selective Lusha actions", () => { assert.match(page, /Get Email/); assert.match(page, /Get Phone/); assert.match(page, /Get Both/) })
+test("11. Lusha stores channel provenance and provider history", () => { assert.match(contacts + enrichment, /emailSource: "Lusha"/); assert.match(contacts + enrichment, /phoneSource: "Lusha"/); assert.match(enrichment, /providerResponseHistory/) })
+test("12. approved professional changes create field history", () => { assert.match(route, /fieldChangeHistory/); assert.match(route, /oldValue/); assert.match(route, /newValue/) })
+test("13. no-change refresh remains visible and recorded", () => { assert.match(page, /No professional changes detected/); assert.match(route + enrichment, /Reviewed — kept existing|No changes/); assert.match(enrichment, /providerResponseHistory/) })
+test("14. filtering internal data makes no provider request", () => { const block = page.match(/const filtered = useMemo\([\s\S]*?\[alumni, companyPriorities, engagements, filters\]\)/)?.[0] ?? ""; assert.match(block, /matchesInternalFilters/); assert.doesNotMatch(block, /fetch\(/) })
+test("15. provider usage is attached to explicit controls", () => { for (const label of ["Confirm Live Search", "Prepare Email Reveal", "Confirm Contact Search", "Confirm Email-Only Reveal"]) assert.match(page, new RegExp(label)) })
+test("16. current application configuration retains root-hosted defaults", () => { const current = config.createAppConfig({}); assert.equal(current.name, "Corporate Network"); assert.equal(current.basePath, ""); assert.equal(current.publicUrl, "http://localhost:3000") })
+test("17. application configuration supports another base path", () => { const future = config.createAppConfig({ NEXT_PUBLIC_APP_NAME: "ABC", NEXT_PUBLIC_APP_PUBLIC_URL: "https://teamsynapse.app/corporate_network/", NEXT_PUBLIC_APP_BASE_PATH: "/corporate_network/" }); assert.equal(future.basePath, "/corporate_network"); assert.equal(config.withBasePath("/api/workspace", future.basePath), "/corporate_network/api/workspace") })
+test("18. UI and metadata consume centralized configuration", () => { assert.match(page, /appConfig\.name/); assert.match(page, /apiPath\("\/api\/workspace"\)/); assert.doesNotMatch(page, /fetch\("\/api\//); assert.match(layout, /metadataBase: new URL\(appConfig\.publicUrl\)/) })
+test("19. PCOM sees stored pending-review entry only when work exists", () => { assert.equal(policy.hasPermission("PCOM", "OPERATE_PCOM"), true); assert.match(page, /session\.canOperate && pendingDiscoveryCount > 0/); assert.match(page, /Review Results/) })
+test("20. reopening pending results is a stored read with zero provider call", () => { const block = route.match(/export async function GET[\s\S]*?export async function POST/)?.[0] ?? ""; assert.match(block, /retrieval: "stored"/); assert.doesNotMatch(block, /searchCandidates|searchCoresignalIiml|collectCoresignalEmployee/) })
+test("21. Review Results uses GET while new discovery requires confirmation", () => { const block = page.match(/async function reviewPendingDiscoveryResults[\s\S]*?async function runDiscovery/)?.[0] ?? ""; assert.match(block, /\?view=pending/); assert.doesNotMatch(block, /action: "search"/); assert.match(page, /Run live Coresignal employee search\?/) })
+test("22. pending-review API is available to PCOM operations", () => { assert.match(route, /authorizeRequest\(request, "OPERATE_PCOM"\)/) })
+test("23. pending review does not expose Admin-only provider settings", () => { assert.equal(policy.hasPermission("PCOM", "MANAGE_PROVIDER_SETTINGS"), false); assert.match(page, /disabled=\{!session\.canAdminister\}/); assert.match(enrichment, /MANAGE_PROVIDER_SETTINGS/) })

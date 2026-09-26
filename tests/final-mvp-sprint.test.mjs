@@ -39,7 +39,8 @@ for (const value of [0, -1, 1.5, "7", Number.NaN]) {
 }
 
 test("final sprint Coresignal server independently validates bypass attempts", () => {
-  assert.match(discoveryRoute, /validateDiscoveryCount\(payload\.limit, remaining, maximum\)/)
+  assert.match(discoveryRoute, /const searchOperationReserve = coresignalProvider\.mode\(\) === "live" \? 1 : 0/)
+  assert.match(discoveryRoute, /validateDiscoveryCount\(payload\.limit, remaining - searchOperationReserve, maximum\)/)
   assert.match(discoveryRoute, /status: 400/)
 })
 

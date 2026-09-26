@@ -7,7 +7,7 @@ import {
   type DirectoryFilters,
   type DiscoveryProfile,
 } from "@/lib/alumni-search"
-import { collectCoresignalEmployee, CORESIGNAL_IIML_INSTITUTION_URL, searchCoresignalIiml } from "@/lib/coresignal-client"
+import { collectCoresignalEmployee, CORESIGNAL_IIML_INSTITUTION_URL, CoresignalProviderError, searchCoresignalIiml } from "@/lib/coresignal-client"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { coresignalLiveSearchMaximum, providerConfigured, providerMode } from "@/lib/provider-runtime"
 import {
@@ -152,6 +152,10 @@ function responseRow(body: unknown) {
   return Object.keys(row(value.data)).length ? row(value.data) : Object.keys(row(value.employee)).length ? row(value.employee) : value
 }
 
+export function successfulCoresignalOperationCredits(searchSucceeded: boolean, successfulCollects: number) {
+  return (searchSucceeded ? 1 : 0) + Math.max(0, Math.trunc(successfulCollects))
+}
+
 async function searchCandidates(filters: DirectoryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult> {
   if (providerMode("coresignal") === "mock") {
     const profiles = filterProfiles(mockRows(filters, internal).map(mapProfile).filter(Boolean) as DiscoveryProfile[], filters).slice(0, limit)
@@ -161,11 +165,15 @@ async function searchCandidates(filters: DirectoryFilters, internal: InternalPro
   const candidateIds = previewRows.map(item => first(item, ["id", "employee_id", "employee_base_id"])).filter(Boolean)
   const collected: Row[] = []
   for (const employeeId of candidateIds.slice(0, Math.min(limit, coresignalLiveSearchMaximum()))) {
-    collected.push(responseRow(await collectCoresignalEmployee(employeeId)))
+    try { collected.push(responseRow(await collectCoresignalEmployee(employeeId))) }
+    catch (error) {
+      if (error instanceof CoresignalProviderError) throw new CoresignalProviderError(error.message, error.kind, error.status, successfulCoresignalOperationCredits(true, collected.length))
+      throw error
+    }
   }
   const all = filterProfiles(collected.map(mapProfile).filter(Boolean) as DiscoveryProfile[], filters)
   const profiles = all.slice(0, Math.min(limit, coresignalLiveSearchMaximum()))
-  return { profiles, totalAvailable: candidateIds.length, responseSummary: profiles.length ? `${profiles.length} Coresignal affiliation candidates returned for qualification and review.` : "No additional external affiliation candidates were found.", usage: unknownProviderUsage(collected.length) }
+  return { profiles, totalAvailable: candidateIds.length, responseSummary: profiles.length ? `${profiles.length} Coresignal affiliation candidates returned for qualification and review.` : "No additional external affiliation candidates were found.", usage: unknownProviderUsage(successfulCoresignalOperationCredits(true, collected.length)) }
 }
 
 async function refreshProfile(person: InternalProfessionalPerson): Promise<ProfessionalRefreshResult> {

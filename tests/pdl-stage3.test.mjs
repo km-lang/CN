@@ -1,19 +1,49 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import test from "node:test"
+import test, { after } from "node:test"
+import { fileURLToPath } from "node:url"
+import { createServer } from "vite"
 
-const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8")
+const root = fileURLToPath(new URL("..", import.meta.url))
+const vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true, hmr: false } })
+const original = { CORESIGNAL_API_KEY: process.env.CORESIGNAL_API_KEY, CORESIGNAL_LIVE_ENABLED: process.env.CORESIGNAL_LIVE_ENABLED, LUSHA_LIVE_ENABLED: process.env.LUSHA_LIVE_ENABLED, ENRICHMENT_MODE: process.env.ENRICHMENT_MODE, PROVIDER_LIVE_ENABLED: process.env.PROVIDER_LIVE_ENABLED }
+process.env.CORESIGNAL_API_KEY = "test-coresignal-key-never-sent-to-a-real-provider"
+process.env.CORESIGNAL_LIVE_ENABLED = "true"
+process.env.LUSHA_LIVE_ENABLED = "false"
+process.env.ENRICHMENT_MODE = "live"
+process.env.PROVIDER_LIVE_ENABLED = "true"
+after(async () => { for (const [key, value] of Object.entries(original)) { if (value === undefined) delete process.env[key]; else process.env[key] = value } await vite.close() })
+const runtime = await vite.ssrLoadModule("/lib/provider-runtime.ts")
+const search = await vite.ssrLoadModule("/lib/alumni-search.ts")
+const adapter = await vite.ssrLoadModule("/lib/coresignal-adapter.ts")
+const client = await vite.ssrLoadModule("/lib/coresignal-client.ts")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
-const runtime = await readFile(new URL("../lib/provider-runtime.ts", import.meta.url), "utf8")
+const discoveryRoute = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
+const enrichmentRoute = await readFile(new URL("../app/api/enrichment/route.ts", import.meta.url), "utf8")
+const adapterSource = await readFile(new URL("../lib/coresignal-adapter.ts", import.meta.url), "utf8")
+const env = await readFile(new URL("../.env.example", import.meta.url), "utf8")
+const filters = () => search.defaultDirectoryFilters()
+const fullProfile = { id: "421745303", full_name: "Hemant Singh", deleted: 0, professional_network_url: "https://linkedin.com/in/hemant", education: [{ institution_name: "Indian Institute of Management Lucknow", institution_professional_network_url: client.CORESIGNAL_IIML_INSTITUTION_URL, degree_name: "MBA", deleted: 0 }], experience: [{ company_name: "Ultrahuman", title: "Lead", is_current: 1, deleted: 0 }] }
 
-test("retired PDL provider code cannot be activated", () => {
-  assert.doesNotMatch(runtime, /PDL_API_KEY|PDL_LIVE_ENABLED|provider === "pdl"/)
-  assert.doesNotMatch(page, /Validate PDL connection|Refresh Profile via PDL|Run live PDL/)
-})
-
-test("historical PDL identity and refresh provenance remain readable", () => {
-  assert.match(schema, /pdlPersonId: text\("pdl_person_id"\)/)
-  assert.match(schema, /lastPdlRefresh: text\("last_pdl_refresh"\)/)
-  assert.match(page, /pdlPersonId\?: string/)
-  assert.match(page, /lastProfessionalDataRefresh \|\| person\.lastPdlRefresh/)
-})
+test("stage3 1: Coresignal can be live while Lusha remains mock", () => { assert.equal(runtime.providerMode("coresignal"), "live"); assert.equal(runtime.providerMode("lusha"), "mock"); assert.equal(runtime.providerConfigured("coresignal"), true) })
+test("stage3 2: legacy global flags cannot activate Lusha", () => { assert.equal(process.env.ENRICHMENT_MODE, "live"); assert.equal(runtime.providerMode("lusha"), "mock") })
+test("stage3 3: provider secrets and gates remain server-only", () => { assert.doesNotMatch(env, /NEXT_PUBLIC_(CORESIGNAL|LUSHA|PROVIDER)/); assert.doesNotMatch(page, /CORESIGNAL_API_KEY|LUSHA_API_KEY/); assert.match(env, /CORESIGNAL_API_KEY=/); assert.match(env, /CORESIGNAL_LIVE_ENABLED=false/) })
+test("stage3 4: live education search contract is exact", () => { assert.deepEqual(client.coresignalSearchContract(), { method: "POST", path: "/cdapi/v2/employee_base/search/filter/preview", body: { education_institution_professional_network_url: client.CORESIGNAL_IIML_INSTITUTION_URL, active_experience: true } }) })
+test("stage3 5: live search respects provider-safe maximum", () => { assert.equal(runtime.coresignalLiveSearchMaximum(), 20); assert.match(adapterSource, /Math\.min\(limit, coresignalLiveSearchMaximum\(\)\)/) })
+test("stage3 6: Search sends apikey and no Authorization header", async () => { let headers; await client.searchCoresignalIiml({ fetcher: async (_url, init) => { headers = new Headers(init.headers); return new Response("[]", { status: 200 }) } }); assert.equal(headers.get("apikey"), process.env.CORESIGNAL_API_KEY); assert.equal(headers.has("authorization"), false) })
+test("stage3 7: Collect sends apikey and no Authorization header", async () => { let headers; await client.collectCoresignalEmployee("421745303", { fetcher: async (_url, init) => { headers = new Headers(init.headers); return new Response("{}", { status: 200 }) } }); assert.equal(headers.get("apikey"), process.env.CORESIGNAL_API_KEY); assert.equal(headers.has("authorization"), false) })
+test("stage3 8: full-profile normalization maps stable identity", () => { const result = adapter.mapCoresignalProfile(fullProfile, 0); assert.equal(result.providerPersonId, "421745303"); assert.equal(result.currentCompany, "Ultrahuman"); assert.equal(result.affiliationStatus, "Confirmed degree alumnus") })
+test("stage3 9: missing live fields are labelled unavailable", () => { const result = adapter.mapCoresignalProfile({ id: "empty", full_name: "Controlled Person", deleted: 0 }, 0); assert.equal(result.currentCompany, "Company unavailable"); assert.equal(result.role, "Role unavailable"); assert.equal(result.affiliationStatus, "Potential alumnus — review required") })
+test("stage3 10: discovery remains review-before-add with separate confidence", () => { assert.match(discoveryRoute, /action === "approve"/); assert.match(discoveryRoute, /matchConfidence/); assert.match(page, /match confidence/); assert.match(page, /Data confidence/) })
+test("stage3 11: Provider History records mode, operation cost, and unknown account usage", () => { assert.match(discoveryRoute, /operation: "Education affiliation search"/); assert.match(discoveryRoute, /applicationUnits: response\.usage\.applicationUnits/); assert.match(discoveryRoute, /providerReportedCredits: response\.usage\.providerReportedUsage/) })
+test("stage3 12: application limit reserves one Search credit before Collect limits", () => { assert.match(discoveryRoute, /searchOperationReserve/); assert.match(discoveryRoute, /remaining - searchOperationReserve/); assert.match(discoveryRoute, /remaining <= searchOperationReserve/) })
+test("stage3 13: zero results and provider failures remain distinct", () => { assert.match(adapterSource, /No additional external affiliation candidates were found/); assert.match(discoveryRoute, /reason: "provider_error"/); assert.match(page, /External search was not run/); assert.match(page, /No additional external alumni were found/) })
+test("stage3 14: provider failures are normalized without payloads", async () => { for (const [status, kind] of [[401, "authentication"], [429, "rate_limit"], [503, "unavailable"]]) await assert.rejects(() => client.searchCoresignalIiml({ fetcher: async () => new Response("private detail", { status }) }), error => error.kind === kind && !error.message.includes("private detail")) })
+test("stage3 15: live discovery performs one Search then stable-ID Collect", async () => { const previous = globalThis.fetch; const calls = []; globalThis.fetch = async (url, init) => { calls.push({ url: String(url), headers: new Headers(init.headers) }); return new Response(JSON.stringify(calls.length === 1 ? [{ id: "421745303" }] : fullProfile), { status: 200 }) }; try { const result = await adapter.coresignalProvider.searchCandidates(filters(), [], 1); assert.match(calls[0].url, /search\/filter\/preview/); assert.match(calls[1].url, /collect\/421745303/); assert.equal(result.usage.applicationUnits, 2) } finally { globalThis.fetch = previous } })
+test("stage3 16: profile refresh supports no-change, no-match, and review-before-apply", () => { assert.match(enrichmentRoute, /changed\.length \? "Pending review" : "No changes"/); assert.match(enrichmentRoute, /result\.status === "no_match"/); assert.match(enrichmentRoute, /action === "apply_refresh"/); assert.match(page, /Apply Selected Updates/) })
+test("stage3 17: no professional-data path automatically invokes Lusha", () => { const discovery = discoveryRoute.match(/if \(payload\.action === "search"\)[\s\S]*?if \(payload\.action === "qualify"/)?.[0] ?? ""; assert.doesNotMatch(discovery, /lusha|Lusha/); assert.equal(runtime.providerMode("lusha"), "mock") })
+test("stage3 18: live provider calls remain PCOM/Admin-only", () => { assert.match(discoveryRoute, /"OPERATE_PCOM"/); assert.match(enrichmentRoute, /"MANAGE_PROVIDER_SETTINGS"/); assert.match(enrichmentRoute, /coresignalLiveRefreshMaximum\(\)/) })
+test("stage3 19: successful zero-result Search costs one Search operation credit", async () => { const previous = globalThis.fetch; globalThis.fetch = async () => new Response("[]", { status: 200 }); try { const result = await adapter.coresignalProvider.searchCandidates(filters(), [], 5); assert.equal(result.profiles.length, 0); assert.equal(result.usage.applicationUnits, 1); assert.equal(result.usage.providerReportedUsage, null) } finally { globalThis.fetch = previous } })
+test("stage3 20: request timeout is normalized and secret-safe", async () => { await assert.rejects(() => client.searchCoresignalIiml({ timeoutMs: 1, fetcher: async (_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true })) }), error => error.kind === "timeout" && error.successfulOperationCredits === 0 && !error.message.includes(process.env.CORESIGNAL_API_KEY)) })
+test("stage3 21: refresh without a stable ID performs no Collect and costs zero", async () => { const result = await adapter.coresignalProvider.refreshProfile({ id: 1, name: "Missing", batch: 2020, company: "X", title: "Y", function: "Other", seniority: "Manager", location: "India" }); assert.equal(result.status, "no_match"); assert.equal(result.usage.applicationUnits, 0) })
+test("stage3 22: readiness does not make a person-level validation call", () => { assert.doesNotMatch(page, /Validate Coresignal connection/); assert.match(discoveryRoute, /configured: coresignalProvider\.configured\(\)/); assert.doesNotMatch(discoveryRoute, /validate_coresignal/) })
