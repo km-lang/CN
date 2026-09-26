@@ -32,7 +32,12 @@ export function providerUsageLabel(input: {
   provider?: string
   status?: string
   responseSummary?: string
+  mode?: string
 }) {
+  if (input.mode === "mock") {
+    const simulated = input.creditsUsed ?? 0
+    return { label: simulated ? `${simulated} simulated credit${simulated === 1 ? "" : "s"}` : "Mock", detail: "Mock — no live credits consumed." }
+  }
   const legacyMissingLushaUsage = input.provider === "lusha"
     && input.status === "success"
     && input.creditsUsed === 0

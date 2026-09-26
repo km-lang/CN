@@ -24,14 +24,14 @@ ON CONFLICT(`id`) DO UPDATE SET
 
 INSERT INTO `alumni` (
   `id`, `profile_key`, `name`, `initials`, `batch`, `graduation_year`, `programme`,
-  `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`,
-  `email_verification`, `professional_data_status`, `verified_label`, `outreach_status`,
+  `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`, `phone`, `phone_source`,
+  `email_verification`, `phone_verification`, `professional_data_status`, `verified_label`, `outreach_status`,
   `iiml_relationship`, `warm_intro_potential`, `confidence`, `profile_match`,
   `current_company_verification`, `designation_verification`, `source`, `updated_by`
 ) VALUES (
   15, 'local-fixture-sahil-bansal', 'Sahil Bansal', 'SB', 2012, 2012, 'PGP',
   'Local Fixture Company', 'Director', 'Strategy', 'Director', 'India',
-  'sahil.bansal@example.test', 'Manual verification', 'Verified', 'Reviewed', 'Manually verified',
+  'sahil.bansal@example.test', 'Manual verification', '', '', 'Verified', 'Unverified', 'Reviewed', 'Manually verified',
   'Contacted', 'Unknown / Not assessed', 'Confirmed relationship available', 65, 'Confirmed',
   'Verified', 'Verified', 'Internal alumni database', 'Local Development Admin'
 )
@@ -49,7 +49,10 @@ ON CONFLICT(`id`) DO UPDATE SET
   `location` = excluded.`location`,
   `email` = excluded.`email`,
   `email_source` = excluded.`email_source`,
+  `phone` = excluded.`phone`,
+  `phone_source` = excluded.`phone_source`,
   `email_verification` = excluded.`email_verification`,
+  `phone_verification` = excluded.`phone_verification`,
   `outreach_status` = excluded.`outreach_status`,
   `iiml_relationship` = excluded.`iiml_relationship`,
   `warm_intro_potential` = excluded.`warm_intro_potential`,
@@ -62,14 +65,14 @@ ON CONFLICT(`id`) DO UPDATE SET
 
 INSERT INTO `alumni` (
   `id`, `profile_key`, `name`, `initials`, `batch`, `graduation_year`, `programme`,
-  `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`,
-  `email_verification`, `professional_data_status`, `verified_label`, `outreach_status`,
+  `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`, `phone`, `phone_source`,
+  `email_verification`, `phone_verification`, `professional_data_status`, `verified_label`, `outreach_status`,
   `iiml_relationship`, `warm_intro_potential`, `confidence`, `profile_match`,
   `current_company_verification`, `designation_verification`, `source`, `updated_by`
 ) VALUES (
   22, 'local-fixture-priya-sharma', 'Priya Sharma', 'PS', 2015, 2015, 'PGP',
   'Local Fixture Company', 'Vice President', 'HR', 'Vice President', 'Mumbai, India',
-  'priya.sharma@example.test', 'Manual verification', 'Verified', 'Reviewed', 'Manually verified', 'Responded',
+  'priya.sharma@example.test', 'Manual verification', '', '', 'Verified', 'Unverified', 'Reviewed', 'Manually verified', 'Responded',
   'Strong', 'Confirmed direct connection to decision-maker', 85, 'Confirmed',
   'Verified', 'Verified', 'Internal alumni database', 'Local Development Admin'
 )
@@ -87,7 +90,10 @@ ON CONFLICT(`id`) DO UPDATE SET
   `location` = excluded.`location`,
   `email` = excluded.`email`,
   `email_source` = excluded.`email_source`,
+  `phone` = excluded.`phone`,
+  `phone_source` = excluded.`phone_source`,
   `email_verification` = excluded.`email_verification`,
+  `phone_verification` = excluded.`phone_verification`,
   `outreach_status` = excluded.`outreach_status`,
   `iiml_relationship` = excluded.`iiml_relationship`,
   `warm_intro_potential` = excluded.`warm_intro_potential`,

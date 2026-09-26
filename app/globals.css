@@ -524,7 +524,7 @@ button { cursor: pointer; }
 .mail-mode svg { width: 14px; }
 .mail-mock { background: #fff0c9; color: #805b0c; }
 .mail-live { background: #dcf4eb; color: #0c6b53; }
-.birthday-filters { display: grid; grid-template-columns: repeat(3, minmax(150px, 190px)) 1fr; align-items: center; gap: .6rem; padding: .8rem 1rem; border-bottom: 1px solid #e4e9ed; }
+.birthday-filters { display: grid; grid-template-columns: repeat(4, minmax(145px, 1fr)) auto; align-items: center; gap: .6rem; padding: .8rem 1rem; border-bottom: 1px solid #e4e9ed; }
 .birthday-filters [data-slot="select-trigger"] { background: #f9fafb; }
 .birthday-bulk-summary { display: flex; align-items: center; justify-content: flex-end; gap: .7rem; }
 .birthday-bulk-summary > span { color: #6d7c87; font-size: .78rem; }
@@ -893,4 +893,8 @@ button { cursor: pointer; }
 .outreach-filters { display: grid; grid-template-columns: minmax(220px, 1.3fr) repeat(3, minmax(150px, .8fr)) auto; gap: .6rem; padding: .9rem 1.25rem; border-bottom: 1px solid #e5eaed; background: #f8fafb; }
 .pipeline-summary button { display: flex; align-items: center; justify-content: space-between; gap: .55rem; padding: .75rem; border: 1px solid transparent; border-radius: 10px; color: inherit; background: transparent; }
 .pipeline-summary button:hover, .pipeline-summary button.active { border-color: #d7a4aa; background: #fff9fa; }
+.pipeline-summary button.pipeline-all { border-right-color: #c8d2d8; background: #eef3f5; }
+.pipeline-summary button.pipeline-all.active { border-color: #9d2935; background: #fff; }
 .pipeline-summary button > span:not(.status-badge) { color: #536674; font-size: .75rem; font-weight: 800; }
+.selection-eligibility { display: flex; flex-wrap: wrap; gap: .35rem 1rem; align-items: baseline; padding: .75rem 1.25rem; border-bottom: 1px solid #e5eaed; background: #f8fafb; }
+.selection-eligibility small { flex-basis: 100%; color: #52636e; line-height: 1.45; }

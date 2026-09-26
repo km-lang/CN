@@ -5,6 +5,7 @@ import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@
 import { getLushaAccountUsage, revealLushaEmail, searchLushaContact } from "@/lib/lusha-client";
 import { pdlLiveRefreshMaximum } from "@/lib/provider-runtime";
 import { providerUsageState } from "@/lib/provider-usage";
+import { eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment";
 import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const providers: ProviderName[] = ["pdl", "lusha"];
@@ -82,10 +83,15 @@ export async function PATCH(request: Request) {
 export async function POST(request: Request) {
   try {
     const payload = await request.json() as { action?: string; alumniIds?: number[]; alumnusId?: number; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[]; reviewId?: number; historyId?: number; fields?: string[]; confirmed?: boolean; reconciledCredits?: number; reconciliationSource?: string };
-    const requiredPermission = payload.action === "validate_lusha" ? "MANAGE_PROVIDER_SETTINGS" : payload.action === "reconcile_usage" ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM";
+    const requiredPermission = payload.action === "validate_lusha" ? "MANAGE_PROVIDER_SETTINGS" : payload.action === "reconcile_usage" ? "MANAGE_PROVIDER_SETTINGS" : payload.action === "refresh_history" ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM";
     const context = await authorizeRequest(request, requiredPermission);
     const db = getDb();
     const actor = context.displayName;
+
+    if (payload.action === "refresh_history") {
+      await writeSecurityAudit(context, { action: "provider_history_refreshed", entityType: "provider_history", metadata: { source: "administration_ui" } });
+      return Response.json({ refreshed: true });
+    }
 
     if (payload.action === "validate_lusha") {
       if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE and its server-side API key must both be configured." }, { status: 409 });
@@ -207,7 +213,7 @@ export async function POST(request: Request) {
       }
       await db.update(alumni).set(updates).where(eq(alumni.id, person.id));
       const now = new Date().toISOString();
-      await db.update(providerRefreshReviews).set({ status: applied.length ? "Applied" : "Reviewed, no updates selected", reviewedBy: actor, reviewedAt: now }).where(eq(providerRefreshReviews.id, review.id));
+      await db.update(providerRefreshReviews).set({ status: applied.length ? "Applied" : "Reviewed — kept existing", reviewedBy: actor, reviewedAt: now }).where(eq(providerRefreshReviews.id, review.id));
       await writeSecurityAudit(context, { action: "professional_profile_update_approved", entityType: "alumnus", entityId: person.id, metadata: { appliedFields: applied } });
       return Response.json({ applied, alumnusId: person.id });
     }
@@ -272,26 +278,52 @@ export async function POST(request: Request) {
     const results = [];
     for (const person of people) {
       for (const provider of requestedProviders) {
-        const channels = payload.contactChannels?.filter(channel => channel === "email" || channel === "phone") ?? ["email", "phone"];
+        const requestedChannels = (payload.contactChannels?.filter(channel => channel === "email" || channel === "phone") ?? ["email", "phone"]) as ContactChannel[];
+        const channels = eligibleContactChannels(person, requestedChannels);
+        const skippedVerifiedChannels = requestedChannels.filter(channel => !channels.includes(channel));
+        if (!channels.length) {
+          results.push({ provider, status: "skipped", creditsUsed: 0, alumnusId: person.id, alumnusName: person.name, appliedChannels: [], skippedVerifiedChannels, responseSummary: "Existing verified contact channels preserved; no provider call was made." });
+          continue;
+        }
         const estimated = provider === "pdl" ? 1 : (channels.includes("email") ? 1 : 0) + (channels.includes("phone") ? 5 : 0);
         if (usage[provider].remaining < estimated) {
-          const blocked = { provider, status: "blocked", creditsUsed: 0, alumnusId: person.id, alumnusName: person.name, responseSummary: "Monthly application credit limit reached." };
+          const blocked = { provider, status: "blocked", creditsUsed: 0, alumnusId: person.id, alumnusName: person.name, appliedChannels: [], skippedVerifiedChannels, blockedReason: "Insufficient application capacity", responseSummary: "Monthly application usage limit reached." };
           results.push(blocked);
           const blockedOperation = channels.length === 2 ? "Email + Phone Enrichment" : channels[0] === "email" ? "Email Enrichment" : "Phone Enrichment";
           await db.insert(providerResponseHistory).values({ provider, alumnusId: person.id, alumnusName: person.name, operation: blockedOperation, mode: enrichmentMode(provider), status: "blocked", creditsUsed: 0, requestSummary: `${person.name} at ${person.company}`, responseSummary: blocked.responseSummary, requestedBy: actor });
           continue;
         }
         const result = await enrich(provider, { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl, contactChannels: channels });
+        const safeChanges: Partial<typeof alumni.$inferInsert> = {};
+        const appliedChannels: ContactChannel[] = [];
+        const conflicts: ContactChannel[] = [];
         if (result.status === "success" && Object.keys(result.changes).length) {
-          for (const field of ["email", "phone"] as const) {
+          for (const field of channels) {
             const newValue = String(result.changes[field] ?? "");
             const oldValue = person[field];
-            if (newValue && newValue !== oldValue) await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field, oldValue, newValue, source: "Lusha", providerAction: channels.length === 2 ? "Email + Phone Enrichment" : channels[0] === "email" ? "Email Enrichment" : "Phone Enrichment", creditsCharged: field === "phone" ? 5 : 1, initiatedBy: actor });
+            if (!newValue || newValue === oldValue) continue;
+            if (oldValue) { conflicts.push(field); continue; }
+            safeChanges[field] = newValue;
+            if (field === "email") {
+              safeChanges.emailVerification = String(result.changes.emailVerification ?? "Unverified");
+              safeChanges.emailSource = "Lusha";
+              safeChanges.emailRetrievedAt = String(result.changes.emailRetrievedAt ?? new Date().toISOString());
+            } else {
+              safeChanges.phoneVerification = String(result.changes.phoneVerification ?? "Unverified");
+              safeChanges.phoneSource = "Lusha";
+              safeChanges.phoneRetrievedAt = String(result.changes.phoneRetrievedAt ?? new Date().toISOString());
+            }
+            appliedChannels.push(field);
+            await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field, oldValue, newValue, source: "Lusha", providerAction: channels.length === 2 ? "Email + Phone Enrichment" : channels[0] === "email" ? "Email Enrichment" : "Phone Enrichment", creditsCharged: field === "phone" ? 5 : 1, initiatedBy: actor });
           }
-          await db.update(alumni).set({ ...result.changes, updatedBy: actor, updatedAt: new Date().toISOString() }).where(eq(alumni.id, person.id));
-          usage[provider].used += result.creditsUsed;
-          usage[provider].remaining = Math.max(0, usage[provider].limit - usage[provider].used);
+          if (conflicts.length) {
+            safeChanges.professionalDataStatus = "Conflict — manual verification required";
+            safeChanges.professionalDataNote = `Lusha returned a different existing ${conflicts.join(" and ")} value. Existing contact data was preserved for manual review.`;
+          }
+          if (Object.keys(safeChanges).length) await db.update(alumni).set({ ...safeChanges, updatedBy: actor, updatedAt: new Date().toISOString() }).where(eq(alumni.id, person.id));
         }
+        usage[provider].used += result.creditsUsed;
+        usage[provider].remaining = Math.max(0, usage[provider].limit - usage[provider].used);
         await db.insert(providerResponseHistory).values({
           provider,
           alumnusId: person.id,
@@ -302,11 +334,11 @@ export async function POST(request: Request) {
           creditsUsed: result.creditsUsed,
           resultCount: result.status === "success" ? 1 : 0,
           requestSummary: `${person.name} at ${person.company}`,
-          responseSummary: result.responseSummary,
+          responseSummary: conflicts.length ? `${result.responseSummary} Existing ${conflicts.join(" and ")} value differed and was preserved for review.` : result.responseSummary,
           errorMessage: result.errorMessage ?? "",
           requestedBy: actor,
         });
-        results.push({ ...result, alumnusId: person.id, alumnusName: person.name });
+        results.push({ ...result, alumnusId: person.id, alumnusName: person.name, appliedChannels, skippedVerifiedChannels, conflicts });
       }
     }
     await writeSecurityAudit(context, { action: "lusha_contact_enrichment", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, channels: payload.contactChannels ?? ["email", "phone"], mode: enrichmentMode("lusha") } });

@@ -6,7 +6,7 @@ import {
   CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, Cloud, ContactRound,
   Database, Download, Eye, FileSpreadsheet, Filter, GitCompare, History, LoaderCircle,
   Mail, MapPin, MessageSquare, Network, Plus, Search, Send, Sparkles, Target, Upload,
-  Info, UserRoundCheck, UsersRound, XCircle, Zap,
+  Info, UserPlus, UserRoundCheck, UsersRound, XCircle, Zap,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -38,6 +38,9 @@ import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 import { programmeFilterOptions, type ProgrammeOption } from "@/lib/programme-options"
 import { contactReadiness, isActiveOutreach } from "@/lib/alumni-metrics"
 import { parseCsv, parseXlsx, validateImport, type ImportReviewRow } from "@/lib/alumni-import"
+import { contactEnrichmentPlan, eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment"
+import { engagementMatches } from "@/lib/engagement-filters"
+import { mailPresentation, signalsPresentation } from "@/lib/runtime-readiness"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -386,12 +389,12 @@ function isCompletedEngagement(status: string) {
   return ["Action Taken", "Response Received", "Closed", "Completed", "Skipped"].includes(status)
 }
 
-function placementContext(person: Alumni) {
-  return person.note === "No placement context recorded." ? "No Placement Committee relationship context recorded." : person.note
+function missingLushaChannels(person: Alumni) {
+  return eligibleContactChannels(person, ["email", "phone"])
 }
 
-function missingLushaChannels(person: Alumni): ("email" | "phone")[] {
-  return (["email", "phone"] as const).filter(channel => !person[channel] || person.verification[channel] !== "Verified")
+function placementContext(person: Alumni) {
+  return person.note === "No placement context recorded." ? "No Placement Committee relationship context recorded." : person.note
 }
 
 function engagementEmptyState(filter: string) {
@@ -473,9 +476,11 @@ export default function Home() {
   const [signalsRunning, setSignalsRunning] = useState(false)
   const [signalsMessage, setSignalsMessage] = useState("")
   const [engagementFilter, setEngagementFilter] = useState("Needs Action")
-  const [birthdayWindow, setBirthdayWindow] = useState("Next 7 Days")
-  const [birthdayCompany, setBirthdayCompany] = useState("All companies")
-  const [birthdayEmailFilter, setBirthdayEmailFilter] = useState("All email states")
+  const [engagementPeriod, setEngagementPeriod] = useState("All dates")
+  const [engagementCompany, setEngagementCompany] = useState("All companies")
+  const [engagementAssignee, setEngagementAssignee] = useState("All assignees")
+  const [engagementActionState, setEngagementActionState] = useState("All email states")
+  const [engagementAssignees, setEngagementAssignees] = useState<Array<{ id: number; displayName: string }>>([])
   const [selectedEngagement, setSelectedEngagement] = useState<EngagementEvent | null>(null)
   const openEngagementRef = useRef<(event: EngagementEvent) => Promise<void>>(async () => {})
   const [selectedBirthdayIds, setSelectedBirthdayIds] = useState<number[]>([])
@@ -507,6 +512,7 @@ export default function Home() {
   const [manualLoading, setManualLoading] = useState(false)
   const [manualMessage, setManualMessage] = useState("")
   const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false)
+  const [contactConfirm, setContactConfirm] = useState<{ ids: number[]; channels: ContactChannel[]; operation: "manual" | "batch" } | null>(null)
   const [refreshResults, setRefreshResults] = useState<RefreshResult[]>([])
   const [refreshSelections, setRefreshSelections] = useState<Record<number, string[]>>({})
   const [lushaTarget, setLushaTarget] = useState<Alumni | null>(null)
@@ -516,7 +522,7 @@ export default function Home() {
   const [privacyNoteDrafts, setPrivacyNoteDrafts] = useState<Record<number, string>>({})
   const [outreachSearch, setOutreachSearch] = useState("")
   const [outreachCompany, setOutreachCompany] = useState("All companies")
-  const [outreachStatus, setOutreachStatus] = useState("All")
+  const [outreachStatus, setOutreachStatus] = useState("All alumni")
   const [outreachRelevance, setOutreachRelevance] = useState("All")
 
   const loadWorkspace = useCallback(async () => {
@@ -597,6 +603,19 @@ export default function Home() {
     }
   }, [])
 
+  async function refreshProviderHistory() {
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "refresh_history" }) })
+      const result = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(result.error || "Unable to refresh provider history.")
+      await loadEnrichment()
+      setEnrichmentMessage("Provider history refreshed and audited.")
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to refresh provider history.")
+    }
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => void loadEnrichment(), 0)
     return () => window.clearTimeout(timer)
@@ -627,10 +646,11 @@ export default function Home() {
       engagementWorkCountRef.current += 1
       setEngagementLoading(true)
       const response = await fetch(API_ROUTES.engagements, { cache: "no-store" })
-      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; mode?: "mock" | "live"; mail?: { configured?: boolean }; error?: string }
+      const data = await response.json() as { events?: EngagementEvent[]; templates?: MessageTemplate[]; assignees?: Array<{ id: number; displayName: string }>; mode?: "mock" | "live"; mail?: { configured?: boolean }; error?: string }
       if (!response.ok || !data.events) throw new Error(data.error || "Unable to load the shared engagement queue.")
       setEngagements(data.events)
       setMessageTemplates(data.templates ?? [])
+      setEngagementAssignees(data.assignees ?? [])
       setMailMode(data.mode ?? "mock")
       setMailConfigured(Boolean(data.mail?.configured))
       setSelectedEngagement(current => current ? data.events?.find(event => event.id === current.id) ?? null : null)
@@ -715,23 +735,31 @@ export default function Home() {
   const activeOutreach = alumni.filter(person => isActiveOutreach(person.status)).length
   const contactReadyCount = alumni.filter(person => operationalStatus(person) === "Contact-ready").length
   const today = new Date().toISOString().slice(0, 10)
-  const tomorrowDate = new Date(); tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1)
-  const tomorrow = tomorrowDate.toISOString().slice(0, 10)
   const nextWeekDate = new Date(); nextWeekDate.setUTCDate(nextWeekDate.getUTCDate() + 7)
   const nextWeek = nextWeekDate.toISOString().slice(0, 10)
   const birthdayEvents = engagements.filter(event => event.eventType === "Birthday")
   const professionalEvents = engagements.filter(event => event.eventType === "Professional Signal")
   const actionableProfessionalEvents = professionalEvents.filter(event => !isCompletedEngagement(event.status))
   const signalsTarget = alumni.find(person => person.id === signalsAlumnusId) ?? null
-  const signalsActive = Boolean(signalsStatus?.liveEnabled && signalsStatus.entitlement === "confirmed")
+  const localDevelopment = process.env.NODE_ENV === "development"
+  const signalsUi = signalsPresentation({ development: localDevelopment, liveEnabled: Boolean(signalsStatus?.liveEnabled), entitlement: signalsStatus?.entitlement ?? "unknown", configured: Boolean(signalsStatus?.configured) })
+  const signalsActive = signalsUi.available
+  const mailUi = mailPresentation({ development: localDevelopment, mode: mailMode, configured: mailConfigured })
   const birthdaysToday = birthdayEvents.filter(event => event.eventDate === today)
   const birthdaysNextWeek = birthdayEvents.filter(event => event.eventDate >= today && event.eventDate <= nextWeek)
   const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
   const followUpsDue = engagements.filter(event => event.status === "Follow-up Due")
   const pdlSelectionReady = selectedForEnrichment.length > 0 && (providerModes.pdl === "mock" || selectedForEnrichment.length === 1) && providerUsage.pdl.remaining >= selectedForEnrichment.length && (providerModes.pdl === "mock" || providerUsage.pdl.configured)
-  const lushaEmailReady = selectedForEnrichment.length === 1 && providerUsage.lusha.remaining >= 1 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
-  const lushaPhoneReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 5 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
-  const lushaBothReady = selectedForEnrichment.length > 0 && providerUsage.lusha.remaining >= selectedForEnrichment.length * 6 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
+  const selectedContactPeople = alumni.filter(person => selectedForEnrichment.includes(person.id))
+  const emailPlan = contactEnrichmentPlan(selectedContactPeople, ["email"])
+  const phonePlan = contactEnrichmentPlan(selectedContactPeople, ["phone"])
+  const bothPlan = contactEnrichmentPlan(selectedContactPeople, ["email", "phone"])
+  const pendingContactPlan = contactConfirm
+    ? contactEnrichmentPlan(alumni.filter(person => contactConfirm.ids.includes(person.id)), contactConfirm.channels)
+    : null
+  const lushaEmailReady = emailPlan.emailOperations > 0 && providerUsage.lusha.remaining >= emailPlan.emailOperations && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
+  const lushaPhoneReady = phonePlan.phoneOperations > 0 && providerUsage.lusha.remaining >= phonePlan.phoneOperations * 5 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
+  const lushaBothReady = bothPlan.emailOperations + bothPlan.phoneOperations > 0 && providerUsage.lusha.remaining >= bothPlan.emailOperations + bothPlan.phoneOperations * 5 && (providerModes.lusha === "mock" || providerUsage.lusha.configured)
   const birthdayReady = (event: EngagementEvent) => Boolean(event.alumnus?.email)
     && ["Confirmed internally", "Manually confirmed", "PDL sourced"].includes(event.birthday?.status ?? "")
     && ["Standard engagement allowed", "Birthday engagement allowed"].includes(event.preference)
@@ -740,25 +768,11 @@ export default function Home() {
   const discoveryMaximum = maximumDiscoveryCount(providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)
   const discoveryCountPreset = ["1", "5", "10", "20"].includes(discoveryLimit) ? discoveryLimit : "custom"
   const discoveryCountValidation = validateDiscoveryCount(Number(discoveryLimit), providerUsage.pdl.remaining, providerModes.pdl === "live" ? pdlLiveMaximum : 100)
-  const visibleEngagements = engagements.filter(event => {
-    if (engagementFilter === "Professional Signals" && event.eventType !== "Professional Signal") return false
-    if (engagementFilter === "Birthdays" && event.eventType !== "Birthday") return false
-    if (engagementFilter === "Assigned to Me" && event.assignedTo !== currentDemoUser) return false
-    if (engagementFilter === "Follow-ups" && event.status !== "Follow-up Due") return false
-    if (engagementFilter === "Completed" && !isCompletedEngagement(event.status)) return false
-    if (engagementFilter === "Skipped" && event.status !== "Skipped") return false
-    if (engagementFilter === "Needs Action" && isCompletedEngagement(event.status)) return false
-    if (event.eventType === "Birthday" && engagementFilter === "Birthdays") {
-      if (birthdayWindow === "Today" && event.eventDate !== today) return false
-      if (birthdayWindow === "Tomorrow" && event.eventDate !== tomorrow) return false
-      if (birthdayWindow === "Next 7 Days" && (event.eventDate < today || event.eventDate > nextWeek)) return false
-      if (birthdayWindow === "This Month" && event.eventDate.slice(0, 7) !== today.slice(0, 7)) return false
-      if (birthdayCompany !== "All companies" && event.alumnus?.company !== birthdayCompany) return false
-      if (birthdayEmailFilter === "Email available" && !event.alumnus?.email) return false
-      if (birthdayEmailFilter === "Email unavailable" && event.alumnus?.email) return false
-    }
-    return true
-  })
+  const visibleEngagements = engagements.filter(event => engagementMatches(event, {
+    queue: engagementFilter, period: engagementPeriod, company: engagementCompany,
+    assignee: engagementAssignee, actionState: engagementActionState,
+    currentUser: currentDemoUser, today,
+  }))
 
   function changeTargetCompany(company: string) {
     setTargetCompany(company)
@@ -979,7 +993,7 @@ export default function Home() {
     }
   }
 
-  async function runEnrichment(ids: number[], requestedProviders: Provider[], operation: "manual" | "batch", contactChannels?: ("email" | "phone")[]) {
+  async function executeEnrichment(ids: number[], requestedProviders: Provider[], operation: "manual" | "batch", contactChannels?: ContactChannel[]) {
     if (!ids.length) { setEnrichmentMessage("Select at least one alumnus first."); return }
     setEnriching(true)
     setEnrichmentMessage("")
@@ -989,16 +1003,40 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ alumniIds: ids.slice(0, 25), providers: requestedProviders, operation, contactChannels }),
       })
-      const data = await response.json() as { results?: Array<{ status: string }>; error?: string }
+      const data = await response.json() as { results?: Array<{ status: string; alumnusName?: string; appliedChannels?: ContactChannel[]; skippedVerifiedChannels?: ContactChannel[]; blockedReason?: string }>; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to run enrichment.")
-      const successes = data.results?.filter(result => result.status === "success").length ?? 0
-      setEnrichmentMessage(`${successes} provider result${successes === 1 ? "" : "s"} applied. Full details are in response history.`)
+      const results = data.results ?? []
+      const appliedEmail = results.reduce((count, result) => count + (result.appliedChannels?.includes("email") ? 1 : 0), 0)
+      const appliedPhone = results.reduce((count, result) => count + (result.appliedChannels?.includes("phone") ? 1 : 0), 0)
+      const preserved = results.reduce((count, result) => count + (result.skippedVerifiedChannels?.length ?? 0), 0)
+      const blocked = results.filter(result => result.blockedReason).length
+      const summary = [appliedEmail && `${appliedEmail} email channel${appliedEmail === 1 ? "" : "s"} enriched`, appliedPhone && `${appliedPhone} phone channel${appliedPhone === 1 ? "" : "s"} enriched`, preserved && `${preserved} existing verified channel${preserved === 1 ? "" : "s"} preserved`, blocked && `${blocked} alumn${blocked === 1 ? "us" : "i"} skipped`].filter(Boolean).join(". ")
+      setEnrichmentMessage(summary ? `${summary}. Full details are in response history.` : "No eligible contact channels required a provider call.")
+      setContactConfirm(null)
       await Promise.all([loadWorkspace(), loadEnrichment()])
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to run enrichment.")
     } finally {
       setEnriching(false)
     }
+  }
+
+  function prepareContactEnrichment(ids: number[], channels: ContactChannel[], operation: "manual" | "batch") {
+    const people = alumni.filter(person => ids.includes(person.id))
+    const plan = contactEnrichmentPlan(people, channels)
+    if (!plan.emailOperations && !plan.phoneOperations) {
+      setEnrichmentMessage("No missing or unverified contact channels are eligible. Existing verified contacts were preserved.")
+      return
+    }
+    setContactConfirm({ ids, channels, operation })
+  }
+
+  function runEnrichment(ids: number[], requestedProviders: Provider[], operation: "manual" | "batch", contactChannels?: ContactChannel[]) {
+    if (requestedProviders.length === 1 && requestedProviders[0] === "lusha" && contactChannels?.length) {
+      prepareContactEnrichment(ids, contactChannels, operation)
+      return Promise.resolve()
+    }
+    return executeEnrichment(ids, requestedProviders, operation, contactChannels)
   }
 
   function prepareLushaEmail(person: Alumni) {
@@ -1677,14 +1715,14 @@ export default function Home() {
     }
   }
 
-  async function applyRefreshResult(result: RefreshResult) {
+  async function applyRefreshResult(result: RefreshResult, fields = refreshSelections[result.reviewId ?? -1] ?? []) {
     if (!result.reviewId) return
     setEnriching(true)
     try {
-      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "apply_refresh", reviewId: result.reviewId, fields: refreshSelections[result.reviewId] ?? [] }) })
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "apply_refresh", reviewId: result.reviewId, fields }) })
       const data = await response.json() as { applied?: string[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to apply the selected profile updates.")
-      setRefreshResults(current => current.map(item => item.reviewId === result.reviewId ? { ...item, reviewStatus: data.applied?.length ? "Applied" : "Reviewed, no updates selected" } : item))
+      setRefreshResults(current => current.map(item => item.reviewId === result.reviewId ? { ...item, reviewStatus: data.applied?.length ? "Applied" : "Reviewed — kept existing" } : item))
       setEnrichmentMessage(data.applied?.length ? `${data.applied.length} professional fields updated with full change history.` : "Profile refresh reviewed. Internal values were kept.")
       await Promise.all([loadWorkspace(), loadEnrichment()])
     } catch (error) {
@@ -1709,7 +1747,7 @@ export default function Home() {
     const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
     if (outreachSearch && !`${person.name} ${person.title}`.toLowerCase().includes(outreachSearch.toLowerCase())) return false
     if (outreachCompany !== "All companies" && person.company !== outreachCompany) return false
-    if (outreachStatus !== "All" && person.status !== outreachStatus) return false
+    if (outreachStatus !== "All alumni" && person.status !== outreachStatus) return false
     if (outreachRelevance === "75–100" && relevance < 75) return false
     if (outreachRelevance === "50–74" && (relevance < 50 || relevance >= 75)) return false
     if (outreachRelevance === "Below 50" && relevance >= 50) return false
@@ -1719,7 +1757,7 @@ export default function Home() {
   function clearOutreachFilters() {
     setOutreachSearch("")
     setOutreachCompany("All companies")
-    setOutreachStatus("All")
+    setOutreachStatus("All alumni")
     setOutreachRelevance("All")
   }
   const selectedEngagementBusy = selectedEngagement ? pendingEngagementKeys.has(`event:${selectedEngagement.id}`) : false
@@ -1778,7 +1816,7 @@ export default function Home() {
               </aside>}
             </section>
 
-            {session.canOperate && <button className={`panel birthday-overview ${birthdaysNextWeek.length || reviewableBirthdaysNextWeek.length ? "birthday-overview-active" : "birthday-overview-empty"}`} onClick={() => { setEngagementFilter("Birthdays"); setBirthdayWindow("Next 7 Days"); changeWorkspaceTab("engagement") }}>
+            {session.canOperate && <button className={`panel birthday-overview ${birthdaysNextWeek.length || reviewableBirthdaysNextWeek.length ? "birthday-overview-active" : "birthday-overview-empty"}`} onClick={() => { setEngagementFilter("Birthdays"); setEngagementPeriod("Next 7 Days"); changeWorkspaceTab("engagement") }}>
               <span className="birthday-overview-icon"><Cake /></span><span><p className="eyebrow">Birthday engagement</p><strong>{birthdaysToday.length} today · {birthdaysNextWeek.length} in the next 7 days</strong><small>{reviewableBirthdaysNextWeek.length} ready for review</small></span><ChevronRight />
             </button>}
 
@@ -1896,17 +1934,19 @@ export default function Home() {
             <section className="panel engagement-panel">
               <div className="engagement-filterbar">
                 <div className="engagement-filter-tabs">{["Needs Action", "Professional Signals", "Birthdays", "Assigned to Me", "Follow-ups", "Completed", "Skipped"].map(filter => <button key={filter} className={engagementFilter === filter ? "active" : ""} onClick={() => setEngagementFilter(filter)}>{filter}</button>)}</div>
-                <div className={`mail-mode mail-${mailMode}`}><Mail /> {mailMode === "mock" ? "Mock mail · sending disabled" : mailConfigured ? "Live mail · configured" : "Live mail · credentials missing"}</div>
+                <div className={`mail-mode mail-${mailMode}`}><Mail /> {mailUi.label}</div>
               </div>
 
-              {engagementFilter === "Professional Signals" && <><section className="signals-readiness"><div><Sparkles /><span><strong>Check Professional Signals</strong><small>Promotions and company changes only · review before profile updates</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsActive ? "LIVE · entitlement confirmed" : signalsStatus?.mode === "mock" ? "Signals disabled in local development" : signalsStatus?.entitlement === "not_entitled" ? "OFF · account not entitled" : signalsStatus?.configured ? "OFF · activation pending" : "OFF · not configured"}</span><small>Selecting an alumnus never calls Lusha. A provider request requires the explicit action and final confirmation.</small>{session.canOperate && <div className="signals-selector"><AlumnusCombobox label="Alumnus with a verified Lusha identity" options={alumni} value={signalsAlumnusId} onValueChange={setSignalsAlumnusId} placeholder="Search or select an alumnus..." />{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}<Button title={!signalsTarget ? "Select an alumnus first." : !signalsTarget.lushaPersonId ? "Requires a stored Lusha contact ID." : !signalsActive ? "Professional Signals are not active in this environment." : undefined} size="sm" disabled={!signalsActive || !signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check for signals</Button></div>}</section>{signalsMessage && <div className="discovery-message">{signalsMessage}</div>}</>}
+              {engagementFilter === "Professional Signals" && <><section className="signals-readiness"><div><Sparkles /><span><strong>Check Professional Signals</strong><small>Promotions and company changes only · review before profile updates</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsUi.label}</span><small>{signalsUi.reason} Selecting an alumnus never calls Lusha.</small>{session.canOperate && <div className="signals-selector"><AlumnusCombobox label="Alumnus with a verified Lusha identity" options={alumni} value={signalsAlumnusId} onValueChange={setSignalsAlumnusId} placeholder="Search or select an alumnus..." />{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}<Button title={!signalsTarget ? "Select an alumnus first." : !signalsTarget.lushaPersonId ? "Requires a stored Lusha contact ID." : signalsUi.reason} size="sm" disabled={!signalsActive || !signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check for signals</Button></div>}</section>{signalsMessage && <div className="discovery-message">{signalsMessage}</div>}</>}
 
-              {engagementFilter === "Birthdays" && <div className="birthday-filters">
-                <Select value={birthdayWindow} onValueChange={setBirthdayWindow}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Today", "Tomorrow", "Next 7 Days", "This Month", "All upcoming"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Select value={birthdayCompany} onValueChange={setBirthdayCompany}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select>
-                <Select value={birthdayEmailFilter} onValueChange={setBirthdayEmailFilter}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All email states">All email states</SelectItem><SelectItem value="Email available">Email available</SelectItem><SelectItem value="Email unavailable">Email unavailable</SelectItem></SelectContent></Select>
-                <div className="birthday-bulk-summary"><span>{selectedBirthdayIds.length} selected</span><Button title={!selectedBirthdayIds.length ? "Select at least one eligible birthday engagement to preview emails." : undefined} variant="outline" disabled={!selectedBirthdayIds.length || engagementLoading} onClick={() => void previewSelectedBirthdays()}><Eye /> Preview Selected Emails</Button></div>
-              </div>}
+              <div className="birthday-filters" aria-label="Engagement filters">
+                <Select value={engagementPeriod} onValueChange={setEngagementPeriod}><SelectTrigger aria-label="Time period"><SelectValue /></SelectTrigger><SelectContent>{["Today", "Tomorrow", "Next 7 Days", "This Month", "All upcoming", "All dates"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={engagementCompany} onValueChange={setEngagementCompany}><SelectTrigger aria-label="Company"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select>
+                {engagementFilter !== "Assigned to Me" && <Select value={engagementAssignee} onValueChange={setEngagementAssignee}><SelectTrigger aria-label="Assignee"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All assignees">All assignees</SelectItem><SelectItem value="Unassigned">Unassigned</SelectItem><SelectItem value="Assigned to me">Assigned to me</SelectItem>{engagementAssignees.filter(user => user.displayName !== currentDemoUser).map(user => <SelectItem key={user.id} value={user.displayName}>{user.displayName}</SelectItem>)}</SelectContent></Select>}
+                <Select value={engagementActionState} onValueChange={setEngagementActionState}><SelectTrigger aria-label="Email or action state"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All email states">All email states</SelectItem><SelectItem value="Email available">Email available</SelectItem><SelectItem value="Email unavailable">Email unavailable</SelectItem></SelectContent></Select>
+                <Button variant="ghost" onClick={() => { setEngagementPeriod("All dates"); setEngagementCompany("All companies"); setEngagementAssignee("All assignees"); setEngagementActionState("All email states") }}>Clear</Button>
+                {engagementFilter === "Birthdays" && <div className="birthday-bulk-summary"><span>{selectedBirthdayIds.length} selected</span><Button title={!selectedBirthdayIds.length ? "Select at least one eligible birthday engagement to preview emails." : undefined} variant="outline" disabled={!selectedBirthdayIds.length || engagementLoading} onClick={() => void previewSelectedBirthdays()}><Eye /> Preview Selected Emails</Button></div>}
+              </div>
 
               {engagementMessage && <div className="engagement-message"><Activity /><span>{engagementMessage}</span><button aria-label="Dismiss message" onClick={() => setEngagementMessage("")}><XCircle /></button></div>}
 
@@ -1938,8 +1978,8 @@ export default function Home() {
           <TabsContent value="outreach" className="tab-panel">
             <section className="panel outreach-panel">
               <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved centrally and shared across committee members.</span></div></div>
-              <div className="pipeline-summary"><button className={outreachStatus === "All" ? "active" : ""} onClick={() => setOutreachStatus("All")}><span>All</span><strong>{alumni.length}</strong></button>{statusOptions.map(status => <button className={outreachStatus === status ? "active" : ""} key={status} onClick={() => setOutreachStatus(status)}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></button>)}</div>
-              <div className="outreach-filters"><div className="search-field"><Search /><Input value={outreachSearch} onChange={event => setOutreachSearch(event.target.value)} placeholder="Search alumnus" aria-label="Search outreach alumni" /></div><Select value={outreachCompany} onValueChange={setOutreachCompany}><SelectTrigger aria-label="Filter outreach by company"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select><Select value={outreachStatus} onValueChange={setOutreachStatus}><SelectTrigger aria-label="Filter by outreach status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All">All statuses</SelectItem>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><Select value={outreachRelevance} onValueChange={setOutreachRelevance}><SelectTrigger aria-label="Filter by Placement Relevance"><SelectValue /></SelectTrigger><SelectContent>{["All", "75–100", "50–74", "Below 50"].map(item => <SelectItem key={item} value={item}>{item === "All" ? "All Placement Relevance" : item}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={clearOutreachFilters}>Clear</Button></div>
+              <div className="pipeline-summary"><button className={`pipeline-all ${outreachStatus === "All alumni" ? "active" : ""}`} onClick={() => setOutreachStatus("All alumni")}><span>All alumni</span><strong>{alumni.length}</strong></button>{statusOptions.map(status => <button className={outreachStatus === status ? "active" : ""} key={status} onClick={() => setOutreachStatus(status)}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></button>)}</div>
+              <div className="outreach-filters"><div className="search-field"><Search /><Input value={outreachSearch} onChange={event => setOutreachSearch(event.target.value)} placeholder="Search alumnus" aria-label="Search outreach alumni" /></div><Select value={outreachCompany} onValueChange={setOutreachCompany}><SelectTrigger aria-label="Filter outreach by company"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select><Select value={outreachStatus} onValueChange={setOutreachStatus}><SelectTrigger aria-label="Filter by outreach status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All alumni">All statuses</SelectItem>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><Select value={outreachRelevance} onValueChange={setOutreachRelevance}><SelectTrigger aria-label="Filter by Placement Relevance"><SelectValue /></SelectTrigger><SelectContent>{["All", "75–100", "50–74", "Below 50"].map(item => <SelectItem key={item} value={item}>{item === "All" ? "All Placement Relevance" : item}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={clearOutreachFilters}>Clear</Button></div>
               <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this alumnus?</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{visibleOutreach.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{outreachRationale(person)}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>{!visibleOutreach.length && <div className="empty-state"><Search /><h3>No alumni match these Outreach filters</h3><p>Clear or adjust the filters to return to the full pipeline.</p></div>}
             </section>
           </TabsContent>
@@ -1960,7 +2000,7 @@ export default function Home() {
                 </div>
               </article>
 
-              <article className="panel manual-entry-card"><div className="manual-entry-icon"><Plus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualForm(current => ({ ...current, programme: activeProgrammeChoices.some(option => option.value === current.programme) ? current.programme : activeProgrammeChoices[0]?.value ?? "" })); setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><Plus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
+              <article className="panel manual-entry-card"><div className="manual-entry-icon"><UserPlus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualForm(current => ({ ...current, programme: activeProgrammeChoices.some(option => option.value === current.programme) ? current.programme : activeProgrammeChoices[0]?.value ?? "" })); setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><UserPlus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
 
               <aside className="panel database-panel">
                 <div className="database-hero"><Database /><div><p className="eyebrow">Shared alumni database</p><h2>{alumni.length} alumni · {companies.length} companies</h2><span>One governed workspace</span></div></div>
@@ -1982,9 +2022,9 @@ export default function Home() {
                 const percent = usage.limit ? Math.min(100, usage.used / usage.limit * 100) : 100
                 return <article className="panel provider-card" key={provider}>
                   <div className="provider-title"><span>{provider === "pdl" ? "PDL" : "LU"}</span><div><h3>{provider === "pdl" ? "People Data Labs" : "Lusha"}</h3><small>{provider === "pdl" ? "Profile discovery and employment refresh" : "Email and phone enrichment"}</small></div></div>
-                  <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{provider === "pdl" ? "People Data Labs" : "Lusha"} — {providerModes[provider].toUpperCase()}{providerModes[provider] === "live" ? usage.configured ? " · key configured" : " · key missing" : ""}</span><strong>{usage.remaining} app credits remaining</strong></div>
+                  <div className="provider-status"><span className={usage.configured ? "configured" : "not-configured"}>{provider === "pdl" ? "People Data Labs" : "Lusha"} — {providerModes[provider].toUpperCase()}{providerModes[provider] === "live" ? usage.configured ? " · key configured" : " · key missing" : ""}</span><strong>Application usage limit</strong></div>
                   <div className="credit-meter"><i style={{ width: `${percent}%` }} /></div>
-                  <div className="credit-numbers"><span>{usage.used} used this month</span><span>{usage.limit} app limit</span></div>
+                  <div className="credit-numbers"><span>{usage.used} / {usage.limit} used</span><span>{usage.remaining} remaining internal capacity</span></div>
                   <div className="credit-limit"><Input type="number" min="0" value={creditDrafts[provider]} disabled={!session.canAdminister} onChange={event => setCreditDrafts(current => ({ ...current, [provider]: event.target.value }))} aria-label={`${provider} monthly credit limit`} />{session.canAdminister && <Button variant="outline" onClick={() => void saveCreditLimit(provider)}>Save limit</Button>}</div>
                   {provider === "pdl" && session.canAdminister && providerModes.pdl === "live" && <Button variant="outline" onClick={() => void validatePdlConnection()}>Validate PDL connection</Button>}
                   {provider === "lusha" && session.canAdminister && providerModes.lusha === "live" && <Button variant="outline" onClick={() => void validateLushaConnection()}>Validate Lusha connection</Button>}
@@ -1996,12 +2036,13 @@ export default function Home() {
 
             <section className="panel batch-panel">
               <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? providerModes.pdl === "live" ? "Select one approved alumnus for controlled provider actions" : "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. PDL refresh and Lusha email preparation remain separate. No live action runs without confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!pdlSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !pdlSelectionReady ? "PDL is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button>{providerModes.lusha === "live" ? <Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select one alumnus" : !lushaEmailReady ? "Select exactly one alumnus and confirm Lusha is configured with application capacity" : "Start the controlled Lusha V3 email workflow"} onClick={() => { const person = alumni.find(item => item.id === selectedForEnrichment[0]); if (person) prepareLushaEmail(person) }}><Mail /> Prepare Email Reveal</Button> : <><Button variant="outline" disabled={!lushaEmailReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div>}</div>
+              <div className="selection-eligibility" role="status"><strong>{selectedForEnrichment.length} selected</strong><span>{selectedForEnrichment.length} eligible for PDL refresh · {emailPlan.emailOperations} eligible for email enrichment · {phonePlan.phoneOperations} eligible for phone enrichment</span><small>Refresh Profiles: a successful PDL match may consume credits; returned changes require review. Get Emails/Phones: only missing or unverified eligible channels are retrieved. Get Both Contacts skips existing verified channels unless explicitly refreshed.</small></div>
               {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
               <Table><TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label={providerModes.pdl === "live" ? "Select first alumnus" : "Select first 25 alumni"} checked={Boolean(alumni.length) && selectedForEnrichment.length === Math.min(providerModes.pdl === "live" ? 1 : 25, alumni.length)} onChange={event => setSelectedForEnrichment(event.target.checked ? alumni.slice(0, providerModes.pdl === "live" ? 1 : 25).map(person => person.id) : [])} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Current profile</TableHead><TableHead>Email status</TableHead><TableHead>Phone status</TableHead><TableHead>Last profile refresh</TableHead></TableRow></TableHeader><TableBody>{alumni.map(person => { const emailState = contactDataLabel(person, "email"); const phoneState = contactDataLabel(person, "phone"); return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name}`} checked={selectedForEnrichment.includes(person.id)} onChange={() => toggleEnrichmentSelection(person.id)} />}</TableCell><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{educationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell><span className="contact-state"><strong>{emailState.status}</strong><small>{emailState.detail}</small></span></TableCell><TableCell><span className="contact-state"><strong>{phoneState.status}</strong><small>{phoneState.detail}</small></span></TableCell><TableCell>{person.lastPdlRefresh ? new Date(person.lastPdlRefresh).toLocaleDateString() : "Not refreshed"}</TableCell></TableRow> })}</TableBody></Table>
             </section>
 
             <section className="panel history-panel">
-              <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canOperate && <Button variant="ghost" size="sm" onClick={() => void loadEnrichment()}>Refresh history</Button>}</div>
+              <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canAdminister && <Button variant="ghost" size="sm" onClick={() => void refreshProviderHistory()}>Refresh history</Button>}</div>
               <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Credits</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistory.map(item => { const usage = providerUsageLabel(item); return <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span>{item.resultCount ? <small className="review-status">{item.resultCount} results</small> : null}</TableCell><TableCell><span className="stacked-cell"><strong>{usage.label}</strong><small>{usage.detail}</small>{item.reconciliationSource && <small>{item.reconciliationSource}</small>}{session.canAdminister && usage.label === "Reconciliation required" && <span className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => setUsageReconciliationDrafts(current => ({ ...current, [item.id]: event.target.value }))} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => void reconcileProviderUsage(item)}>Reconcile</Button></span>}</span></TableCell><TableCell className="response-cell">{item.requestSummary && <small>{item.requestSummary}</small>}{item.errorMessage || item.responseSummary}</TableCell></TableRow> })}</TableBody></Table>
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section>
@@ -2039,6 +2080,14 @@ export default function Home() {
           </div></>}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(contactConfirm)} onOpenChange={open => { if (!open) setContactConfirm(null) }}>
+        <DialogContent className="refresh-confirm-dialog">
+          <DialogHeader><DialogTitle>Confirm contact enrichment</DialogTitle><DialogDescription>Only missing or unverified requested channels will be sent to the mock Lusha workflow. Existing verified channels are preserved.</DialogDescription></DialogHeader>
+          {pendingContactPlan && <><div className="refresh-confirm-summary"><div><span>Selected alumni</span><strong>{pendingContactPlan.rows.length}</strong></div><div><span>Email operations</span><strong>{pendingContactPlan.emailOperations}</strong></div><div><span>Phone operations</span><strong>{pendingContactPlan.phoneOperations}</strong></div><div><span>Verified channels skipped</span><strong>{pendingContactPlan.skippedVerified}</strong></div><div><span>Estimated eligible operations</span><strong>{pendingContactPlan.emailOperations + pendingContactPlan.phoneOperations}</strong></div></div><div className="refresh-result-list">{pendingContactPlan.rows.map(row => <article key={row.id}><strong>{row.name}</strong><p>Email: {row.states.email === "verified" ? "Already verified — will be skipped" : row.eligible.includes("email") ? `${row.states.email} — will be retrieved via Lusha` : "Not requested"}</p><p>Phone: {row.states.phone === "verified" ? "Already verified — will be skipped" : row.eligible.includes("phone") ? `${row.states.phone} — will be retrieved via Lusha` : "Not requested"}</p></article>)}</div></>}
+          <DialogFooter><Button variant="outline" onClick={() => setContactConfirm(null)}>Cancel</Button><Button disabled={enriching || !contactConfirm || !pendingContactPlan || (!pendingContactPlan.emailOperations && !pendingContactPlan.phoneOperations)} onClick={() => contactConfirm && void executeEnrichment(contactConfirm.ids, ["lusha"], contactConfirm.operation, contactConfirm.channels)}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Confirm eligible channels</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={signalsConfirmOpen} onOpenChange={setSignalsConfirmOpen}>
         <DialogContent className="signals-confirm-dialog">
@@ -2151,7 +2200,7 @@ export default function Home() {
       </Dialog>
 
       <Dialog open={refreshResults.length > 0} onOpenChange={open => { if (!open) setRefreshResults([]) }}>
-        <DialogContent className="refresh-results-dialog"><DialogHeader><DialogTitle>PDL profile refresh complete</DialogTitle><DialogDescription>Provider responses and credits are already recorded. Apply only the professional-field changes you approve.</DialogDescription></DialogHeader><div className="refresh-result-list">{refreshResults.map(result => { const changed = result.fields.filter(field => field.oldValue !== field.newValue); return <article key={result.alumnusId}><div className="refresh-result-heading"><div><strong>{result.alumnusName}</strong><span>{result.reviewStatus} · {result.creditsUsed} credit{result.creditsUsed === 1 ? "" : "s"}</span></div><span className={`history-status history-${result.status}`}>{result.status.replace("_", " ")}</span></div>{result.status === "no_match" ? <p>No matching external professional profile found. Internal data was not modified.</p> : changed.length ? <div className="refresh-fields">{changed.map(field => <label key={field.field}><input type="checkbox" checked={(refreshSelections[result.reviewId ?? -result.alumnusId] ?? []).includes(field.field)} disabled={result.reviewStatus !== "Pending review"} onChange={() => result.reviewId && setRefreshSelections(current => ({ ...current, [result.reviewId!]: (current[result.reviewId!] ?? []).includes(field.field) ? current[result.reviewId!].filter(item => item !== field.field) : [...(current[result.reviewId!] ?? []), field.field] }))} /><span>{field.label}</span><strong>{field.oldValue || "Not recorded"}</strong><ChevronRight /><strong>{field.newValue}</strong></label>)}</div> : <p>No professional changes detected. Existing professional profile confirmed against PDL.</p>}{result.reviewStatus === "Pending review" && <Button size="sm" onClick={() => void applyRefreshResult(result)}>Apply Selected Updates</Button>}<small>{result.responseSummary}</small></article> })}</div><DialogFooter><Button onClick={() => setRefreshResults([])}>Done</Button></DialogFooter></DialogContent>
+        <DialogContent className="refresh-results-dialog"><DialogHeader><DialogTitle>PDL profile refresh complete</DialogTitle><DialogDescription>Provider responses and credits are already recorded. Apply only the professional-field changes you approve, or explicitly keep existing values.</DialogDescription></DialogHeader><div className="refresh-result-list">{refreshResults.map(result => { const changed = result.fields.filter(field => field.oldValue !== field.newValue); return <article key={result.alumnusId}><div className="refresh-result-heading"><div><strong>{result.alumnusName}</strong><span>{result.reviewStatus} · {result.creditsUsed} credit{result.creditsUsed === 1 ? "" : "s"}</span></div><span className={`history-status history-${result.status}`}>{result.status.replace("_", " ")}</span></div>{result.status === "no_match" ? <p>No matching external professional profile found. Internal data was not modified.</p> : changed.length ? <div className="refresh-fields">{changed.map(field => <label key={field.field}><input type="checkbox" checked={(refreshSelections[result.reviewId ?? -result.alumnusId] ?? []).includes(field.field)} disabled={result.reviewStatus !== "Pending review"} onChange={() => result.reviewId && setRefreshSelections(current => ({ ...current, [result.reviewId!]: (current[result.reviewId!] ?? []).includes(field.field) ? current[result.reviewId!].filter(item => item !== field.field) : [...(current[result.reviewId!] ?? []), field.field] }))} /><span>{field.label}</span><strong>{field.oldValue || "Not recorded"}</strong><ChevronRight /><strong>{field.newValue}</strong></label>)}</div> : <p>No professional changes detected. Existing professional profile confirmed against PDL.</p>}{result.reviewStatus === "Pending review" && <div className="programme-actions"><Button size="sm" disabled={!(refreshSelections[result.reviewId ?? -result.alumnusId] ?? []).length} onClick={() => void applyRefreshResult(result)}>Apply Selected Updates</Button><Button size="sm" variant="outline" onClick={() => void applyRefreshResult(result, [])}>Keep existing</Button></div>}<small>{result.responseSummary}</small></article> })}</div><DialogFooter><Button onClick={() => setRefreshResults([])}>Done</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={Boolean(comparisonResult)} onOpenChange={open => { if (!open) { setComparisonResult(null); setSelectedComparisonFields([]) } }}>

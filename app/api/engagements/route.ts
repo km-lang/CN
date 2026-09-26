@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import {
   alumni,
   alumniPrivacyControls,
+  applicationUsers,
   birthdayData,
   communicationPreferences,
   engagementActions,
@@ -28,7 +29,7 @@ async function audit(eventId: number, context: SecurityContext, action: string, 
 
 async function loadWorkspace() {
   const db = getDb();
-  const [events, people, birthdays, preferences, templates, actions, responses, views, audits, privacyControls] = await Promise.all([
+  const [events, people, birthdays, preferences, templates, actions, responses, views, audits, privacyControls, assignees] = await Promise.all([
     db.select().from(engagementEvents).orderBy(desc(engagementEvents.eventDate), desc(engagementEvents.id)),
     db.select().from(alumni),
     db.select().from(birthdayData),
@@ -39,6 +40,7 @@ async function loadWorkspace() {
     db.select().from(eventViews).orderBy(desc(eventViews.viewedAt), desc(eventViews.id)),
     db.select().from(engagementAuditLog).orderBy(desc(engagementAuditLog.createdAt), desc(engagementAuditLog.id)),
     db.select().from(alumniPrivacyControls),
+    db.select({ id: applicationUsers.id, displayName: applicationUsers.displayName }).from(applicationUsers).where(and(eq(applicationUsers.enabled, true), inArray(applicationUsers.role, ["ADMIN", "PCOM"]))),
   ]);
   const peopleById = new Map(people.map(person => [person.id, person]));
   const birthdayByAlumnus = new Map(birthdays.map(item => [item.alumnusId, item]));
@@ -48,6 +50,7 @@ async function loadWorkspace() {
     mode: mailMode(),
     mail: { mode: mailMode(), ...mailConfiguration() },
     templates,
+    assignees,
     events: events.map(event => {
       const person = peopleById.get(event.alumnusId);
       return {
