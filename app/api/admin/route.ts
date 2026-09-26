@@ -35,6 +35,7 @@ import { providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/pr
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
 import { safeAuditMetadata } from "@/lib/security-policy"
 import { normaliseProgrammeCode } from "@/lib/programme-options"
+import { googleAllowedDomain } from "@/lib/auth-config"
 
 function clean(value: unknown, max = 500) {
   return String(value ?? "").trim().slice(0, max)
@@ -203,8 +204,8 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "remove_mock_dataset") {
-      if (payload.confirmation !== "REMOVE MOCK DATASET") {
-        return Response.json({ error: "Type REMOVE MOCK DATASET to confirm." }, { status: 409 })
+      if (payload.confirmation !== "CLEANUP") {
+        return Response.json({ error: "Type CLEANUP to confirm." }, { status: 409 })
       }
       const inventory = await mockCleanupInventory()
       if (inventory.ambiguous.length) {
@@ -301,6 +302,9 @@ export async function POST(request: Request) {
       const id = payload.programmeId!
       const [existing] = await db.select().from(programmeOptions).where(eq(programmeOptions.id, id)).limit(1)
       if (!existing) return Response.json({ error: "Programme option not found." }, { status: 404 })
+      if (payload.action === "set_programme_status" && payload.active === false && payload.confirmation !== `DEACTIVATE PROGRAMME ${id}`) {
+        return Response.json({ error: `Type DEACTIVATE PROGRAMME ${id} to confirm.` }, { status: 409 })
+      }
       const changes = payload.action === "rename_programme"
         ? { name: clean(payload.name, 100), updatedBy: context.displayName, updatedAt: now }
         : { active: Boolean(payload.active), updatedBy: context.displayName, updatedAt: now }
@@ -314,6 +318,8 @@ export async function POST(request: Request) {
       const email = normalizeEmail(payload.email)
       const displayName = clean(payload.displayName, 160) || email
       if (!isApplicationRole(payload.role)) return Response.json({ error: "Enter a valid email and role." }, { status: 400 })
+      if (email.split("@")[1] !== googleAllowedDomain()) return Response.json({ error: `Authorize an institutional @${googleAllowedDomain()} email address. Recovery identities are linked separately.` }, { status: 400 })
+      if (payload.role === "ADMIN" && payload.confirmation !== `GRANT ADMIN ${email}`) return Response.json({ error: `Type GRANT ADMIN ${email} to confirm Admin access.` }, { status: 409 })
       const users = await db.select().from(applicationUsers)
       const exactUser = users.find(user => normalizeEmail(user.email) === email)
       const similarUser = users.find(user => isLikelyInstitutionalEmailTypo(email, user.email, displayName, user.displayName))
@@ -377,8 +383,15 @@ export async function POST(request: Request) {
         return Response.json({ error: "You cannot disable or remove your own Admin access." }, { status: 409 })
       }
       if (payload.action === "change_role" && !isApplicationRole(payload.role)) return Response.json({ error: "Choose a recognized role." }, { status: 400 })
+      if (payload.action === "change_role" && payload.role === "ADMIN" && existing.role !== "ADMIN" && payload.confirmation !== `GRANT ADMIN ${existing.id}`) return Response.json({ error: `Type GRANT ADMIN ${existing.id} to confirm Admin access.` }, { status: 409 })
+      if (payload.action === "set_user_status" && payload.enabled === false && payload.confirmation !== `DISABLE USER ${existing.id}`) return Response.json({ error: `Type DISABLE USER ${existing.id} to confirm.` }, { status: 409 })
       const changes = payload.action === "change_role" ? { role: payload.role!, updatedAt: now } : { enabled: Boolean(payload.enabled), updatedAt: now }
-      const [updated] = await db.update(applicationUsers).set(changes).where(eq(applicationUsers.id, existing.id)).returning()
+      const removesActiveAdmin = existing.enabled && existing.role === "ADMIN" && (payload.action === "change_role" ? payload.role !== "ADMIN" : payload.enabled === false)
+      const updateGuard = removesActiveAdmin
+        ? and(eq(applicationUsers.id, existing.id), sql`(select count(*) from application_users where role = 'ADMIN' and enabled = 1) > 1`)
+        : eq(applicationUsers.id, existing.id)
+      const [updated] = await db.update(applicationUsers).set(changes).where(updateGuard).returning()
+      if (!updated) return Response.json({ error: "At least one active Admin must remain." }, { status: 409 })
       await writeSecurityAudit(context, { action: payload.action === "change_role" ? "user_role_changed" : updated.enabled ? "user_enabled" : "user_disabled", entityType: "application_user", entityId: updated.id, metadata: { before: { role: existing.role, enabled: existing.enabled }, after: { role: updated.role, enabled: updated.enabled } } })
       return Response.json({ user: updated })
     }
@@ -387,6 +400,9 @@ export async function POST(request: Request) {
       const lifecycleStates = new Set(["Active", "Archived", "Deletion requested"])
       if (!lifecycleStates.has(clean(payload.status))) return Response.json({ error: "Choose Active, Archived, or Deletion requested." }, { status: 400 })
       const status = clean(payload.status)
+      if (status === "Archived" && payload.confirmation !== `ARCHIVE ${payload.alumnusId}`) return Response.json({ error: `Type ARCHIVE ${payload.alumnusId} to confirm.` }, { status: 409 })
+      const pendingProviderReview = await db.select({ id: providerRefreshReviews.id }).from(providerRefreshReviews).where(and(eq(providerRefreshReviews.alumnusId, payload.alumnusId!), eq(providerRefreshReviews.status, "Pending review"))).limit(1)
+      if (pendingProviderReview.length && status !== "Active") return Response.json({ error: "Resolve the pending provider review before changing this alumnus lifecycle." }, { status: 409 })
       const record = {
         alumnusId: payload.alumnusId!,
         status,
@@ -406,7 +422,9 @@ export async function POST(request: Request) {
       const id = payload.alumnusId!
       const [person] = await db.select().from(alumni).where(eq(alumni.id, id)).limit(1)
       if (!person) return Response.json({ error: "Alumnus not found." }, { status: 404 })
-      await db.update(alumni).set({
+      const pendingProviderReview = await db.select({ id: providerRefreshReviews.id }).from(providerRefreshReviews).where(and(eq(providerRefreshReviews.alumnusId, id), eq(providerRefreshReviews.status, "Pending review"))).limit(1)
+      if (pendingProviderReview.length) return Response.json({ error: "Resolve the pending provider review before anonymizing this alumnus." }, { status: 409 })
+      const anonymizePerson = db.update(alumni).set({
         profileKey: `anonymized:${id}:${Date.now()}`,
         name: `Anonymized alumnus #${id}`,
         initials: "AA",
@@ -422,9 +440,10 @@ export async function POST(request: Request) {
         updatedBy: context.displayName,
         updatedAt: now,
       }).where(eq(alumni.id, id))
-      await db.insert(alumniPrivacyControls).values({ alumnusId: id, generalContactStatus: "Do not contact", professionalEngagementStatus: "Do not contact", birthdayEngagementStatus: "Do not contact", consentSource: "Unknown", notes: "Record anonymized", updatedBy: context.displayName, updatedAt: now }).onConflictDoUpdate({ target: alumniPrivacyControls.alumnusId, set: { generalContactStatus: "Do not contact", professionalEngagementStatus: "Do not contact", birthdayEngagementStatus: "Do not contact", consentSource: "Unknown", notes: "Record anonymized", updatedBy: context.displayName, updatedAt: now } })
-      await db.insert(alumniDataLifecycle).values({ alumnusId: id, status: "Anonymized", anonymizedAt: now, notes: clean(payload.notes, 1000), updatedBy: context.displayName, updatedAt: now }).onConflictDoUpdate({ target: alumniDataLifecycle.alumnusId, set: { status: "Anonymized", anonymizedAt: now, notes: clean(payload.notes, 1000), updatedBy: context.displayName, updatedAt: now } })
-      await writeSecurityAudit(context, { action: "alumnus_anonymized", entityType: "alumnus", entityId: id, metadata: { previousProfileKey: person.profileKey } })
+      const protectContact = db.insert(alumniPrivacyControls).values({ alumnusId: id, generalContactStatus: "Do not contact", professionalEngagementStatus: "Do not contact", birthdayEngagementStatus: "Do not contact", consentSource: "Unknown", notes: "Record anonymized", updatedBy: context.displayName, updatedAt: now }).onConflictDoUpdate({ target: alumniPrivacyControls.alumnusId, set: { generalContactStatus: "Do not contact", professionalEngagementStatus: "Do not contact", birthdayEngagementStatus: "Do not contact", consentSource: "Unknown", notes: "Record anonymized", updatedBy: context.displayName, updatedAt: now } })
+      const markAnonymized = db.insert(alumniDataLifecycle).values({ alumnusId: id, status: "Anonymized", anonymizedAt: now, notes: clean(payload.notes, 1000), updatedBy: context.displayName, updatedAt: now }).onConflictDoUpdate({ target: alumniDataLifecycle.alumnusId, set: { status: "Anonymized", anonymizedAt: now, notes: clean(payload.notes, 1000), updatedBy: context.displayName, updatedAt: now } })
+      const auditAnonymization = db.insert(securityAuditEvents).values({ actorUserId: context.userId, actorIdentity: context.externalIdentity, actorName: context.displayName, actorRole: context.role, action: "alumnus_anonymized", entityType: "alumnus", entityId: String(id), metadataJson: safeAuditMetadata({ previousProfileKey: person.profileKey }), result: "success", source: "application", createdAt: now })
+      await db.batch([anonymizePerson, protectContact, markAnonymized, auditAnonymization])
       return Response.json({ anonymized: true, alumnusId: id })
     }
 
