@@ -49,6 +49,18 @@ export type DiscoveryProfile = {
   graduationYear: number;
   linkedinUrl: string;
   matchConfidence: number;
+  affiliationStatus: "Confirmed degree alumnus" | "Potential alumnus — review required" | "Short-term / exchange affiliation";
+  educationProgramme: string;
+  educationStartDate: string;
+  educationEndDate: string;
+  institutionId: string;
+  institutionUrl: string;
+  currentCompanyId: string;
+  currentCompanyUrl: string;
+  currentRoleStartDate: string;
+  currentIndustry: string;
+  currentRoleAmbiguous: boolean;
+  providerFreshnessAt: string;
 };
 
 export type MatchStatus = "New" | "Already in database" | "Possible duplicate" | "Needs review";
@@ -231,7 +243,7 @@ export function toDiscoveryProfile(record: Record<string, unknown>, index: numbe
   const seniorityValue = normalizeSeniority(clean(record.job_title_levels), rawTitle);
   const completeness = [record.id, record.full_name, education !== "Education not returned", company, rawTitle, record.linkedin_url].filter(Boolean).length;
   return {
-    providerResultId: clean(record.id) || `pdl-${index + 1}`,
+    providerResultId: clean(record.id) || `legacy-provider-${index + 1}`,
     providerPersonId: clean(record.id),
     name: clean(record.full_name ?? record.name) || "Name unavailable",
     education,
@@ -244,6 +256,18 @@ export function toDiscoveryProfile(record: Record<string, unknown>, index: numbe
     graduationYear: findEducationYear(record.education, canonicalSchoolId),
     linkedinUrl: normalizeProfessionalProfileUrl(record.linkedin_url),
     matchConfidence: Math.min(95, 65 + completeness * 5),
+    affiliationStatus: "Potential alumnus — review required",
+    educationProgramme: "",
+    educationStartDate: "",
+    educationEndDate: "",
+    institutionId: clean(school?.id),
+    institutionUrl: "",
+    currentCompanyId: "",
+    currentCompanyUrl: "",
+    currentRoleStartDate: "",
+    currentIndustry: "",
+    currentRoleAmbiguous: false,
+    providerFreshnessAt: "",
   };
 }
 

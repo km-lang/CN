@@ -125,7 +125,7 @@ test("security 14: anonymization is protected and audited instead of hard deleti
 });
 
 test("security 15: sensitive state changes write central audit events", () => {
-  for (const action of ["alumnus_manual_created", "relationship_assessment_changed", "pdl_profile_refresh", "user_role_changed", "do_not_contact_changed", "data_lifecycle_changed", "alumnus_anonymized"]) {
+  for (const action of ["alumnus_manual_created", "relationship_assessment_changed", "coresignal_profile_refresh", "user_role_changed", "do_not_contact_changed", "data_lifecycle_changed", "alumnus_anonymized"]) {
     assert.match(routes.join("\n"), new RegExp(action));
   }
   assert.match(engagement, /writeSecurityAudit\(context/);
@@ -141,7 +141,7 @@ test("security 16: audit metadata masks contacts and redacts secrets", () => {
 });
 
 test("security 17: provider and mail live modes require independent server-side gates", () => {
-  assert.match(envExample, /PDL_LIVE_ENABLED=false/);
+  assert.match(envExample, /CORESIGNAL_LIVE_ENABLED=false/);
   assert.match(envExample, /LUSHA_LIVE_ENABLED=false/);
   assert.match(envExample, /MAIL_LIVE_ENABLED=false/);
   assert.match(routes[1], /OPERATE_PCOM/);

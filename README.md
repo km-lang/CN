@@ -1,6 +1,6 @@
 # Corporate Network
 
-Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and an internal-search-to-PDL-to-Lusha discovery workflow.
+Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and an internal-search-to-Coresignal-to-Lusha discovery workflow.
 
 ## Deployment configuration
 
@@ -28,7 +28,7 @@ APP_PUBLIC_URL=https://teamsynapse.app/corporate_network
 APP_BASE_PATH=/corporate_network
 ```
 
-Changing `APP_BASE_PATH` requires a new deployment build because route prefixes are compiled by Next/Vinext. It does not require application business-logic changes or a D1 schema migration. External PDL, Lusha, and professional-profile URLs remain absolute and are intentionally not prefixed.
+Changing `APP_BASE_PATH` requires a new deployment build because route prefixes are compiled by Next/Vinext. It does not require application business-logic changes or a D1 schema migration. External Coresignal, Lusha, and professional-profile URLs remain absolute and are intentionally not prefixed.
 
 Institutional sender identity is separate from the product brand. `MAIL_SENDER_DISPLAY_NAME` defaults to `Placement Committee, IIM Lucknow`. `MAIL_OAUTH_CALLBACK_URL` is reserved for a future official-mailbox adapter and should contain the full callback URL registered with the mail provider. The existing `app/chatgpt-auth.ts` callback is dispatch-owned ChatGPT sign-in infrastructure, not the institutional mailbox callback.
 
@@ -56,18 +56,17 @@ GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_ALLOWED_DOMAIN=iiml.ac.in
 AUTH_SESSION_SECRET=
-PDL_LIVE_ENABLED=false
+CORESIGNAL_LIVE_ENABLED=false
 LUSHA_LIVE_ENABLED=false
-PDL_IIML_SCHOOL_ID=
-PDL_LIVE_SEARCH_MAX_RESULTS=5
-PDL_LIVE_REFRESH_MAX_PROFILES=1
+CORESIGNAL_LIVE_SEARCH_MAX_RESULTS=20
+CORESIGNAL_LIVE_REFRESH_MAX_PROFILES=1
 MAIL_MODE=mock
 MAIL_LIVE_ENABLED=false
-PDL_API_KEY=
+CORESIGNAL_API_KEY=
 LUSHA_API_KEY=
 ```
 
-Live provider access uses independent server-side gates. `PDL_LIVE_ENABLED=true` activates only PDL, while Lusha remains mock unless `LUSHA_LIVE_ENABLED=true` is separately approved. Live institutional mail similarly requires both `MAIL_MODE=live` and `MAIL_LIVE_ENABLED=true`. Browser controls cannot activate any provider or mail mode.
+Live provider access uses independent server-side gates. `CORESIGNAL_LIVE_ENABLED=true` activates only Coresignal, while Lusha remains mock unless `LUSHA_LIVE_ENABLED=true` is separately approved. Live institutional mail similarly requires both `MAIL_MODE=live` and `MAIL_LIVE_ENABLED=true`. Browser controls cannot activate any provider or mail mode.
 
 Migration `drizzle/0005_security_access_controls.sql` adds `application_users`, `security_audit_events`, `alumni_privacy_controls`, and `alumni_data_lifecycle` without altering or dropping the original 19 tables. Stage 2.5 migration `drizzle/0006_application_identities.sql` adds only `application_identities` and its indexes. Privacy preferences treat `Unknown` as unknown, not affirmative consent. A general `Do not contact` blocks birthday and professional sends in the server route. Data lifecycle changes are Admin-only; anonymization requires typing `ANONYMIZE <record-id>` and retains non-identifying audit history.
 
@@ -119,13 +118,13 @@ The Alumni Directory supports optional filters for name, current company, role, 
 The end-to-end discovery flow is:
 
 1. Search the internal Corporate Network database.
-2. Select **Discover More Alumni** to carry the active filters into PDL Person Search.
+2. Select **Discover More Alumni** to carry the active filters into Coresignal discovery.
 3. Keep **Indian Institute of Management Lucknow** as the fixed education criterion.
 4. Review results classified as New, Already in database, Possible duplicate, or Needs review.
 5. Manually approve clearly new records or compare possible matches. No external result is inserted automatically.
 6. After approval, run the controlled Lusha V3 contact preview, review availability, and separately confirm an email-only reveal. Phone and bulk reveal remain disabled for the initial live pilot.
 
-Company Intelligence reuses the same workflow through **Find More Alumni**. PDL comparisons never overwrite an existing profile silently. Selected updates are recorded in field-change history, while all provider calls are recorded in provider-response history.
+Company Intelligence reuses the same workflow through **Find More Alumni**. Coresignal comparisons never overwrite an existing profile silently. Selected updates are recorded in field-change history, while all provider calls are recorded in provider-response history.
 
 The active filters and requested result count remain visible with every external search. The UI distinguishes a successful zero-result search from a search that was blocked before a provider call, and ignored results retain a shared review reason.
 
@@ -135,40 +134,39 @@ Outreach-route recommendations are made for an explicitly selected alumnus, neve
 
 ## Bulk and manual data entry
 
-The Data Import tab separates bulk CSV import from single-record entry. Manual entry validates a minimum identity, checks possible duplicates before insertion, records the source and actor, and consumes no provider credits. PDL profile refresh and Lusha contact enrichment remain optional actions after the internal record has been created.
+The Data Import tab separates bulk CSV import from single-record entry. Manual entry validates a minimum identity, checks possible duplicates before insertion, records the source and actor, and consumes no provider usage. Coresignal profile refresh and Lusha contact enrichment remain optional actions after the internal record has been created.
 
 ## Enrichment providers
 
 Each Phase 3 provider supports two independent operating modes:
 
 - `mock` is the safe default. It runs deterministic demonstration enrichments, consumes only application-level mock credits, and needs no vendor account.
-- `live` calls People Data Labs and Lusha from server routes. Provider keys never reach the browser.
+- `live` calls Coresignal and Lusha from server routes. Provider keys never reach the browser.
 
 Copy `.env.example` into your local environment configuration and set:
 
 ```text
-PDL_LIVE_ENABLED=false
+CORESIGNAL_LIVE_ENABLED=false
 LUSHA_LIVE_ENABLED=false
-PDL_IIML_SCHOOL_ID=
-PDL_LIVE_SEARCH_MAX_RESULTS=5
-PDL_LIVE_REFRESH_MAX_PROFILES=1
+CORESIGNAL_LIVE_SEARCH_MAX_RESULTS=20
+CORESIGNAL_LIVE_REFRESH_MAX_PROFILES=1
 MAIL_MODE=mock
-PDL_API_KEY=
+CORESIGNAL_API_KEY=
 LUSHA_API_KEY=
 ```
 
-Set `PDL_LIVE_ENABLED=true` only after the PDL key and canonical IIM Lucknow School Cleaner ID are configured. This does not activate Lusha. Set `LUSHA_LIVE_ENABLED=true` separately only after its key and the controlled V3 preview/reveal workflow are ready. Stage 3 caps a live PDL Person Search at five returned profiles and a live Person Enrichment action at one profile. The application enforces adjustable monthly credit caps stored in D1; the default caps are 100 credits per provider per month.
+Set `CORESIGNAL_LIVE_ENABLED=true` only after the Coresignal key is configured and the validated Base Employee contracts are approved for live use. This does not activate Lusha. Set `LUSHA_LIVE_ENABLED=true` separately only after its key and the controlled V3 preview/reveal workflow are ready. The application caps a live Coresignal search at 20 collected profiles and a live profile refresh at one profile. Application limits stored in D1 are separate from provider-account usage.
 
 The Enrichment tab provides:
 
-- manual and selected-batch PDL profile/employment refresh with confirmation
+- manual and selected-batch Coresignal profile/employment refresh with confirmation
 - review-and-apply of changed professional fields; no-change and no-match results remain visible
 - Lusha V3 contact search using a professional-profile URL when available, returning a stable contact ID and availability preview without contact PII
 - a separate human confirmation before an email-only reveal; live phone and bulk reveal are disabled during the controlled pilot
 - monthly credit-limit controls and usage meters
 - sanitized provider-response history
 
-The live discovery adapter uses the PDL v5 Person Search API with the canonical school ID in `education.school.id`, while existing-profile refresh uses the PDL v5 Person Enrichment endpoint and its persistent PDL person ID when available. The live Lusha adapter uses the V3 two-step `POST /v3/contacts/search` then `POST /v3/contacts/enrich` workflow and remains independently gated. Its application limit is separate from the Lusha account balance. Provider-reported per-call usage is recorded when available; otherwise the history is marked for account-usage reconciliation. Provider errors are normalized and saved without API secrets or raw provider payloads.
+The live discovery adapter uses Coresignal Base Employee `POST /cdapi/v2/employee_base/search/filter/preview` with the canonical IIM Lucknow professional-network URL and `active_experience: true`, then retrieves full records using `GET /cdapi/v2/employee_base/collect/{employee_id}`. Deleted education and employment versions are ignored, ambiguous current roles stay human-reviewable, and professional changes are never applied without approval. The Lusha adapter remains independently gated and owns contact matching, email, phone, and Professional Signals. Provider-reported usage is recorded when available; otherwise history is marked for reconciliation rather than displayed as zero.
 
 ## Local setup
 
@@ -179,20 +177,21 @@ The live discovery adapter uses the PDL v5 Person Search API with the canonical 
 5. Run `npm run lint`, `npm run build`, and `npm test` before release.
 6. After any schema change, run `npm run db:generate` and deploy the new migration.
 
-`dev:local` enables a development-only Admin identity on loopback hosts. The bypass cannot activate in a production build or on a non-loopback host. It also explicitly disables live PDL, Lusha Contact, Lusha Professional Signals, and Gmail delivery. Local mail uses the mock adapter. Do not add production credentials to local environment files.
+`dev:local` enables a development-only Admin identity on loopback hosts. The bypass cannot activate in a production build or on a non-loopback host. It also explicitly disables live Coresignal, Lusha Contact, Lusha Professional Signals, and Gmail delivery. Local mail uses the mock adapter. Do not add production credentials to local environment files.
 
 ## Source layout
 
 - `app/page.tsx`: main dashboard and enrichment interface
 - `app/api/workspace/route.ts`: alumni import and shared-workspace updates
 - `app/api/enrichment/route.ts`: manual/batch enrichment, limits, usage, and history
-- `app/api/discovery/route.ts`: PDL discovery, reconciliation, review, approval, refresh, and history
+- `app/api/discovery/route.ts`: professional-data discovery, reconciliation, review, approval, and history
 - `app/api/outreach-route/route.ts`: target-specific direct, warm, and no-route recommendations
 - `app/api/engagements/route.ts`: engagement queues, ownership, mail workflow, responses, follow-ups, and audits
 - `lib/alumni-search.ts`: shared internal filtering and provider-query translation
 - `lib/mail-service.ts`: mock mail service and future live-mail boundary
-- `lib/pdl-discovery.ts`: mock/live PDL Person Search service
-- `lib/enrichment-providers.ts`: mock/live PDL and Lusha adapters
+- `lib/coresignal-adapter.ts`: mock/live professional-data adapter and evidence mapping
+- `lib/coresignal-client.ts`: validated Coresignal search and collect HTTP contracts
+- `lib/enrichment-providers.ts`: Lusha contact adapter
 - `db/schema.ts`: D1 schema
 - `drizzle/`: database migrations
 

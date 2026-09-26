@@ -75,7 +75,7 @@ window.fetch = async (input, init) => {
     }
     return json({ error: "Unexpected workspace mutation." }, 400)
   }
-  if (url.pathname.endsWith("/api/enrichment")) return json({ modes: { pdl: "mock", lusha: "mock" }, usage: { pdl: { used: 0, limit: 100, remaining: 100, configured: false, mode: "mock" }, lusha: { used: 0, limit: 100, remaining: 100, configured: false, mode: "mock" } }, history: [] })
+  if (url.pathname.endsWith("/api/enrichment")) return json({ modes: { coresignal: "mock", lusha: "mock" }, usage: { coresignal: { used: 0, limit: 25, remaining: 25, configured: false, mode: "mock" }, lusha: { used: 0, limit: 100, remaining: 100, configured: false, mode: "mock" } }, history: [] })
   if (url.pathname.endsWith("/api/discovery")) return json({ pendingCount: 0, liveMaximum: 5 })
   if (url.pathname.endsWith("/api/signals")) return json({ mode: "mock", configured: false, liveEnabled: false, entitlement: "unknown", startDate: "", requiresManualEntitlementValidation: true })
   if (url.pathname.endsWith("/api/engagements") && method === "GET") return json({ events: [historicalEvent], templates: [template], mode: "mock", mail: { configured: false } })

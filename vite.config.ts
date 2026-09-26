@@ -49,7 +49,7 @@ export default defineConfig(async ({ command }) => {
     ? {
         NODE_ENV: "development",
         LOCAL_DEV_AUTH_ENABLED: "true",
-        PDL_LIVE_ENABLED: "false",
+        CORESIGNAL_LIVE_ENABLED: "false",
         LUSHA_LIVE_ENABLED: "false",
         LUSHA_SIGNALS_LIVE_ENABLED: "false",
         MAIL_MODE: "mock",

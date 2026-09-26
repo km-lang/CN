@@ -20,7 +20,7 @@ import { reusableManualEmailEvent } from "@/lib/controlled-email-draft";
 import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
 
 const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Completed", "Skipped"]);
-const actionableBirthdayStates = new Set(["Confirmed internally", "Manually confirmed", "PDL sourced"]);
+const actionableBirthdayStates = new Set(["Confirmed internally", "Manually confirmed", "PDL sourced", "Coresignal sourced"]);
 
 async function audit(eventId: number, context: SecurityContext, action: string, details = "") {
   await getDb().insert(engagementAuditLog).values({ eventId, actor: context.displayName, action, details });

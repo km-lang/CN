@@ -59,7 +59,7 @@ test("disabled workflow controls explain their missing prerequisites", () => {
     "Requires a stored Lusha contact ID.",
     "Choose a CSV or Excel file first.",
     "Requires an eligible stored email.",
-    "available PDL application credits",
+    "available Coresignal application units",
     "Enter an institutional email address first.",
     "Requires configured Gmail OAuth credentials.",
   ]) assert.ok(page.includes(explanation) || admin.includes(explanation), explanation)

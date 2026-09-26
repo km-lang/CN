@@ -18,7 +18,7 @@ export function validateDiscoveryCount(
     return { ok: false, reason: "invalid", maximumAllowed, message: "Enter a whole number of profiles from 1 upward." }
   }
   if (value > remainingAllowance) {
-    return { ok: false, reason: "remaining_allowance", maximumAllowed, message: `The request exceeds the ${Math.max(0, remainingAllowance)} remaining Corporate Network PDL application credits.` }
+    return { ok: false, reason: "remaining_allowance", maximumAllowed, message: `The request exceeds the ${Math.max(0, remainingAllowance)} remaining Corporate Network professional-data application units.` }
   }
   if (value > providerSafeMaximum) {
     return { ok: false, reason: "provider_maximum", maximumAllowed, message: `The request exceeds the configured per-search safety maximum of ${Math.max(0, providerSafeMaximum)} profiles.` }

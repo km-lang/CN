@@ -70,7 +70,7 @@ test("outreach, manual-entry and confirmation copy remain explicit", () => {
   assert.doesNotMatch(page, /setOutreachStatus\("All"\)/)
   assert.match(page, /manual-entry-icon"><UserPlus/)
   assert.match(page, /Check & Add Alumnus/)
-  assert.match(page, /No PDL or Lusha call is made/)
+  assert.match(page, /No Coresignal or Lusha call is made/)
   assert.match(page, /Confirm contact enrichment/)
 })
 
@@ -87,7 +87,7 @@ test("provider limits and history refresh are Admin-only on server and UI", () =
   assert.match(page, /session\.canAdminister && <Button variant="ghost" size="sm" onClick=\{\(\) => void refreshProviderHistory\(\)\}/)
 })
 
-test("PDL review has explicit keep-existing disposition", () => {
+test("professional-data review has explicit keep-existing disposition", () => {
   assert.match(page, />Keep existing</)
   assert.match(enrichmentApi, /Reviewed — kept existing/)
 })

@@ -68,7 +68,7 @@ test("server never treats imported contacts as verified or overwrites protected 
 
 test("manual add explains duplicate evidence and blocks exact duplicates", () => {
   assert.match(page, /Check & Add Alumnus/)
-  assert.match(page, /No PDL or Lusha call is made/)
+  assert.match(page, /No Coresignal or Lusha call is made/)
   assert.match(page, /Matched by \{match\.reasons\.join/)
   assert.match(api, /matches\.some\(match => match\.exact\)/)
   assert.match(api, /Use the existing record instead of creating a duplicate/)

@@ -51,7 +51,7 @@ test("profile URL 5: ingestion and API rendering both normalize legacy values", 
   assert.match(alumniSearch, /linkedinUrl: normalizeProfessionalProfileUrl\(record\.linkedin_url\)/);
   assert.match(discovery, /linkedinUrl: normalizeProfessionalProfileUrl\(result\.linkedinUrl\)/);
   assert.match(workspace, /linkedinUrl: normalizeProfessionalProfileUrl\(row\.linkedinUrl\)/);
-  assert.match(page, /PDL sourced professional profile/);
+  assert.match(page, /"Coresignal"\} sourced professional profile/);
 });
 
 test("profile display 6: missing experience is not presented as a known zero", () => {

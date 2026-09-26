@@ -2,14 +2,17 @@ import { desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
+import { coresignalProvider } from "@/lib/coresignal-adapter";
+import { safeCoresignalError } from "@/lib/coresignal-client";
 import { getLushaAccountUsage, revealLushaEmail, searchLushaContact } from "@/lib/lusha-client";
-import { pdlLiveRefreshMaximum } from "@/lib/provider-runtime";
+import { coresignalLiveRefreshMaximum } from "@/lib/provider-runtime";
+import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL, unknownProviderUsage, type ProfessionalRefreshResult } from "@/lib/professional-data";
 import { providerUsageState } from "@/lib/provider-usage";
 import { eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment";
 import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
-const providers: ProviderName[] = ["pdl", "lusha"];
-const defaultLimits: Record<ProviderName, number> = { pdl: 100, lusha: 100 };
+const providers: ProviderName[] = ["coresignal", "lusha"];
+const defaultLimits: Record<ProviderName, number> = { coresignal: 25, lusha: 100 };
 
 function monthStart() {
   const date = new Date();
@@ -28,12 +31,12 @@ async function usageSnapshot() {
   await ensureSettings();
   const [settings, usage] = await Promise.all([
     db.select().from(providerSettings),
-    db.select({ provider: providerResponseHistory.provider, used: sql<number>`coalesce(sum(${providerResponseHistory.creditsUsed}), 0)` })
+    db.select({ provider: providerResponseHistory.provider, credits: sql<number>`coalesce(sum(${providerResponseHistory.creditsUsed}), 0)`, applicationUnits: sql<number>`coalesce(sum(${providerResponseHistory.applicationUnits}), 0)` })
       .from(providerResponseHistory)
       .where(gte(providerResponseHistory.createdAt, monthStart()))
       .groupBy(providerResponseHistory.provider),
   ]);
-  const usedByProvider = Object.fromEntries(usage.map(row => [row.provider, Number(row.used)]));
+  const usedByProvider = Object.fromEntries(usage.map(row => [row.provider, row.provider === PROFESSIONAL_DATA_PROVIDER ? Number(row.applicationUnits) : Number(row.credits)]));
   return Object.fromEntries(providers.map(provider => {
     const limit = settings.find(row => row.provider === provider)?.monthlyCreditLimit ?? defaultLimits[provider];
     const used = usedByProvider[provider] ?? 0;
@@ -49,7 +52,7 @@ export async function GET(request: Request) {
       usageSnapshot(),
       db.select().from(providerResponseHistory).orderBy(desc(providerResponseHistory.createdAt), desc(providerResponseHistory.id)).limit(100),
     ]);
-    return Response.json({ modes: { pdl: enrichmentMode("pdl"), lusha: enrichmentMode("lusha") }, usage, history: context.role === "DEVELOPER" ? [] : history, historyRestricted: context.role === "DEVELOPER" });
+    return Response.json({ modes: { coresignal: coresignalProvider.mode(), lusha: enrichmentMode("lusha") }, usage, history: context.role === "DEVELOPER" ? [] : history, historyRestricted: context.role === "DEVELOPER" });
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
@@ -139,7 +142,7 @@ export async function POST(request: Request) {
           lushaPersonId: result.contactId,
           ...(companyConflict || roleConflict ? {
             professionalDataStatus: "Conflict — manual verification required",
-            professionalDataNote: `Internal/PDL: ${person.title} at ${person.company}. Lusha preview: ${result.jobTitle || "role not reported"} at ${result.company || "company not reported"}. No profile field was overwritten.`,
+            professionalDataNote: `Internal professional profile: ${person.title} at ${person.company}. Lusha preview: ${result.jobTitle || "role not reported"} at ${result.company || "company not reported"}. No profile field was overwritten.`,
           } : {}),
           updatedBy: actor,
           updatedAt: new Date().toISOString(),
@@ -201,15 +204,16 @@ export async function POST(request: Request) {
       const [person] = await db.select().from(alumni).where(eq(alumni.id, review.alumnusId)).limit(1);
       if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
       const proposed = JSON.parse(review.proposedChangesJson) as Array<{ field: string; oldValue: string; newValue: string }>;
-      const allowedFields = new Set(["company", "title", "function", "seniority", "location", "previous", "linkedinUrl", "pdlPersonId"]);
+      const allowedFields = new Set(["company", "title", "rawTitle", "function", "seniority", "location", "previous", "linkedinUrl", "coresignalEmployeeId", "graduationYear", "iimlAffiliationStatus", "iimlEducationProgramme", "iimlEducationStartDate", "iimlEducationEndDate", "iimlInstitutionId", "iimlInstitutionUrl", "currentCompanyId", "currentCompanyUrl", "currentRoleStartDate", "currentIndustry", "currentRoleAmbiguous", "providerFreshnessAt"]);
       const requested = new Set((payload.fields ?? []).filter(field => allowedFields.has(field)));
       const updates: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: new Date().toISOString() };
       const applied: string[] = [];
       for (const change of proposed) {
         if (!requested.has(change.field) || !change.newValue || change.oldValue === change.newValue) continue;
-        (updates as Record<string, unknown>)[change.field] = change.newValue;
+        const typedValue = change.field === "currentRoleAmbiguous" ? change.newValue === "true" : change.field === "graduationYear" ? Number(change.newValue) : change.newValue;
+        (updates as Record<string, unknown>)[change.field] = typedValue;
         applied.push(change.field);
-        await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field: change.field, oldValue: change.oldValue, newValue: change.newValue, source: "People Data Labs", providerAction: "Profile Refresh", creditsCharged: 0, initiatedBy: actor });
+        await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field: change.field, oldValue: change.oldValue, newValue: change.newValue, source: PROFESSIONAL_DATA_PROVIDER_LABEL, providerAction: "Profile Refresh", creditsCharged: 0, initiatedBy: actor });
       }
       await db.update(alumni).set(updates).where(eq(alumni.id, person.id));
       const now = new Date().toISOString();
@@ -222,27 +226,33 @@ export async function POST(request: Request) {
     const requestedProviders = [...new Set(payload.providers?.filter(provider => providers.includes(provider)) ?? [])];
     if (payload.action === "refresh_profiles") {
       if (!alumniIds.length || alumniIds.length > 25) return Response.json({ error: "Select 1 to 25 approved alumni." }, { status: 400 });
-      if (enrichmentMode("pdl") === "live" && alumniIds.length > pdlLiveRefreshMaximum()) {
-        return Response.json({ error: "The controlled live PDL pilot permits exactly one profile refresh at a time." }, { status: 400 });
+      if (coresignalProvider.mode() === "live" && alumniIds.length > coresignalLiveRefreshMaximum()) {
+        return Response.json({ error: "The controlled live Coresignal pilot permits exactly one profile refresh at a time." }, { status: 400 });
       }
       const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
       const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
       const results = [];
-      const labels: Record<string, string> = { company: "Current company", title: "Role", function: "Function", seniority: "Seniority", location: "Location", previous: "Employment history", linkedinUrl: "Professional profile", pdlPersonId: "PDL profile ID" };
+      const labels: Record<string, string> = { company: "Current company", title: "Role", rawTitle: "Raw role", function: "Function", seniority: "Seniority", location: "Location", linkedinUrl: "Professional profile", coresignalEmployeeId: "Coresignal employee ID", graduationYear: "IIML education end year", iimlAffiliationStatus: "IIML affiliation qualification", iimlEducationProgramme: "IIML programme", iimlEducationStartDate: "IIML education start", iimlEducationEndDate: "IIML education end", iimlInstitutionId: "Institution ID", iimlInstitutionUrl: "Institution URL", currentCompanyId: "Company ID", currentCompanyUrl: "Company URL", currentRoleStartDate: "Role start date", currentIndustry: "Industry", currentRoleAmbiguous: "Current-role ambiguity", providerFreshnessAt: "Provider freshness" };
       for (const person of people) {
-        if (usage.pdl.remaining < 1) {
-          await db.insert(providerResponseHistory).values({ provider: "pdl", alumnusId: person.id, alumnusName: person.name, operation: "Person Enrichment", mode: enrichmentMode("pdl"), status: "blocked", creditsUsed: 0, requestSummary: `${person.name} at ${person.company}`, responseSummary: "Monthly application credit limit reached.", requestedBy: actor });
-          results.push({ alumnusId: person.id, alumnusName: person.name, status: "blocked", creditsUsed: 0, responseSummary: "PDL application limit reached.", fields: [] });
+        if (usage.coresignal.remaining < 1) {
+          await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusId: person.id, alumnusName: person.name, operation: "Professional profile collect", mode: coresignalProvider.mode(), status: "blocked", creditsUsed: 0, applicationUnits: 0, providerReportedCredits: null, usageState: "not_applicable", requestSummary: `${person.name} at ${person.company}`, responseSummary: "Monthly application operation limit reached.", requestedBy: actor });
+          results.push({ alumnusId: person.id, alumnusName: person.name, status: "blocked", creditsUsed: null, responseSummary: "Coresignal application limit reached.", fields: [] });
           continue;
         }
-        const result = await enrich("pdl", { id: person.id, name: person.name, company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, linkedinUrl: person.linkedinUrl, pdlPersonId: person.pdlPersonId });
+        let result: ProfessionalRefreshResult;
+        try {
+          result = await coresignalProvider.refreshProfile(person);
+        } catch (error) {
+          const failure = safeCoresignalError(error);
+          result = { status: "error", changes: {}, responseSummary: failure.message, errorMessage: failure.message, usage: unknownProviderUsage(1) };
+        }
         const [history] = await db.insert(providerResponseHistory).values({
-          provider: "pdl", alumnusId: person.id, alumnusName: person.name, operation: "Person Enrichment", mode: enrichmentMode("pdl"), status: result.status,
-          creditsUsed: result.creditsUsed, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0, requestSummary: `${person.name} at ${person.company}`,
+          provider: PROFESSIONAL_DATA_PROVIDER, alumnusId: person.id, alumnusName: person.name, operation: "Professional profile collect", mode: coresignalProvider.mode(), status: result.status,
+          creditsUsed: result.usage.providerReportedUsage ?? 0, applicationUnits: result.usage.applicationUnits, providerReportedCredits: result.usage.providerReportedUsage, usageState: result.usage.usageState, resultCount: result.status === "success" ? 1 : 0, requestSummary: `${person.name} at ${person.company}`,
           responseSummary: result.responseSummary, errorMessage: result.errorMessage ?? "", requestedBy: actor,
         }).returning();
-        usage.pdl.used += result.creditsUsed;
-        usage.pdl.remaining = Math.max(0, usage.pdl.limit - usage.pdl.used);
+        usage.coresignal.used += result.usage.applicationUnits;
+        usage.coresignal.remaining = Math.max(0, usage.coresignal.limit - usage.coresignal.used);
         const fields = Object.entries(result.changes)
           .filter(([field]) => field in labels)
           .map(([field, value]) => ({ field, label: labels[field], oldValue: String(person[field as keyof typeof person] ?? ""), newValue: String(value ?? "") }));
@@ -252,26 +262,23 @@ export async function POST(request: Request) {
         if (result.status === "success") {
           const now = new Date().toISOString();
           await db.update(alumni).set({
-            lastPdlRefresh: now,
-            verified: `Profile checked via PDL · ${now.slice(0, 10)}`,
-            profileMatch: String(result.changes.profileMatch ?? person.profileMatch),
-            currentCompanyVerification: String(result.changes.currentCompanyVerification ?? person.currentCompanyVerification),
-            designationVerification: String(result.changes.designationVerification ?? person.designationVerification),
-            locationVerification: String(result.changes.locationVerification ?? person.locationVerification),
+            lastProfessionalDataRefresh: now,
+            professionalDataProvider: PROFESSIONAL_DATA_PROVIDER_LABEL,
+            verified: `Profile checked via Coresignal · ${now.slice(0, 10)}`,
             updatedBy: actor,
             updatedAt: now,
           }).where(eq(alumni.id, person.id));
         }
-        results.push({ alumnusId: person.id, alumnusName: person.name, status: result.status, reviewStatus, reviewId: review.id, creditsUsed: result.creditsUsed, responseSummary: result.responseSummary, fields });
+        results.push({ alumnusId: person.id, alumnusName: person.name, status: result.status, reviewStatus, reviewId: review.id, creditsUsed: result.usage.providerReportedUsage, applicationUnits: result.usage.applicationUnits, responseSummary: result.responseSummary, fields });
       }
-      await writeSecurityAudit(context, { action: "pdl_profile_refresh", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, mode: enrichmentMode("pdl") } });
+      await writeSecurityAudit(context, { action: "coresignal_profile_refresh", entityType: "alumni_batch", metadata: { requested: alumniIds.length, processed: people.length, mode: coresignalProvider.mode() } });
       return Response.json({ processed: people.length, results, usage: await usageSnapshot() });
     }
 
     if (!alumniIds.length || alumniIds.length > 25 || !requestedProviders.length) {
       return Response.json({ error: "Select 1 to 25 alumni and at least one provider." }, { status: 400 });
     }
-    if (requestedProviders.includes("pdl")) return Response.json({ error: "Use Refresh Profiles for PDL professional data checks." }, { status: 400 });
+    if (requestedProviders.includes("coresignal")) return Response.json({ error: "Use Refresh Profiles for Coresignal professional data checks." }, { status: 400 });
     if (requestedProviders.includes("lusha") && enrichmentMode("lusha") === "live") return Response.json({ error: "Use the controlled Lusha contact preview and email-only confirmation workflow in LIVE mode." }, { status: 409 });
     const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
     const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
@@ -285,7 +292,7 @@ export async function POST(request: Request) {
           results.push({ provider, status: "skipped", creditsUsed: 0, alumnusId: person.id, alumnusName: person.name, appliedChannels: [], skippedVerifiedChannels, responseSummary: "Existing verified contact channels preserved; no provider call was made." });
           continue;
         }
-        const estimated = provider === "pdl" ? 1 : (channels.includes("email") ? 1 : 0) + (channels.includes("phone") ? 5 : 0);
+        const estimated = (channels.includes("email") ? 1 : 0) + (channels.includes("phone") ? 5 : 0);
         if (usage[provider].remaining < estimated) {
           const blocked = { provider, status: "blocked", creditsUsed: 0, alumnusId: person.id, alumnusName: person.name, appliedChannels: [], skippedVerifiedChannels, blockedReason: "Insufficient application capacity", responseSummary: "Monthly application usage limit reached." };
           results.push(blocked);

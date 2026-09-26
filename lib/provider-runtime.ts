@@ -1,14 +1,13 @@
-export type ProviderName = "pdl" | "lusha"
+export type ProviderName = "coresignal" | "lusha"
 export type ProviderMode = "mock" | "live"
 
 type ProviderRuntimeEnvironment = {
-  PDL_API_KEY?: string
+  CORESIGNAL_API_KEY?: string
+  CORESIGNAL_LIVE_ENABLED?: string
+  CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?: string
+  CORESIGNAL_LIVE_REFRESH_MAX_PROFILES?: string
   LUSHA_API_KEY?: string
-  PDL_LIVE_ENABLED?: string
   LUSHA_LIVE_ENABLED?: string
-  PDL_IIML_SCHOOL_ID?: string
-  PDL_LIVE_SEARCH_MAX_RESULTS?: string
-  PDL_LIVE_REFRESH_MAX_PROFILES?: string
   LUSHA_SIGNALS_LIVE_ENABLED?: string
   LUSHA_SIGNALS_ENTITLEMENT?: string
   LUSHA_SIGNALS_ENTITLEMENT_VERIFIED_AT?: string
@@ -25,23 +24,20 @@ function enabled(value?: string) {
 
 export function providerMode(provider: ProviderName): ProviderMode {
   const values = runtimeEnvironment()
-  return provider === "pdl"
-    ? enabled(values.PDL_LIVE_ENABLED) ? "live" : "mock"
-    : enabled(values.LUSHA_LIVE_ENABLED) ? "live" : "mock"
+  if (provider === "coresignal") return enabled(values.CORESIGNAL_LIVE_ENABLED) ? "live" : "mock"
+  return enabled(values.LUSHA_LIVE_ENABLED) ? "live" : "mock"
 }
 
 export function providerConfigured(provider: ProviderName) {
   const values = runtimeEnvironment()
-  return provider === "pdl" ? Boolean(values.PDL_API_KEY?.trim()) : Boolean(values.LUSHA_API_KEY?.trim())
+  if (provider === "coresignal") return Boolean(values.CORESIGNAL_API_KEY?.trim())
+  return Boolean(values.LUSHA_API_KEY?.trim())
 }
 
 export function providerSecret(provider: ProviderName) {
   const values = runtimeEnvironment()
-  return provider === "pdl" ? values.PDL_API_KEY?.trim() ?? "" : values.LUSHA_API_KEY?.trim() ?? ""
-}
-
-export function pdlIimlSchoolId() {
-  return runtimeEnvironment().PDL_IIML_SCHOOL_ID?.trim() ?? ""
+  if (provider === "coresignal") return values.CORESIGNAL_API_KEY?.trim() ?? ""
+  return values.LUSHA_API_KEY?.trim() ?? ""
 }
 
 function boundedInteger(value: string | undefined, fallback: number, maximum: number) {
@@ -49,12 +45,12 @@ function boundedInteger(value: string | undefined, fallback: number, maximum: nu
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback
 }
 
-export function pdlLiveSearchMaximum() {
-  return boundedInteger(runtimeEnvironment().PDL_LIVE_SEARCH_MAX_RESULTS, 5, 100)
+export function coresignalLiveSearchMaximum() {
+  return boundedInteger(runtimeEnvironment().CORESIGNAL_LIVE_SEARCH_MAX_RESULTS, 20, 20)
 }
 
-export function pdlLiveRefreshMaximum() {
-  return boundedInteger(runtimeEnvironment().PDL_LIVE_REFRESH_MAX_PROFILES, 1, 1)
+export function coresignalLiveRefreshMaximum() {
+  return boundedInteger(runtimeEnvironment().CORESIGNAL_LIVE_REFRESH_MAX_PROFILES, 1, 1)
 }
 
 export function signalsRuntimeStatus() {

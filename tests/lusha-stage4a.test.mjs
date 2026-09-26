@@ -15,9 +15,9 @@ const vite = await createServer({
 });
 
 const originalEnvironment = {
-  PDL_API_KEY: process.env.PDL_API_KEY,
+  CORESIGNAL_API_KEY: process.env.CORESIGNAL_API_KEY,
   LUSHA_API_KEY: process.env.LUSHA_API_KEY,
-  PDL_LIVE_ENABLED: process.env.PDL_LIVE_ENABLED,
+  CORESIGNAL_LIVE_ENABLED: process.env.CORESIGNAL_LIVE_ENABLED,
   LUSHA_LIVE_ENABLED: process.env.LUSHA_LIVE_ENABLED,
   MAIL_LIVE_ENABLED: process.env.MAIL_LIVE_ENABLED,
 };
@@ -30,9 +30,9 @@ after(async () => {
   await vite.close();
 });
 
-process.env.PDL_API_KEY = "test-pdl-key-never-sent-to-a-real-provider";
+process.env.CORESIGNAL_API_KEY = "test-coresignal-key-never-sent-to-a-real-provider";
 process.env.LUSHA_API_KEY = "test-lusha-key-never-sent-to-a-real-provider";
-process.env.PDL_LIVE_ENABLED = "true";
+process.env.CORESIGNAL_LIVE_ENABLED = "true";
 process.env.LUSHA_LIVE_ENABLED = "true";
 process.env.MAIL_LIVE_ENABLED = "false";
 
@@ -43,8 +43,8 @@ const route = await readFile(new URL("../app/api/enrichment/route.ts", import.me
 const provider = await readFile(new URL("../lib/enrichment-providers.ts", import.meta.url), "utf8");
 const envExample = await readFile(new URL("../.env.example", import.meta.url), "utf8");
 
-test("stage4a 1: PDL and Lusha have independent live gates while mail remains off", () => {
-  assert.equal(runtime.providerMode("pdl"), "live");
+test("stage4a 1: Coresignal and Lusha have independent live gates while mail remains off", () => {
+  assert.equal(runtime.providerMode("coresignal"), "live");
   assert.equal(runtime.providerMode("lusha"), "live");
   assert.equal(process.env.MAIL_LIVE_ENABLED, "false");
 });

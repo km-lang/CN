@@ -27,38 +27,39 @@ const migration = await readFile(new URL("../drizzle/0009_shiny_stranger.sql", i
 const envExample = await readFile(new URL("../.env.example", import.meta.url), "utf8")
 
 for (const value of [1, 3, 7, 19]) {
-  test(`final sprint PDL count accepts ${value}`, () => assert.equal(limits.validateDiscoveryCount(value, 19, 20).ok, true))
+  test(`final sprint Coresignal count accepts ${value}`, () => assert.equal(limits.validateDiscoveryCount(value, 19, 20).ok, true))
 }
 
-test("final sprint PDL count rejects above remaining allowance", () => {
+test("final sprint Coresignal count rejects above remaining allowance", () => {
   assert.deepEqual(limits.validateDiscoveryCount(20, 19, 20).reason, "remaining_allowance")
 })
 
 for (const value of [0, -1, 1.5, "7", Number.NaN]) {
-  test(`final sprint PDL count rejects ${String(value)}`, () => assert.equal(limits.validateDiscoveryCount(value, 19, 20).ok, false))
+  test(`final sprint Coresignal count rejects ${String(value)}`, () => assert.equal(limits.validateDiscoveryCount(value, 19, 20).ok, false))
 }
 
-test("final sprint PDL server independently validates bypass attempts", () => {
-  assert.match(discoveryRoute, /validateDiscoveryCount\(requestedLimit, remaining, providerMaximum\)/)
+test("final sprint Coresignal server independently validates bypass attempts", () => {
+  assert.match(discoveryRoute, /validateDiscoveryCount\(payload\.limit, remaining, maximum\)/)
   assert.match(discoveryRoute, /status: 400/)
 })
 
 test("final sprint persists requested separately from returned and provider usage", () => {
   assert.match(schema, /requestedCount: integer\("requested_count"\)/)
-  assert.match(discoveryRoute, /requestedCount: limit/)
+  assert.match(discoveryRoute, /requestedCount: validation\.requested/)
   assert.match(discoveryRoute, /returnedCount: response\.profiles\.length/)
   const searchInsert = discoveryRoute.match(/db\.insert\(externalDiscoverySearches\)\.values\(\{([\s\S]*?)\}\)\.returning\(\)/)?.[1] ?? ""
-  const providerHistoryInsert = discoveryRoute.match(/db\.insert\(providerResponseHistory\)\.values\(\{\s*provider: "pdl",\s*alumnusName: "External alumni discovery",\s*searchId: search\.id,([\s\S]*?)\}\)/)?.[1] ?? ""
-  assert.match(searchInsert, /requestedCount: limit/)
+  const providerHistoryInsert = discoveryRoute.match(/db\.insert\(providerResponseHistory\)\.values\(\{\s*provider: PROFESSIONAL_DATA_PROVIDER,\s*alumnusName: "External alumni discovery",\s*searchId: search\.id,([\s\S]*?)\}\)/)?.[1] ?? ""
+  assert.match(searchInsert, /requestedCount: validation\.requested/)
   assert.match(searchInsert, /resultCount: response\.profiles\.length/)
   assert.doesNotMatch(searchInsert, /providerReportedCredits|usageState/)
-  assert.match(providerHistoryInsert, /providerReportedCredits: response\.creditsUsed/)
-  assert.match(providerHistoryInsert, /usageState: providerUsageState\(response\.creditsUsed\)/)
+  assert.match(providerHistoryInsert, /providerReportedCredits: response\.usage\.providerReportedUsage/)
+  assert.match(providerHistoryInsert, /usageState: response\.usage\.usageState/)
+  assert.match(providerHistoryInsert, /applicationUnits: response\.usage\.applicationUnits/)
 })
 
-test("final sprint PDL confirmation lists active filters and actual-usage warning", () => {
-  for (const label of ["Education", "Company", "Role", "Function", "Seniority", "Location", "Graduation year", "Profiles requested", "Application credits remaining", "Maximum potential result usage"]) assert.match(page, new RegExp(label))
-  assert.match(page, /Actual provider usage and the number of profiles returned/)
+test("final sprint Coresignal confirmation lists active filters and separated usage", () => {
+  for (const label of ["Education", "Company filter", "Role", "Function", "Seniority", "Location", "Graduation year", "Profiles requested", "Application units remaining", "Maximum application usage"]) assert.match(page, new RegExp(label))
+  assert.match(page, /Application usage and provider-account usage are recorded separately/)
 })
 
 test("final sprint usage state records exact provider usage", () => assert.equal(usage.providerUsageState(3), "provider_reported"))
@@ -204,7 +205,7 @@ test("final readiness supports any selected alumnus and reports missing stable i
 })
 
 test("final readiness Admin alone sees component-level operational status", () => {
-  for (const label of ["People Data Labs", "Lusha Contacts", "Lusha Professional Signals", "Institutional Mail", "Gmail send permission", "Last connectivity validation"]) assert.match(adminPanel, new RegExp(label))
+  for (const label of ["Coresignal", "Lusha Contacts", "Lusha Professional Signals", "Institutional Mail", "Gmail send permission", "Last connectivity validation"]) assert.match(adminPanel, new RegExp(label))
   assert.match(adminRoute, /authorizeRequest\(request, "MANAGE_USERS"\)/)
   assert.match(adminRoute, /operationalReadiness/)
   assert.doesNotMatch(page, /GMAIL_CLIENT_SECRET|GMAIL_REFRESH_TOKEN/)

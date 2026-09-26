@@ -26,7 +26,7 @@ test("local authentication accepts loopback hosts only", () => {
 test("local scripts hard-disable every live provider and mail gate", () => {
   const command = packageJson.scripts["dev:local"]
   assert.match(command, /NODE_ENV=development/)
-  assert.match(command, /PDL_LIVE_ENABLED=false/)
+  assert.match(command, /CORESIGNAL_LIVE_ENABLED=false/)
   assert.match(command, /LUSHA_LIVE_ENABLED=false/)
   assert.match(command, /LUSHA_SIGNALS_LIVE_ENABLED=false/)
   assert.match(command, /MAIL_MODE=mock/)
@@ -35,7 +35,7 @@ test("local scripts hard-disable every live provider and mail gate", () => {
   assert.match(viteConfig, /command === "serve"/)
   assert.match(viteConfig, /NODE_ENV: "development"/)
   assert.match(viteConfig, /LOCAL_DEV_AUTH_ENABLED: "true"/)
-  assert.match(viteConfig, /PDL_LIVE_ENABLED: "false"/)
+  assert.match(viteConfig, /CORESIGNAL_LIVE_ENABLED: "false"/)
   assert.match(viteConfig, /LUSHA_LIVE_ENABLED: "false"/)
   assert.match(viteConfig, /LUSHA_SIGNALS_LIVE_ENABLED: "false"/)
   assert.match(viteConfig, /MAIL_MODE: "mock"/)
