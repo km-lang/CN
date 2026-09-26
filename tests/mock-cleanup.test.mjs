@@ -111,7 +111,7 @@ test("mock cleanup 5: production UI does not repopulate demo data after an empty
 test("mock cleanup 6: deletion is Admin-only, typed, audited and uses D1-compatible integrity checks", () => {
   const cleanupBlock = admin.match(/if \(payload\.action === "remove_mock_dataset"\)[\s\S]*?if \(payload\.action === "authorize_user"\)/)?.[0] ?? "";
   assert.match(admin, /authorizeRequest\(request, "MANAGE_USERS"\)/);
-  assert.match(cleanupBlock, /payload\.confirmation !== "REMOVE MOCK DATASET"/);
+  assert.match(cleanupBlock, /payload\.confirmation !== "CLEANUP"/);
   assert.match(cleanupBlock, /mock_dataset_removed/);
   assert.match(cleanupBlock, /production transition to real-data pilot/);
   assert.match(admin, /PRAGMA quick_check/);

@@ -6,12 +6,13 @@ const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
 const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
 const api = await readFile(new URL("../app/api/engagements/route.ts", import.meta.url), "utf8")
 const fixture = await readFile(new URL("../scripts/local-development-fixture.sql", import.meta.url), "utf8")
+const readiness = await readFile(new URL("../lib/runtime-readiness.ts", import.meta.url), "utf8")
 
 test("Signals acquisition is rendered only inside its queue", () => {
   assert.match(page, /engagementFilter === "Professional Signals" && <>/)
   assert.match(page, /Selecting an alumnus never calls Lusha/)
   assert.match(page, /Check for signals/)
-  assert.match(page, /Signals disabled in local development/)
+  assert.match(readiness, /Signals disabled in local development/)
 })
 
 test("engagement summaries select their corresponding queues", () => {

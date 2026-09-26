@@ -95,7 +95,7 @@ test("acceptance 13: manual add records its source and consumes no provider cred
 
 test("acceptance 14: all enrichment actions are disabled with zero selection", () => {
   assert.match(page, /const pdlSelectionReady = selectedForEnrichment\.length > 0/);
-  assert.match(page, /const lushaEmailReady = selectedForEnrichment\.length === 1/);
+  assert.match(page, /const lushaEmailReady = emailPlan\.emailOperations > 0/);
   assert.match(page, /disabled=\{!pdlSelectionReady \|\| enriching\}/);
   assert.match(page, /disabled=\{!lushaEmailReady \|\| enriching\}/);
 });
