@@ -22,6 +22,7 @@ const client = await vite.ssrLoadModule("/lib/coresignal-client.ts")
 const adapter = await vite.ssrLoadModule("/lib/coresignal-adapter.ts")
 const qualification = await vite.ssrLoadModule("/lib/discovery-qualification.ts")
 const search = await vite.ssrLoadModule("/lib/alumni-search.ts")
+const alumniEducation = await vite.ssrLoadModule("/lib/alumni-education.ts")
 const limits = await vite.ssrLoadModule("/lib/discovery-limit.ts")
 const usage = await vite.ssrLoadModule("/lib/provider-usage.ts")
 const runtime = await vite.ssrLoadModule("/lib/provider-runtime.ts")
@@ -210,6 +211,19 @@ test("Teginder-type completed PGDM maps to PGP and remains addable", () => {
   assert.equal(mapped.normalizedProgramme, "PGP")
   assert.equal(mapped.alumniStatus, "Past alumnus")
   assert.equal(mapped.eligibleForAddition, true)
+})
+
+test("externally discovered graduation evidence persists and renders consistently", () => {
+  assert.deepEqual(alumniEducation.discoveredAlumniYearValues(2003), { batch: 2003, graduationYear: 2003 })
+  assert.equal(alumniEducation.alumniEducationLabel({ programme: "PGP", batch: 2003, graduationYear: 2003 }), "PGP · 2003")
+  assert.equal(alumniEducation.alumniEducationLabel({ programme: "PGP", batch: 0, graduationYear: 2003 }), "PGP · 2003")
+  assert.match(discoveryRoute, /discoveredAlumniYearValues\(result\.graduationYear\)/)
+  assert.match(page, /alumniEducationLabel\(person\)/)
+})
+
+test("manual and imported alumni retain their existing batch fallback", () => {
+  assert.equal(alumniEducation.alumniEducationLabel({ programme: "PGP", batch: 2012, graduationYear: 2012 }), "PGP · 2012")
+  assert.equal(alumniEducation.alumniEducationLabel({ programme: "ABM", batch: 2015 }), "ABM · 2015")
 })
 
 test("another university's completion cannot hide an ongoing IIML programme", () => {

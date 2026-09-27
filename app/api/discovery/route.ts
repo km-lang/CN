@@ -11,6 +11,7 @@ import { coresignalLiveSearchMaximum } from "@/lib/provider-runtime"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
 import { discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
+import { discoveredAlumniYearValues } from "@/lib/alumni-education"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -94,7 +95,7 @@ function alumnusValues(result: typeof externalDiscoveryResults.$inferSelect, act
   const isCoresignal = result.provider === PROFESSIONAL_DATA_PROVIDER
   return {
     profileKey: result.providerPersonId ? `${result.provider}:${normalized(result.providerPersonId)}` : `${result.provider}-reviewed:${result.id}`,
-    name: result.name, initials: initials(result.name), batch: 0, graduationYear: result.graduationYear,
+    name: result.name, initials: initials(result.name), ...discoveredAlumniYearValues(result.graduationYear),
     programme: isCoresignal ? normalizeCoresignalProgramme(result.educationProgramme).code || "Not confirmed" : result.educationProgramme || "Not confirmed", education: result.education || FIXED_ALUMNI_SCHOOL,
     company: result.currentCompany, title: result.role, rawTitle: result.rawTitle, function: result.function, seniority: result.seniority,
     location: result.location, confidence: result.affiliationStatus === "Confirmed degree alumnus" ? 70 : 55,
