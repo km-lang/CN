@@ -42,7 +42,8 @@ test("company priority remains Admin-only and company history uses stored engage
   assert.match(page, /disabled=\{!session\.canAdminister\}/)
   assert.match(workspace, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/)
   assert.match(page, /Company Priority contributes to Placement Relevance/)
-  assert.match(page, /companyEngagements\.slice\(0, 5\)/)
+  assert.match(page, /companyHistoryPagination\.items\.map/)
+  assert.match(page, /Company account history pagination/)
 })
 
 test("contact enrichment avoids repurchasing already verified channels", () => {
