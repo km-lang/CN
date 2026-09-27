@@ -1,10 +1,11 @@
 import {
   FIXED_ALUMNI_SCHOOL,
   clean,
+  defaultDiscoveryFilters,
   normalizeFunction,
   normalizeSeniority,
   normalized,
-  type DirectoryFilters,
+  type DiscoveryFilters,
   type DiscoveryProfile,
 } from "@/lib/alumni-search"
 import { collectCoresignalEmployee, CORESIGNAL_IIML_INSTITUTION_URL, CoresignalProviderError, searchCoresignalIiml } from "@/lib/coresignal-client"
@@ -130,22 +131,21 @@ function mapProfile(record: Row, index: number, options: { now?: Date; selectedP
   }
 }
 
-function filterProfiles(profiles: DiscoveryProfile[], filters: DirectoryFilters) {
+function filterProfiles(profiles: DiscoveryProfile[], filters: DiscoveryFilters) {
   return profiles.filter(profile => {
-    return (!filters.name || normalized(profile.name).includes(normalized(filters.name)))
-      && (filters.company === "All companies" || normalized(profile.currentCompany) === normalized(filters.company))
+    return (!filters.company || normalized(profile.currentCompany) === normalized(filters.company))
       && (!filters.role || normalized(profile.role).includes(normalized(filters.role)))
       && (filters.function === "All functions" || profile.function === filters.function)
       && (!filters.location || normalized(profile.location).includes(normalized(filters.location)))
-      && (!filters.batch || profile.graduationYear === Number(filters.batch))
+      && (!filters.graduationYear || profile.graduationYear === Number(filters.graduationYear))
       && (filters.seniority === "All levels" || profile.seniority === filters.seniority.replace(/\+$/, ""))
       && (filters.alumniStatus !== "Past alumni only" || profile.alumniStatus === "Past alumnus")
       && (!(filters.discoveryProgrammes ?? []).length || (filters.discoveryProgrammes ?? []).includes(profile.normalizedProgramme))
   })
 }
 
-function mockRows(filters: DirectoryFilters, internal: InternalProfessionalPerson[]) {
-  const company = filters.company === "All companies" ? "Local Fixture Company" : filters.company
+function mockRows(filters: DiscoveryFilters, internal: InternalProfessionalPerson[]) {
+  const company = filters.company || "Local Fixture Company"
   const mapped = internal.slice(0, 2).map((person, index) => ({
     id: `cs-mapped-${person.id}`, full_name: person.name, professional_network_url: person.linkedinUrl,
     location_full: person.location, deleted: 0, last_updated: "2026-09-26T00:00:00.000Z",
@@ -174,7 +174,7 @@ export function successfulCoresignalOperationCredits(searchSucceeded: boolean, s
   return (searchSucceeded ? 1 : 0) + Math.max(0, Math.trunc(successfulCollects))
 }
 
-async function searchCandidates(filters: DirectoryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult> {
+async function searchCandidates(filters: DiscoveryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult> {
   const now = new Date()
   const selectedProgrammes = filters.discoveryProgrammes ?? DEFAULT_DISCOVERY_PROGRAMMES
   if (providerMode("coresignal") === "mock") {
@@ -198,7 +198,7 @@ async function searchCandidates(filters: DirectoryFilters, internal: InternalPro
 
 async function refreshProfile(person: InternalProfessionalPerson): Promise<ProfessionalRefreshResult> {
   if (providerMode("coresignal") === "mock") {
-    const profile = mapProfile(mockRows({ name: "", company: "All companies", role: "", function: "All functions", seniority: "All levels", location: "", programme: "All programmes", discoveryProgrammes: [...DEFAULT_DISCOVERY_PROGRAMMES], alumniStatus: "Past alumni only", batch: "", previousCompany: "", minRelevance: 0, minConfidence: 0, contactStatus: "All contact states", outreachStatus: "All outreach states", relationship: "All relationships" }, [person])[0], 0)
+    const profile = mapProfile(mockRows(defaultDiscoveryFilters(), [person])[0], 0)
     return profile ? { status: "success", changes: changesFrom(profile), responseSummary: "Demonstration Coresignal profile collected for review.", usage: mockProviderUsage(1) } : { status: "no_match", changes: {}, responseSummary: "No matching professional profile found.", usage: mockProviderUsage(1) }
   }
   if (!person.coresignalEmployeeId) return { status: "no_match", changes: {}, responseSummary: "No stable Coresignal employee ID is stored for this alumnus.", usage: unknownProviderUsage(0) }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Activity, ArrowUpRight, Ban, BellRing, BriefcaseBusiness, Building2, Cake,
-  CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, Cloud, ContactRound,
+  CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, Cloud, ContactRound,
   Database, Download, Eye, FileSpreadsheet, Filter, GitCompare, History, LoaderCircle,
   Mail, MapPin, MessageSquare, Network, Plus, Search, Send, Sparkles, Target, Upload,
   Info, UserPlus, UserRoundCheck, UsersRound, XCircle, Zap,
@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -23,8 +24,10 @@ import { AdminPanel } from "@/app/admin-panel"
 import { useAccessSession } from "@/app/access-provider"
 import {
   FIXED_ALUMNI_SCHOOL,
+  defaultDiscoveryFilters,
   defaultDirectoryFilters,
   matchesInternalFilters,
+  type DiscoveryFilters,
   type DirectoryFilters,
 } from "@/lib/alumni-search"
 import { apiPath, appConfig } from "@/lib/app-config"
@@ -35,7 +38,7 @@ import { providerUsageLabel } from "@/lib/provider-usage"
 import { alumnusProfileUrl, canonicalWorkspaceUrl, controlledEmailReturnUrl, controlledEmailUrl, engagementEventUrl, parseControlledEmailIntent, parseEngagementEventId, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
 import { initializeControlledEmail } from "@/lib/controlled-email-initialization"
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
-import { programmeFilterOptions, type ProgrammeOption } from "@/lib/programme-options"
+import { programmeFilterOptions, programmeSelectionSummary, type ProgrammeOption } from "@/lib/programme-options"
 import { contactReadiness, isActiveOutreach } from "@/lib/alumni-metrics"
 import { parseCsv, parseXlsx, validateImport, type ImportReviewRow } from "@/lib/alumni-import"
 import { contactEnrichmentPlan, eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment"
@@ -436,6 +439,7 @@ export default function Home() {
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>({})
   const [configuredProgrammes, setConfiguredProgrammes] = useState<ProgrammeOption[]>([])
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
+  const [discoveryFilters, setDiscoveryFilters] = useState<DiscoveryFilters>(defaultDiscoveryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [targetCompany, setTargetCompany] = useState("")
   const [routeSearch, setRouteSearch] = useState("")
@@ -464,8 +468,8 @@ export default function Home() {
   const [discoveryState, setDiscoveryState] = useState<"idle" | "results" | "empty" | "blocked">("idle")
   const [pendingDiscoveryCount, setPendingDiscoveryCount] = useState(0)
   const [loadingPendingReview, setLoadingPendingReview] = useState(false)
-  const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DirectoryFilters | null>(null)
-  const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DirectoryFilters | null>(null)
+  const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
+  const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
   const [coresignalLiveMaximum, setCoresignalLiveMaximum] = useState(5)
   const [discoveryRequestedCount, setDiscoveryRequestedCount] = useState<number | null>(null)
   const [discoveryReturnedCount, setDiscoveryReturnedCount] = useState<number | null>(null)
@@ -731,7 +735,15 @@ export default function Home() {
 
   const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
   const programmeChoices = useMemo(() => programmeFilterOptions(configuredProgrammes, alumni.map(person => person.programme)), [alumni, configuredProgrammes])
-  const activeProgrammeChoices = programmeChoices.filter(option => option.active)
+  const activeProgrammeChoices = useMemo(() => programmeChoices.filter(option => option.active), [programmeChoices])
+  useEffect(() => {
+    if (!configuredProgrammes.length) return
+    const activeCodes = new Set(activeProgrammeChoices.map(option => option.value))
+    setDiscoveryFilters(current => {
+      const selected = current.discoveryProgrammes.filter(code => activeCodes.has(code))
+      return selected.length === current.discoveryProgrammes.length ? current : { ...current, discoveryProgrammes: selected }
+    })
+  }, [activeProgrammeChoices, configuredProgrammes.length])
   const activeTargetCompany = companies.includes(targetCompany) ? targetCompany : companies[0] ?? ""
   const filtered = useMemo(() => alumni.filter(person => {
     const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
@@ -1403,8 +1415,12 @@ export default function Home() {
     setEngagementMessage("Lusha email enrichment completed. Review the updated contact before sending.")
   }
 
-  function updateFilter<K extends keyof DirectoryFilters>(key: K, value: DirectoryFilters[K]) {
+  function updateDirectoryFilter<K extends keyof DirectoryFilters>(key: K, value: DirectoryFilters[K]) {
     setFilters(current => ({ ...current, [key]: value }))
+  }
+
+  function updateDiscoveryFilter<K extends keyof DiscoveryFilters>(key: K, value: DiscoveryFilters[K]) {
+    setDiscoveryFilters(current => ({ ...current, [key]: value }))
     setDiscoveryResults([])
     setSelectedDiscoveryIds([])
     setDiscoveryMessage("")
@@ -1413,23 +1429,14 @@ export default function Home() {
   }
 
   function toggleDiscoveryProgramme(code: string) {
-    const selected = filters.discoveryProgrammes.includes(code)
-      ? filters.discoveryProgrammes.filter(value => value !== code)
-      : [...filters.discoveryProgrammes, code]
-    updateFilter("discoveryProgrammes", selected)
+    const selected = discoveryFilters.discoveryProgrammes.includes(code)
+      ? discoveryFilters.discoveryProgrammes.filter(value => value !== code)
+      : [...discoveryFilters.discoveryProgrammes, code]
+    updateDiscoveryFilter("discoveryProgrammes", selected)
   }
 
   function clearDirectoryFilters() {
     setFilters(defaultDirectoryFilters())
-    setDiscoveryResults([])
-    setDiscoveryCounts({ existing: 0, new: 0, possibleDuplicate: 0, needsReview: 0 })
-    setDiscoveryMessage("")
-    setDiscoveryState("idle")
-    setLastDiscoveryFilters(null)
-    setPendingDiscoveryFilters(null)
-    setDiscoveryRequestedCount(null)
-    setDiscoveryReturnedCount(null)
-    setSelectedDiscoveryIds([])
   }
 
   function changeDiscoveryCountPreset(value: string) {
@@ -1441,10 +1448,10 @@ export default function Home() {
   }
 
   function discoveryCountControl(actionLabel: string, variant: "default" | "outline" = "default") {
-    return <div className="discovery-count-control"><label><span>Results to retrieve</span><Select value={discoveryCountPreset} onValueChange={changeDiscoveryCountPreset}><SelectTrigger aria-label="Results to retrieve"><SelectValue /></SelectTrigger><SelectContent>{[1, 5, 10, 20].map(value => <SelectItem key={value} value={String(value)} disabled={value > discoveryMaximum}>{value}</SelectItem>)}<SelectItem value="custom">Custom</SelectItem></SelectContent></Select></label>{discoveryCountPreset === "custom" && <label><span>Custom result count</span><Input type="number" inputMode="numeric" min="1" max={discoveryMaximum} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="Custom result count" /></label>}<small>{!filters.discoveryProgrammes.length ? "Select at least one programme for external discovery." : discoveryCountValidation.ok ? `Maximum currently ${discoveryMaximum}.` : discoveryCountValidation.message}</small><Button title={!filters.discoveryProgrammes.length ? "Select at least one configured programme." : !discoveryCountValidation.ok ? `Enter a valid count within the ${discoveryMaximum} available Coresignal application units.` : undefined} variant={variant} onClick={() => discoverMoreAlumni()} disabled={discovering || !filters.discoveryProgrammes.length || !discoveryCountValidation.ok}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {actionLabel}</Button></div>
+    return <div className="discovery-count-control"><label><span>Results to retrieve</span><Select value={discoveryCountPreset} onValueChange={changeDiscoveryCountPreset}><SelectTrigger aria-label="Results to retrieve"><SelectValue /></SelectTrigger><SelectContent>{[1, 5, 10, 20].map(value => <SelectItem key={value} value={String(value)} disabled={value > discoveryMaximum}>{value}</SelectItem>)}<SelectItem value="custom">Custom</SelectItem></SelectContent></Select></label>{discoveryCountPreset === "custom" && <label><span>Custom result count</span><Input type="number" inputMode="numeric" min="1" max={discoveryMaximum} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="Custom result count" /></label>}<small>{!discoveryFilters.discoveryProgrammes.length ? "Select at least one programme for external discovery." : discoveryCountValidation.ok ? `Maximum currently ${discoveryMaximum}.` : discoveryCountValidation.message}</small><Button title={!discoveryFilters.discoveryProgrammes.length ? "Select at least one configured programme." : !discoveryCountValidation.ok ? `Enter a valid count within the ${discoveryMaximum} available Coresignal application units.` : undefined} variant={variant} onClick={() => discoverMoreAlumni()} disabled={discovering || !discoveryFilters.discoveryProgrammes.length || !discoveryCountValidation.ok}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {actionLabel}</Button></div>
   }
 
-  function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
+  function discoverMoreAlumni(searchFilters: DiscoveryFilters = discoveryFilters) {
     const requested = Number(discoveryLimit)
     const validation = validateDiscoveryCount(requested, providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100, discoverySearchOperationReserve)
     if (!validation.ok) {
@@ -1468,7 +1475,7 @@ export default function Home() {
         pendingCount?: number
         results?: DiscoveryResult[]
         counts?: DiscoveryCounts
-        filters?: DirectoryFilters
+        filters?: DiscoveryFilters
         creditsUsed?: number
         retrieval?: string
         source?: { provider: string; mode: string; searchId: number }
@@ -1492,7 +1499,7 @@ export default function Home() {
     }
   }
 
-  async function runDiscovery(searchFilters: DirectoryFilters) {
+  async function runDiscovery(searchFilters: DiscoveryFilters) {
     setDiscovering(true)
     setDiscoveryMessage("")
     setLastDiscoveryFilters(searchFilters)
@@ -1529,8 +1536,8 @@ export default function Home() {
   }
 
   function findMoreForCompany(companyName: string) {
-    const next = { ...defaultDirectoryFilters(), company: companyName }
-    setFilters(next)
+    const next = { ...defaultDiscoveryFilters(), company: companyName }
+    setDiscoveryFilters(next)
     changeWorkspaceTab("directory")
     discoverMoreAlumni(next)
   }
@@ -1851,25 +1858,25 @@ export default function Home() {
               <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal alumni directory</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div></div>
               {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
-                <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
-                <Input list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />
+                <div className="search-field"><Search /><Input value={filters.name} onChange={event => updateDirectoryFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
+                <Input list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateDirectoryFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />
                 <datalist id="company-options">{companies.map(item => <option key={item} value={item} />)}</datalist>
-                <Input value={filters.role} onChange={event => updateFilter("role", event.target.value)} placeholder="Role or designation" aria-label="Filter by role or designation" />
-                <Select value={filters.function} onValueChange={value => updateFilter("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Select value={filters.seniority} onValueChange={value => updateFilter("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All seniority</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Input value={filters.location} onChange={event => updateFilter("location", event.target.value)} placeholder="Location" aria-label="Filter by location" />
+                <Input value={filters.role} onChange={event => updateDirectoryFilter("role", event.target.value)} placeholder="Role or designation" aria-label="Filter by role or designation" />
+                <Select value={filters.function} onValueChange={value => updateDirectoryFilter("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={filters.seniority} onValueChange={value => updateDirectoryFilter("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All seniority</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Input value={filters.location} onChange={event => updateDirectoryFilter("location", event.target.value)} placeholder="Location" aria-label="Filter by location" />
                 <Button variant="outline" onClick={() => setShowAdvancedFilters(value => !value)}><Filter /> {showAdvancedFilters ? "Hide advanced filters" : "More filters"}</Button>
                 <Button variant="ghost" onClick={clearDirectoryFilters}>Clear</Button>
               </div>
               {showAdvancedFilters && <div className="advanced-filters">
-                <label className="directory-filter-field"><span>Directory programme</span><Select value={filters.programme} onValueChange={value => updateFilter("programme", value)}><SelectTrigger aria-label="Directory programme"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{programmeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select><small>Applies only to existing Corporate Network records. It does not affect external provider discovery.</small></label>
-                <Input type="number" min="1980" max="2100" value={filters.batch} onChange={event => updateFilter("batch", event.target.value)} placeholder="Batch / graduation year" />
-                <Input value={filters.previousCompany} onChange={event => updateFilter("previousCompany", event.target.value)} placeholder="Previous company" />
-                <Select value={String(filters.minRelevance)} onValueChange={value => updateFilter("minRelevance", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Placement Relevance</SelectItem><SelectItem value="60">Placement Relevance 60+</SelectItem><SelectItem value="75">Placement Relevance 75+</SelectItem><SelectItem value="85">Placement Relevance 85+</SelectItem></SelectContent></Select>
-                <Select value={String(filters.minConfidence)} onValueChange={value => updateFilter("minConfidence", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Data Confidence</SelectItem><SelectItem value="60">Data Confidence 60+</SelectItem><SelectItem value="75">Data Confidence 75+</SelectItem><SelectItem value="90">Data Confidence 90+</SelectItem></SelectContent></Select>
-                <Select value={filters.contactStatus} onValueChange={value => updateFilter("contactStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["All contact states", "Contact-ready", "Partially verified", "Needs verification", "Mismatch"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Select value={filters.outreachStatus} onValueChange={value => updateFilter("outreachStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All outreach states">All outreach states</SelectItem>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
-                <Select value={filters.relationship} onValueChange={value => updateFilter("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All relationships">All IIML relationships</SelectItem>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select>
+                <label className="directory-filter-field"><span>Directory programme</span><Select value={filters.programme} onValueChange={value => updateDirectoryFilter("programme", value)}><SelectTrigger aria-label="Directory programme"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{programmeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select><small>Applies only to existing Corporate Network records. It does not affect external provider discovery.</small></label>
+                <Input type="number" min="1980" max="2100" value={filters.batch} onChange={event => updateDirectoryFilter("batch", event.target.value)} placeholder="Batch / graduation year" />
+                <Input value={filters.previousCompany} onChange={event => updateDirectoryFilter("previousCompany", event.target.value)} placeholder="Previous company" />
+                <Select value={String(filters.minRelevance)} onValueChange={value => updateDirectoryFilter("minRelevance", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Placement Relevance</SelectItem><SelectItem value="60">Placement Relevance 60+</SelectItem><SelectItem value="75">Placement Relevance 75+</SelectItem><SelectItem value="85">Placement Relevance 85+</SelectItem></SelectContent></Select>
+                <Select value={String(filters.minConfidence)} onValueChange={value => updateDirectoryFilter("minConfidence", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Data Confidence</SelectItem><SelectItem value="60">Data Confidence 60+</SelectItem><SelectItem value="75">Data Confidence 75+</SelectItem><SelectItem value="90">Data Confidence 90+</SelectItem></SelectContent></Select>
+                <Select value={filters.contactStatus} onValueChange={value => updateDirectoryFilter("contactStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["All contact states", "Contact-ready", "Partially verified", "Needs verification", "Mismatch"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={filters.outreachStatus} onValueChange={value => updateDirectoryFilter("outreachStatus", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All outreach states">All outreach states</SelectItem>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+                <Select value={filters.relationship} onValueChange={value => updateDirectoryFilter("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All relationships">All IIML relationships</SelectItem>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select>
               </div>}
               <Table>
                 <TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
@@ -1878,14 +1885,27 @@ export default function Home() {
               {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Adjust or clear the internal filters, or use the separate external discovery area below." : "No authorized records match the selected filters."}</p></div>}
             </section>
 
-            {session.canOperate && <section className="panel directory-external-discovery"><div><p className="eyebrow">External discovery</p><h2>Need more alumni?</h2><span>Search external professional data for past IIM Lucknow alumni. Internal directory filters never call a provider.</span></div><div className="external-discovery-criteria"><label><span>Alumni status</span><Select value={filters.alumniStatus} onValueChange={value => updateFilter("alumniStatus", value as DirectoryFilters["alumniStatus"])}><SelectTrigger aria-label="External discovery alumni status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Past alumni only">Past alumni only</SelectItem><SelectItem value="All graduation statuses">All graduation statuses (review only)</SelectItem></SelectContent></Select></label><fieldset><legend>IIML programmes to discover</legend><div className="programme-multiselect">{activeProgrammeChoices.map(option => <label key={option.value}><input type="checkbox" checked={filters.discoveryProgrammes.includes(option.value)} onChange={() => toggleDiscoveryProgramme(option.value)} /><span>{option.label}</span></label>)}</div><small>Used only for external Coresignal discovery. Directory filters above do not affect provider searches.</small><small>Select one or more configured programmes. Unknown and executive programmes remain review-only.</small></fieldset></div>{discoveryCountControl("Discover More Alumni")}</section>}
+            {session.canOperate && <section className="panel directory-external-discovery">
+              <div className="external-discovery-heading"><p className="eyebrow">External discovery</p><h2>Need more alumni?</h2><span>Build a targeted Coresignal search here. Internal directory filters never call or constrain a provider.</span></div>
+              <div className="external-discovery-criteria">
+                <label><span>Alumni status</span><Select value={discoveryFilters.alumniStatus} onValueChange={value => updateDiscoveryFilter("alumniStatus", value as DiscoveryFilters["alumniStatus"])}><SelectTrigger aria-label="External discovery alumni status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Past alumni only">Past alumni only</SelectItem><SelectItem value="All graduation statuses">All graduation statuses (review only)</SelectItem></SelectContent></Select></label>
+                <label><span>IIML programmes to discover</span><Popover><PopoverTrigger asChild><Button type="button" variant="outline" role="combobox" className="programme-multiselect-trigger" aria-label="IIML programmes to discover"><span>{programmeSelectionSummary(discoveryFilters.discoveryProgrammes)}</span><ChevronDown aria-hidden="true" /></Button></PopoverTrigger><PopoverContent className="programme-multiselect-content" align="start"><div role="group" aria-label="Active IIML programmes">{activeProgrammeChoices.map(option => <label key={option.value}><input type="checkbox" checked={discoveryFilters.discoveryProgrammes.includes(option.value)} onChange={() => toggleDiscoveryProgramme(option.value)} /><span>{option.label}</span></label>)}{!activeProgrammeChoices.length && <small>No active programmes are configured.</small>}</div></PopoverContent></Popover><small>Used only for external Coresignal discovery. Directory filters above do not affect provider searches.</small><small>Only active Programme Reference Data options are available. Unknown and executive programmes remain review-only.</small></label>
+                <label><span>Company</span><Input value={discoveryFilters.company} onChange={event => updateDiscoveryFilter("company", event.target.value)} placeholder="Any company" aria-label="Discovery company" /></label>
+                <label><span>Role / designation</span><Input value={discoveryFilters.role} onChange={event => updateDiscoveryFilter("role", event.target.value)} placeholder="Any role" aria-label="Discovery role or designation" /></label>
+                <label><span>Function</span><Select value={discoveryFilters.function} onValueChange={value => updateDiscoveryFilter("function", value)}><SelectTrigger aria-label="Discovery function"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label>
+                <label><span>Seniority</span><Select value={discoveryFilters.seniority} onValueChange={value => updateDiscoveryFilter("seniority", value)}><SelectTrigger aria-label="Discovery seniority"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All levels</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label>
+                <label><span>Location</span><Input value={discoveryFilters.location} onChange={event => updateDiscoveryFilter("location", event.target.value)} placeholder="Any location" aria-label="Discovery location" /></label>
+                <label><span>Graduation year</span><Input type="number" min="1980" max="2100" value={discoveryFilters.graduationYear} onChange={event => updateDiscoveryFilter("graduationYear", event.target.value)} placeholder="Any year" aria-label="Discovery graduation year" /></label>
+              </div>
+              {discoveryCountControl("Discover More Alumni")}
+            </section>}
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">
                 <div><p className="eyebrow">External discovery</p><h2>{discoveryState === "blocked" ? "External search not run" : discoveryState === "empty" ? "No additional profiles found" : `${discoveryResults.length} external profiles found`}</h2><span>{discoveryState === "blocked" ? "The previous search state is retained below." : `Education affiliation and current-role evidence are reviewed before any record enters ${appConfig.name}.`}</span></div>
                 <div className="fixed-criterion"><span>Fixed alumni criterion</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div>
               </div>
-              {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Alumni status</span><strong>{lastDiscoveryFilters.alumniStatus}</strong></div><div><span>Programmes</span><strong>{lastDiscoveryFilters.discoveryProgrammes.join(", ") || "None selected"}</strong></div><div><span>Company</span><strong>{lastDiscoveryFilters.company}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.batch || "Any year"}</strong></div><div><span>Results requested / returned</span><strong>{discoveryRequestedCount ?? discoveryLimit} / {discoveryReturnedCount ?? discoveryResults.length}</strong></div></div>}
+              {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Alumni status</span><strong>{lastDiscoveryFilters.alumniStatus}</strong></div><div><span>Programmes</span><strong>{lastDiscoveryFilters.discoveryProgrammes.join(", ") || "None selected"}</strong></div><div><span>Company</span><strong>{lastDiscoveryFilters.company || "Any company"}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.graduationYear || "Any year"}</strong></div><div><span>Results requested / returned</span><strong>{discoveryRequestedCount ?? discoveryLimit} / {discoveryReturnedCount ?? discoveryResults.length}</strong></div></div>}
               <div className="discovery-controls">
                 <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
                 {discoveryCountControl("Run again", "outline")}
@@ -2211,7 +2231,7 @@ export default function Home() {
       </Dialog>
 
       <Dialog open={Boolean(pendingDiscoveryFilters)} onOpenChange={open => { if (!open) setPendingDiscoveryFilters(null) }}>
-        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live Coresignal employee search?</DialogTitle><DialogDescription>Confirm this controlled search before it reaches Coresignal. Provider filters reduce irrelevant Collect calls; Corporate Network independently validates the collected IIML education record before a candidate can be added.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>Coresignal — LIVE</strong></div><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div><div><span>Alumni status</span><strong>{pendingDiscoveryFilters?.alumniStatus ?? "Past alumni only"}</strong></div><div><span>IIML programmes to discover</span><strong>{pendingDiscoveryFilters?.discoveryProgrammes.join(", ") || "None selected"}</strong></div><div><span>Company filter</span><strong>{pendingDiscoveryFilters?.company ?? "Any company"}</strong></div><div><span>Role</span><strong>{pendingDiscoveryFilters?.role || "Any role"}</strong></div><div><span>Function</span><strong>{pendingDiscoveryFilters?.function ?? "Any function"}</strong></div><div><span>Seniority</span><strong>{pendingDiscoveryFilters?.seniority ?? "Any level"}</strong></div><div><span>Location</span><strong>{pendingDiscoveryFilters?.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{pendingDiscoveryFilters?.batch || "Any year"}</strong></div><div><span>Profiles requested</span><strong>{discoveryLimit}</strong></div><div><span>Application units remaining</span><strong>{providerUsage.coresignal.remaining}</strong></div><div><span>Maximum application usage</span><strong>{discoveryMaximumApplicationUsage}</strong></div></div><div className="credit-notice"><Activity /><span>Maximum usage includes one Search operation plus up to one Collect operation per requested profile. Application usage and provider-account usage are recorded separately. Unknown provider usage is never presented as zero. Results remain review-only and are never added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || !pendingDiscoveryFilters.discoveryProgrammes.length || !discoveryCountValidation.ok} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live Coresignal employee search?</DialogTitle><DialogDescription>Confirm this controlled search before it reaches Coresignal. Provider filters reduce irrelevant Collect calls; Corporate Network independently validates the collected IIML education record before a candidate can be added.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>Coresignal — LIVE</strong></div><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div><div><span>Alumni status</span><strong>{pendingDiscoveryFilters?.alumniStatus ?? "Past alumni only"}</strong></div><div><span>IIML programmes to discover</span><strong>{pendingDiscoveryFilters?.discoveryProgrammes.join(", ") || "None selected"}</strong></div><div><span>Company</span><strong>{pendingDiscoveryFilters?.company || "Any company"}</strong></div><div><span>Role</span><strong>{pendingDiscoveryFilters?.role || "Any role"}</strong></div><div><span>Function</span><strong>{pendingDiscoveryFilters?.function ?? "All functions"}</strong></div><div><span>Seniority</span><strong>{pendingDiscoveryFilters?.seniority ?? "All levels"}</strong></div><div><span>Location</span><strong>{pendingDiscoveryFilters?.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{pendingDiscoveryFilters?.graduationYear || "Any year"}</strong></div><div><span>Profiles requested</span><strong>{discoveryLimit}</strong></div><div><span>Application units remaining</span><strong>{providerUsage.coresignal.remaining}</strong></div><div><span>Maximum application usage</span><strong>{discoveryMaximumApplicationUsage}</strong></div></div><div className="credit-notice"><Activity /><span>Maximum usage includes one Search operation plus up to one Collect operation per requested profile. Application usage and provider-account usage are recorded separately. Unknown provider usage is never presented as zero. Results remain review-only and are never added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || !pendingDiscoveryFilters.discoveryProgrammes.length || !discoveryCountValidation.ok} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>

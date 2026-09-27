@@ -1,4 +1,4 @@
-import type { DirectoryFilters, DiscoveryProfile } from "@/lib/alumni-search"
+import type { DiscoveryFilters, DiscoveryProfile } from "@/lib/alumni-search"
 
 export const PROFESSIONAL_DATA_PROVIDER = "coresignal" as const
 export const PROFESSIONAL_DATA_PROVIDER_LABEL = "Coresignal" as const
@@ -43,7 +43,7 @@ export interface ProfessionalDataProvider {
   readonly label: typeof PROFESSIONAL_DATA_PROVIDER_LABEL
   mode(): ProfessionalDataMode
   configured(): boolean
-  searchCandidates(filters: DirectoryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult>
+  searchCandidates(filters: DiscoveryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult>
   refreshProfile(person: InternalProfessionalPerson): Promise<ProfessionalRefreshResult>
 }
 

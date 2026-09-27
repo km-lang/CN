@@ -22,7 +22,7 @@ const discoveryRoute = await readFile(new URL("../app/api/discovery/route.ts", i
 const enrichmentRoute = await readFile(new URL("../app/api/enrichment/route.ts", import.meta.url), "utf8")
 const adapterSource = await readFile(new URL("../lib/coresignal-adapter.ts", import.meta.url), "utf8")
 const env = await readFile(new URL("../.env.example", import.meta.url), "utf8")
-const filters = () => search.defaultDirectoryFilters()
+const filters = () => search.defaultDiscoveryFilters()
 const fullProfile = { id: "421745303", full_name: "Hemant Singh", deleted: 0, professional_network_url: "https://linkedin.com/in/hemant", education: [{ institution_name: "Indian Institute of Management Lucknow", institution_professional_network_url: client.CORESIGNAL_IIML_INSTITUTION_URL, degree_name: "MBA", deleted: 0 }], experience: [{ company_name: "Ultrahuman", title: "Lead", is_current: 1, deleted: 0 }] }
 
 test("stage3 1: Coresignal can be live while Lusha remains mock", () => { assert.equal(runtime.providerMode("coresignal"), "live"); assert.equal(runtime.providerMode("lusha"), "mock"); assert.equal(runtime.providerConfigured("coresignal"), true) })

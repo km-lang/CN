@@ -11,8 +11,6 @@ export type DirectoryFilters = {
   seniority: string;
   location: string;
   programme: string;
-  discoveryProgrammes: string[];
-  alumniStatus: AlumniStatusFilter;
   batch: string;
   previousCompany: string;
   minRelevance: number;
@@ -20,6 +18,17 @@ export type DirectoryFilters = {
   contactStatus: string;
   outreachStatus: string;
   relationship: string;
+};
+
+export type DiscoveryFilters = {
+  alumniStatus: AlumniStatusFilter;
+  discoveryProgrammes: string[];
+  company: string;
+  role: string;
+  function: string;
+  seniority: string;
+  location: string;
+  graduationYear: string;
 };
 
 export type SearchableAlumnus = {
@@ -220,17 +229,36 @@ export function buildPdlQuery(filters: DirectoryFilters, canonicalSchoolId = "")
   return { query: { bool: { must } } };
 }
 
-export function criteriaSummary(filters: DirectoryFilters) {
+export function criteriaSummary(filters: DiscoveryFilters) {
   const parts = [`Education: ${FIXED_ALUMNI_SCHOOL}`];
   parts.push(`Alumni status: ${filters.alumniStatus}`);
   if (filters.discoveryProgrammes.length) parts.push(`Programmes: ${filters.discoveryProgrammes.join(", ")}`);
-  if (filters.company !== "All companies") parts.push(`Company: ${filters.company}`);
+  if (filters.company) parts.push(`Company: ${filters.company}`);
   if (filters.role) parts.push(`Role: ${filters.role}`);
   if (filters.function !== "All functions") parts.push(`Function: ${filters.function}`);
   if (filters.seniority !== "All levels") parts.push(`Seniority: ${filters.seniority}`);
   if (filters.location) parts.push(`Location: ${filters.location}`);
-  if (filters.batch) parts.push(`Graduation year: ${filters.batch}`);
+  if (filters.graduationYear) parts.push(`Graduation year: ${filters.graduationYear}`);
   return parts.join(" · ");
+}
+
+function queryGroup(values: string[]) {
+  return values.map(value => `(${value})`).join(" OR ");
+}
+
+export function discoveryExperienceTitleQuery(filters: Pick<DiscoveryFilters, "role" | "function" | "seniority">) {
+  const clauses: string[] = [];
+  if (filters.role.trim()) clauses.push(`(${filters.role.trim()})`);
+  if (filters.function !== "All functions") clauses.push(`(${queryGroup(functionTerms[filters.function] ?? [filters.function])})`);
+  if (filters.seniority !== "All levels") {
+    const base = filters.seniority.endsWith("+") ? filters.seniority.slice(0, -1) : filters.seniority;
+    const threshold = seniorityRank[base] ?? 0;
+    const levels = filters.seniority.endsWith("+")
+      ? Object.keys(seniorityRank).filter(level => seniorityRank[level] >= threshold)
+      : [base];
+    clauses.push(`(${queryGroup(levels.flatMap(level => seniorityTerms[level] ?? [level]))})`);
+  }
+  return clauses.join(" AND ");
 }
 
 function findIimlEducation(education: unknown, canonicalSchoolId = "") {
@@ -303,8 +331,6 @@ export function defaultDirectoryFilters(): DirectoryFilters {
     seniority: "All levels",
     location: "",
     programme: "All programmes",
-    discoveryProgrammes: [...DEFAULT_DISCOVERY_PROGRAMMES],
-    alumniStatus: "Past alumni only",
     batch: "",
     previousCompany: "",
     minRelevance: 0,
@@ -312,5 +338,18 @@ export function defaultDirectoryFilters(): DirectoryFilters {
     contactStatus: "All contact states",
     outreachStatus: "All outreach states",
     relationship: "All relationships",
+  };
+}
+
+export function defaultDiscoveryFilters(): DiscoveryFilters {
+  return {
+    alumniStatus: "Past alumni only",
+    discoveryProgrammes: [...DEFAULT_DISCOVERY_PROGRAMMES],
+    company: "",
+    role: "",
+    function: "All functions",
+    seniority: "All levels",
+    location: "",
+    graduationYear: "",
   };
 }

@@ -90,7 +90,7 @@ test("Coresignal errors never return or log the secret value", async () => {
 })
 
 test("multiple mock search results are bounded by the application result limit", async () => {
-  const filters = { name: "", company: "All companies", role: "", function: "All functions", seniority: "All levels", location: "", programme: "All programmes", batch: "", previousCompany: "", minRelevance: 0, minConfidence: 0, contactStatus: "All contact states", outreachStatus: "All outreach states", relationship: "All relationships" }
+  const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: [], alumniStatus: "All graduation statuses" }
   const result = await adapter.coresignalProvider.searchCandidates(filters, [{ id: 15, name: "Sahil Bansal", batch: 2015, company: "Google", title: "Product Leader", function: "Product", seniority: "Director", location: "Bengaluru", linkedinUrl: "https://linkedin.com/in/sahilb" }], 3)
   assert.equal(result.profiles.length, 3)
   assert.equal(result.usage.applicationUnits, 3)
@@ -130,12 +130,22 @@ test("documented Base Employee fields retain profile URL and scalar IIML educati
 })
 
 test("live provider query applies selected programmes and a clock-derived past-alumni cutoff", () => {
-  const filters = { ...search.defaultDirectoryFilters(), discoveryProgrammes: ["PGP", "ABM"], alumniStatus: "Past alumni only" }
+  const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["PGP", "ABM"], alumniStatus: "Past alumni only" }
   const contract = client.coresignalSearchContract(filters, new Date("2026-09-27T12:00:00Z"))
   assert.match(contract.body.education_program_name, /PGP/)
   assert.match(contract.body.education_program_name, /Agribusiness Management/)
   assert.equal(contract.body.education_date_to, "September 2026")
   assert.doesNotMatch(JSON.stringify(contract.body), /2026-01-01|hard-coded/i)
+})
+
+test("live provider query applies documented external company, title and location filters", () => {
+  const filters = { ...search.defaultDiscoveryFilters(), company: "Innovaccer", role: "Growth Strategy", function: "Marketing", seniority: "Manager", location: "Bengaluru" }
+  const body = client.coresignalSearchContract(filters).body
+  assert.equal(body.experience_company_name, "Innovaccer")
+  assert.match(body.experience_title, /Growth Strategy/)
+  assert.match(body.experience_title, /growth/)
+  assert.match(body.experience_title, /manager/)
+  assert.equal(body.location, "Bengaluru")
 })
 
 test("programme multi-select reaches the provider query and is re-enforced after Collect", async () => {
@@ -157,7 +167,7 @@ test("programme multi-select reaches the provider query and is re-enforced after
   }
   process.env.CORESIGNAL_LIVE_ENABLED = "true"
   try {
-    const filters = { ...search.defaultDirectoryFilters(), discoveryProgrammes: ["ABM"], alumniStatus: "Past alumni only" }
+    const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["ABM"], alumniStatus: "Past alumni only" }
     const result = await adapter.coresignalProvider.searchCandidates(filters, [], 3)
     assert.match(bodies[0].education_program_name, /ABM/)
     assert.equal(result.profiles.length, 1)
@@ -298,7 +308,7 @@ test("affiliation classification distinguishes degrees, exchanges, and uncertain
 })
 
 test("zero results and provider failures remain explicit", async () => {
-  const filters = { name: "No such person", company: "All companies", role: "", function: "All functions", seniority: "All levels", location: "", programme: "All programmes", batch: "", previousCompany: "", minRelevance: 0, minConfidence: 0, contactStatus: "All contact states", outreachStatus: "All outreach states", relationship: "All relationships" }
+  const filters = { ...search.defaultDiscoveryFilters(), location: "No such location" }
   const result = await adapter.coresignalProvider.searchCandidates(filters, [], 5)
   assert.equal(result.profiles.length, 0)
   assert.equal(result.usage.applicationUnits, 0)

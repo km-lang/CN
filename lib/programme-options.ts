@@ -34,3 +34,10 @@ export function programmeFilterOptions(options: ProgrammeOption[], historicalVal
     .map(value => ({ value, label: `${value} (historical)`, active: false, historical: true }))
   return [...configured, ...legacy]
 }
+
+export function programmeSelectionSummary(selected: string[]) {
+  if (!selected.length) return "Select programmes"
+  if (selected.length <= 2) return selected.join(", ")
+  if (selected.length === 3) return selected.join(", ")
+  return `${selected.length} programmes selected`
+}

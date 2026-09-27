@@ -1,6 +1,6 @@
+import { discoveryExperienceTitleQuery, type DiscoveryFilters } from "@/lib/alumni-search"
 import { providerSecret } from "@/lib/provider-runtime"
 import { coresignalProgrammeQuery, providerEducationDateTo } from "@/lib/discovery-qualification"
-import type { DirectoryFilters } from "@/lib/alumni-search"
 
 export const CORESIGNAL_API_BASE = "https://api.coresignal.com"
 export const CORESIGNAL_IIML_INSTITUTION_URL = "https://www.linkedin.com/school/indian-institute-of-management-lucknow"
@@ -13,8 +13,9 @@ export class CoresignalProviderError extends Error {
   constructor(message: string, public readonly kind: CoresignalFailureKind, public readonly status: number, public readonly successfulOperationCredits = 0) { super(message) }
 }
 
-export function coresignalSearchContract(filters?: Pick<DirectoryFilters, "discoveryProgrammes" | "alumniStatus" | "batch">, now: Date = new Date()) {
+export function coresignalSearchContract(filters?: DiscoveryFilters, now: Date = new Date()) {
   const programmeQuery = coresignalProgrammeQuery(filters?.discoveryProgrammes ?? [])
+  const experienceTitle = filters ? discoveryExperienceTitleQuery(filters) : ""
   return {
     method: "POST" as const,
     path: CORESIGNAL_SEARCH_PATH,
@@ -22,7 +23,10 @@ export function coresignalSearchContract(filters?: Pick<DirectoryFilters, "disco
       education_institution_professional_network_url: CORESIGNAL_IIML_INSTITUTION_URL,
       active_experience: true,
       ...(programmeQuery ? { education_program_name: programmeQuery } : {}),
-      ...(filters?.batch ? { education_date_to: filters.batch } : filters?.alumniStatus === "Past alumni only" ? { education_date_to: providerEducationDateTo(now) } : {}),
+      ...(filters?.graduationYear ? { education_date_to: filters.graduationYear } : filters?.alumniStatus === "Past alumni only" ? { education_date_to: providerEducationDateTo(now) } : {}),
+      ...(filters?.company ? { experience_company_name: filters.company } : {}),
+      ...(experienceTitle ? { experience_title: experienceTitle } : {}),
+      ...(filters?.location ? { location: filters.location } : {}),
     },
   }
 }
@@ -58,7 +62,7 @@ async function request(path: string, init: RequestInit, options: { fetcher?: typ
   try { return await response.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable response.", "invalid_response", 502) }
 }
 
-export function searchCoresignalIiml(options: { fetcher?: typeof fetch; timeoutMs?: number; filters?: DirectoryFilters; now?: Date } = {}) {
+export function searchCoresignalIiml(options: { fetcher?: typeof fetch; timeoutMs?: number; filters?: DiscoveryFilters; now?: Date } = {}) {
   const contract = coresignalSearchContract(options.filters, options.now)
   return request(contract.path, { method: contract.method, headers: { "content-type": "application/json" }, body: JSON.stringify(contract.body) }, options)
 }
