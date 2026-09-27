@@ -166,6 +166,9 @@ button { cursor: pointer; }
 .core-filters input { background: #f9fafb; }
 .advanced-filters { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: .65rem; padding: 1rem 1.35rem; background: #f8fafb; border-bottom: 1px solid #e3e8ec; }
 .advanced-filters [data-slot="select-trigger"], .advanced-filters input { width: 100%; background: white; }
+.directory-filter-field { display: grid; gap: .35rem; min-width: 0; }
+.directory-filter-field > span { color: #526674; font-size: .7rem; font-weight: 750; }
+.directory-filter-field > small { color: #71818e; font-size: .68rem; line-height: 1.35; }
 [data-slot="table-head"] { color: #6e7d89; font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; background: #f7f9fa; padding: .8rem 1rem; }
 [data-slot="table-cell"] { padding: .8rem 1rem; }
 .person-cell { display: flex; align-items: center; gap: .7rem; border: 0; background: transparent; padding: 0; color: inherit; text-align: left; }

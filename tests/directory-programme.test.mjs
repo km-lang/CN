@@ -80,6 +80,17 @@ test("external discovery has independent multi-programme and past-alumni control
   assert.match(page, /Select at least one programme for external discovery/)
 })
 
+test("directory and external programme controls are labelled as independent scopes", () => {
+  assert.match(page, />Directory programme</)
+  assert.match(page, /Applies only to existing Corporate Network records\. It does not affect external provider discovery\./)
+  assert.match(page, />IIML programmes to discover</)
+  assert.match(page, /Used only for external Coresignal discovery\. Directory filters above do not affect provider searches\./)
+  assert.match(page, /value=\{filters\.programme\} onValueChange=\{value => updateFilter\("programme", value\)\}/)
+  assert.match(page, /checked=\{filters\.discoveryProgrammes\.includes\(option\.value\)\}/)
+  assert.match(page, /pendingDiscoveryFilters\?\.discoveryProgrammes\.join\(", "\)/)
+  assert.doesNotMatch(page, /discoveryProgrammes:\s*\[?filters\.programme/)
+})
+
 test("programme maintenance is additive, Admin-only, and code-stable", () => {
   assert.match(migration, /CREATE TABLE `programme_options`/)
   assert.match(migration, /\('PGP', 'PGP'/)
