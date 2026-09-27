@@ -20,6 +20,8 @@ after(async () => {
 
 const client = await vite.ssrLoadModule("/lib/coresignal-client.ts")
 const adapter = await vite.ssrLoadModule("/lib/coresignal-adapter.ts")
+const qualification = await vite.ssrLoadModule("/lib/discovery-qualification.ts")
+const search = await vite.ssrLoadModule("/lib/alumni-search.ts")
 const limits = await vite.ssrLoadModule("/lib/discovery-limit.ts")
 const usage = await vite.ssrLoadModule("/lib/provider-usage.ts")
 const runtime = await vite.ssrLoadModule("/lib/provider-runtime.ts")
@@ -121,6 +123,122 @@ test("documented Base Employee fields retain profile URL and scalar IIML educati
   assert.equal(mapped.educationEndDate, "2009")
   assert.equal(mapped.graduationYear, 2009)
   assert.equal(mapped.affiliationStatus, "Confirmed degree alumnus")
+  assert.equal(mapped.normalizedProgramme, "PGP")
+  assert.equal(mapped.alumniStatus, "Past alumnus")
+  assert.equal(mapped.eligibleForAddition, true)
+})
+
+test("live provider query applies selected programmes and a clock-derived past-alumni cutoff", () => {
+  const filters = { ...search.defaultDirectoryFilters(), discoveryProgrammes: ["PGP", "ABM"], alumniStatus: "Past alumni only" }
+  const contract = client.coresignalSearchContract(filters, new Date("2026-09-27T12:00:00Z"))
+  assert.match(contract.body.education_program_name, /PGP/)
+  assert.match(contract.body.education_program_name, /Agribusiness Management/)
+  assert.equal(contract.body.education_date_to, "September 2026")
+  assert.doesNotMatch(JSON.stringify(contract.body), /2026-01-01|hard-coded/i)
+})
+
+test("programme multi-select reaches the provider query and is re-enforced after Collect", async () => {
+  const previousFetch = globalThis.fetch
+  const previousLive = process.env.CORESIGNAL_LIVE_ENABLED
+  const bodies = []
+  const collected = {
+    pgp: employee({ id: "pgp", education: [iiml({ degree_name: "PGP", date_to: "2020" })] }),
+    abm: employee({ id: "abm", education: [iiml({ degree_name: "PGP-ABM", date_to: "2020" })] }),
+    executive: employee({ id: "executive", education: [iiml({ degree_name: "Executive MBA", date_to: "2020" })] }),
+  }
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("/search/")) {
+      bodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify([{ id: "pgp" }, { id: "abm" }, { id: "executive" }]), { status: 200 })
+    }
+    const id = String(url).split("/").at(-1)
+    return new Response(JSON.stringify(collected[id]), { status: 200 })
+  }
+  process.env.CORESIGNAL_LIVE_ENABLED = "true"
+  try {
+    const filters = { ...search.defaultDirectoryFilters(), discoveryProgrammes: ["ABM"], alumniStatus: "Past alumni only" }
+    const result = await adapter.coresignalProvider.searchCandidates(filters, [], 3)
+    assert.match(bodies[0].education_program_name, /ABM/)
+    assert.equal(result.profiles.length, 1)
+    assert.equal(result.profiles[0].normalizedProgramme, "ABM")
+    assert.equal(result.profiles[0].eligibleForAddition, true)
+    assert.equal(result.usage.applicationUnits, 4)
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousLive === undefined) delete process.env.CORESIGNAL_LIVE_ENABLED
+    else process.env.CORESIGNAL_LIVE_ENABLED = previousLive
+  }
+})
+
+test("programme normalization is explicit and keeps executive or unknown study review-only", () => {
+  for (const value of ["PGP", "Post Graduate Programme", "PGDM", "MBA", "Master of Business Administration"]) assert.equal(qualification.normalizeCoresignalProgramme(value).code, "PGP")
+  for (const value of ["ABM", "PGP-ABM", "Post Graduate Programme in Agribusiness Management", "MBA in Agribusiness Management"]) assert.equal(qualification.normalizeCoresignalProgramme(value).code, "ABM")
+  for (const value of ["SM", "PGP-SM", "Post Graduate Programme in Sustainable Management", "MBA in Sustainable Management"]) assert.equal(qualification.normalizeCoresignalProgramme(value).code, "SM")
+  for (const value of ["Executive MBA", "General Management Programme for Executives", "MBA for Working Managers"]) {
+    const mapped = qualification.normalizeCoresignalProgramme(value)
+    assert.equal(mapped.code, null)
+    assert.equal(mapped.status, "Executive/non-regular programme")
+  }
+  assert.deepEqual(qualification.normalizeCoresignalProgramme("Advanced leadership programme"), { code: null, status: "Programme requires review" })
+})
+
+test("graduation status uses only the matched IIML record and a testable current date", () => {
+  const now = new Date("2026-09-27T12:00:00Z")
+  assert.equal(qualification.alumniStatusFromEducationEnd("2009", now), "Past alumnus")
+  assert.equal(qualification.alumniStatusFromEducationEnd("2028", now), "Current student")
+  assert.equal(qualification.alumniStatusFromEducationEnd("", now), "Graduation status unknown — review required")
+  assert.equal(qualification.alumniStatusFromEducationEnd("2026", now), "Graduation status unknown — review required")
+  assert.equal(qualification.alumniStatusFromEducationEnd("2026-09-27", now), "Past alumnus")
+  assert.equal(qualification.alumniStatusFromEducationEnd("2026-09-28", now), "Current student")
+})
+
+test("Yash-type future IIML education is a current student and cannot be added", () => {
+  const mapped = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "MBA", date_to: "2028" })] }), 0, { now: new Date("2026-09-27T12:00:00Z"), selectedProgrammes: ["PGP"] })
+  assert.equal(mapped.alumniStatus, "Current student")
+  assert.equal(mapped.eligibleForAddition, false)
+})
+
+test("Kushal-type executive study never normalizes to regular PGP", () => {
+  const mapped = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "Executive MBA", date_to: "2024" })] }), 0, { now: new Date("2026-09-27T12:00:00Z"), selectedProgrammes: ["PGP"] })
+  assert.equal(mapped.normalizedProgramme, "")
+  assert.equal(mapped.programmeStatus, "Executive/non-regular programme")
+  assert.equal(mapped.eligibleForAddition, false)
+})
+
+test("Teginder-type completed PGDM maps to PGP and remains addable", () => {
+  const mapped = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "PGDM", date_from: "2007", date_to: "2009" })] }), 0, { now: new Date("2026-09-27T12:00:00Z"), selectedProgrammes: ["PGP"] })
+  assert.equal(mapped.normalizedProgramme, "PGP")
+  assert.equal(mapped.alumniStatus, "Past alumnus")
+  assert.equal(mapped.eligibleForAddition, true)
+})
+
+test("another university's completion cannot hide an ongoing IIML programme", () => {
+  const mapped = adapter.mapCoresignalProfile(employee({ education: [
+    { institution: "Another University", program: "MBA", date_to: "2020", deleted: 0 },
+    { institution: "Indian Institute of Management Lucknow", program: "PGP", date_to: "2028", deleted: 0 },
+  ] }), 0, { now: new Date("2026-09-27T12:00:00Z"), selectedProgrammes: ["PGP"] })
+  assert.equal(mapped.graduationYear, 2028)
+  assert.equal(mapped.alumniStatus, "Current student")
+  assert.equal(mapped.eligibleForAddition, false)
+})
+
+test("missing or deleted IIML graduation evidence never becomes automatically addable", () => {
+  const now = new Date("2026-09-27T12:00:00Z")
+  const missingEnd = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "PGP", date_to: null })] }), 0, { now, selectedProgrammes: ["PGP"] })
+  assert.equal(missingEnd.alumniStatus, "Graduation status unknown — review required")
+  assert.equal(missingEnd.eligibleForAddition, false)
+  const deletedIiml = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "PGP", date_to: "2020", deleted: 1 })] }), 0, { now, selectedProgrammes: ["PGP"] })
+  assert.equal(deletedIiml.affiliationStatus, "Potential alumnus — review required")
+  assert.equal(deletedIiml.eligibleForAddition, false)
+})
+
+test("seniority normalization prefers strong designation evidence over a bad provider fallback", () => {
+  const cases = new Map([
+    ["Head of Product", "Director"], ["Senior Data Scientist", "Senior Manager"], ["Assistant Vice President", "VP"],
+    ["Vice President", "VP"], ["Director", "Director"], ["Senior Manager", "Senior Manager"],
+    ["Manager", "Manager"], ["Analyst", "Analyst/Junior"], ["Associate", "Associate/Consultant"],
+  ])
+  for (const [title, expected] of cases) assert.equal(search.normalizeSeniority("Analyst", title), expected, title)
 })
 
 test("failed non-200 requests are not recorded as successful operation credits", async () => {
@@ -133,8 +251,8 @@ test("failed non-200 requests are not recorded as successful operation credits",
 
 test("deleted people and deleted education are ignored while surviving education is retained", () => {
   assert.equal(adapter.mapCoresignalProfile(employee({ deleted: 1 }), 0), null)
-  const mapped = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "Deleted MBA", deleted: 1 }), iiml({ degree_name: "PGDM Marketing Finance" })] }), 0)
-  assert.equal(mapped.educationProgramme, "PGDM Marketing Finance")
+  const mapped = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "Deleted MBA", deleted: 1 }), iiml({ degree_name: "PGDM" })] }), 0)
+  assert.equal(mapped.educationProgramme, "PGDM")
   assert.equal(mapped.affiliationStatus, "Confirmed degree alumnus")
 })
 
@@ -177,6 +295,8 @@ test("zero results and provider failures remain explicit", async () => {
 
 test("review-before-add, Keep Existing, and selected-field apply remain enforced", () => {
   assert.match(discoveryRoute, /affiliationStatus !== "Confirmed degree alumnus"/)
+  assert.match(discoveryRoute, /qualificationForResult[\s\S]*eligibleForAddition/)
+  assert.match(discoveryRoute, /Only past alumni with a confirmed selected programme/)
   assert.match(discoveryRoute, /action === "qualify"/)
   assert.match(enrichmentRoute, /status: applied\.length \? "Applied" : "Reviewed — kept existing"/)
   assert.match(page, /Apply Selected Updates/)

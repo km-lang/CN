@@ -10,6 +10,7 @@ import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL } from "@/
 import { coresignalLiveSearchMaximum } from "@/lib/provider-runtime"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
+import { discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -17,6 +18,36 @@ const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alum
 function monthStart() { const date = new Date(); return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)).toISOString() }
 function initials(name: string) { return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join("") || "AL" }
 function providerLabel(provider: string) { return provider === PROFESSIONAL_DATA_PROVIDER ? PROFESSIONAL_DATA_PROVIDER_LABEL : provider.toLowerCase() === "pdl" ? "PDL" : provider }
+
+function normalizedDiscoveryFilters(value: unknown): DirectoryFilters {
+  const defaults = defaultDirectoryFilters()
+  const candidate = value && typeof value === "object" ? value as Partial<DirectoryFilters> : {}
+  return {
+    ...defaults,
+    ...candidate,
+    discoveryProgrammes: Array.isArray(candidate.discoveryProgrammes) ? [...new Set(candidate.discoveryProgrammes.map(String).map(item => item.trim().toUpperCase()).filter(Boolean))] : defaults.discoveryProgrammes,
+    alumniStatus: candidate.alumniStatus === "All graduation statuses" ? candidate.alumniStatus : defaults.alumniStatus,
+  }
+}
+
+function storedDiscoveryFilters(value: string) {
+  try { return normalizedDiscoveryFilters(JSON.parse(value)) } catch { return defaultDirectoryFilters() }
+}
+
+function qualificationForResult(result: typeof externalDiscoveryResults.$inferSelect, filters: DirectoryFilters, now: Date) {
+  if (result.provider !== PROFESSIONAL_DATA_PROVIDER) return {
+    normalizedProgramme: result.educationProgramme,
+    programmeStatus: result.educationProgramme ? "Programme matched" : "Programme requires review",
+    alumniStatus: result.graduationYear > 0 && result.graduationYear < now.getUTCFullYear() ? "Past alumnus" : "Graduation status unknown — review required",
+    programmeMatchesSelection: true,
+    eligibleForAddition: result.affiliationStatus === "Confirmed degree alumnus",
+  }
+  return discoveryQualification(result.educationProgramme, result.educationEndDate, filters.discoveryProgrammes, now)
+}
+
+function presentResult(result: typeof externalDiscoveryResults.$inferSelect, filters: DirectoryFilters, now: Date) {
+  return { ...result, ...qualificationForResult(result, filters, now) }
+}
 
 function classify(profile: DiscoveryProfile, people: (typeof alumni.$inferSelect)[]) {
   const providerId = normalized(profile.providerPersonId)
@@ -29,7 +60,7 @@ function classify(profile: DiscoveryProfile, people: (typeof alumni.$inferSelect
   const possible = people.find(person => name === normalized(person.name)
     || (normalized(person.name).split(" ").at(-1) === name.split(" ").at(-1) && normalized(person.company) === normalized(profile.currentCompany)))
   if (possible) return { matchStatus: "Possible duplicate" as MatchStatus, linkedInternalAlumnusId: possible.id, matchConfidence: Math.min(84, profile.matchConfidence) }
-  if (profile.affiliationStatus !== "Confirmed degree alumnus" || profile.currentRoleAmbiguous) return { matchStatus: "Needs review" as MatchStatus, linkedInternalAlumnusId: null, matchConfidence: profile.matchConfidence }
+  if (profile.affiliationStatus !== "Confirmed degree alumnus" || profile.currentRoleAmbiguous || !profile.eligibleForAddition) return { matchStatus: "Needs review" as MatchStatus, linkedInternalAlumnusId: null, matchConfidence: profile.matchConfidence }
   return { matchStatus: "New" as MatchStatus, linkedInternalAlumnusId: null, matchConfidence: profile.matchConfidence }
 }
 
@@ -64,7 +95,7 @@ function alumnusValues(result: typeof externalDiscoveryResults.$inferSelect, act
   return {
     profileKey: result.providerPersonId ? `${result.provider}:${normalized(result.providerPersonId)}` : `${result.provider}-reviewed:${result.id}`,
     name: result.name, initials: initials(result.name), batch: 0, graduationYear: result.graduationYear,
-    programme: result.educationProgramme || "Not confirmed", education: result.education || FIXED_ALUMNI_SCHOOL,
+    programme: isCoresignal ? normalizeCoresignalProgramme(result.educationProgramme).code || "Not confirmed" : result.educationProgramme || "Not confirmed", education: result.education || FIXED_ALUMNI_SCHOOL,
     company: result.currentCompany, title: result.role, rawTitle: result.rawTitle, function: result.function, seniority: result.seniority,
     location: result.location, confidence: result.affiliationStatus === "Confirmed degree alumnus" ? 70 : 55,
     linkedinUrl: normalizeProfessionalProfileUrl(result.linkedinUrl),
@@ -93,19 +124,22 @@ export async function GET(request: Request) {
     const searches = searchIds.length ? await db.select().from(externalDiscoverySearches).where(inArray(externalDiscoverySearches.id, searchIds)) : []
     const latest = searches.sort((a, b) => b.id - a.id)[0] ?? null
     let filters = defaultDirectoryFilters()
-    try { if (latest) filters = { ...filters, ...JSON.parse(latest.filtersJson) } } catch { /* historical metadata may be malformed */ }
+    if (latest) filters = storedDiscoveryFilters(latest.filtersJson)
+    const filtersBySearch = new Map(searches.map(search => [search.id, storedDiscoveryFilters(search.filtersJson)] as const))
+    const presentedResults = pendingResults.map(result => presentResult(result, filtersBySearch.get(result.searchId) ?? defaultDirectoryFilters(), new Date()))
     const counts = { existing: pendingResults.filter(r => r.matchStatus === "Already in database").length, new: pendingResults.filter(r => r.matchStatus === "New").length, possibleDuplicate: pendingResults.filter(r => r.matchStatus === "Possible duplicate").length, needsReview: pendingResults.filter(r => r.matchStatus === "Needs review").length }
-    return Response.json({ ...common, results: pendingResults, counts, filters, creditsUsed: 0, retrieval: "stored", source: latest ? { provider: latest.provider, mode: latest.mode, searchId: latest.id, createdAt: latest.createdAt } : null })
+    return Response.json({ ...common, results: presentedResults, counts, filters, creditsUsed: 0, retrieval: "stored", source: latest ? { provider: latest.provider, mode: latest.mode, searchId: latest.id, createdAt: latest.createdAt } : null })
   } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return Response.json({ error: error instanceof Error ? error.message : "Unable to load discovery history." }, { status: 500 }) }
 }
 
 export async function POST(request: Request) {
   try {
     const payload = await request.json() as { action?: string; filters?: Partial<DirectoryFilters>; limit?: number; resultIds?: number[]; resultId?: number; fields?: string[]; reason?: string; affiliationStatus?: string }
-    const context = await authorizeRequest(request, "OPERATE_PCOM"); const db = getDb(); const actor = context.displayName; const now = new Date().toISOString()
+    const context = await authorizeRequest(request, "OPERATE_PCOM"); const db = getDb(); const actor = context.displayName; const nowDate = new Date(); const now = nowDate.toISOString()
 
     if (payload.action === "search") {
-      const filters = { ...defaultDirectoryFilters(), ...payload.filters } as DirectoryFilters
+      const filters = normalizedDiscoveryFilters(payload.filters)
+      if (!filters.discoveryProgrammes.length) return Response.json({ error: "Select at least one configured programme before external discovery.", blocked: true, reason: "programme_required", filters, effectiveLimit: 0 }, { status: 400 })
       const remaining = await remainingApplicationUnits()
       const searchOperationReserve = coresignalProvider.mode() === "live" ? 1 : 0
       if (remaining <= searchOperationReserve) return Response.json({ error: "External search was not run because the Coresignal application limit cannot cover a Search and at least one Collect operation.", blocked: true, reason: "application_limit", filters, effectiveLimit: 0 }, { status: 429 })
@@ -126,7 +160,7 @@ export async function POST(request: Request) {
       const counts = { existing: reconciled.filter(i => i.matchStatus === "Already in database").length, new: reconciled.filter(i => i.matchStatus === "New").length, possibleDuplicate: reconciled.filter(i => i.matchStatus === "Possible duplicate").length, needsReview: reconciled.filter(i => i.matchStatus === "Needs review").length }
       await db.update(externalDiscoverySearches).set({ existingCount: counts.existing, newCount: counts.new, duplicateCount: counts.possibleDuplicate }).where(eq(externalDiscoverySearches.id, search.id))
       await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: "Education affiliation search", mode: coresignalProvider.mode(), status: "success", creditsUsed: response.usage.providerReportedUsage ?? 0, applicationUnits: response.usage.applicationUnits, providerReportedCredits: response.usage.providerReportedUsage, usageState: response.usage.usageState, resultCount: response.profiles.length, requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: response.responseSummary, requestedBy: actor })
-      const storedResults = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id)
+      const storedResults = (await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id)).map(result => presentResult(result, filters, nowDate))
       await writeSecurityAudit(context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, mode: coresignalProvider.mode() } })
       return Response.json({ searchId: search.id, results: storedResults, counts, requestedCount: validation.requested, returnedCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
     }
@@ -135,7 +169,10 @@ export async function POST(request: Request) {
       const affiliationStatus = String(payload.affiliationStatus)
       const [result] = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.id, payload.resultId!)).limit(1)
       if (!result || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return Response.json({ error: "Only a pending candidate can be qualified." }, { status: 409 })
-      const matchStatus = affiliationStatus === "Confirmed degree alumnus" && !result.currentRoleAmbiguous && !result.linkedInternalAlumnusId ? "New" : result.matchStatus === "New" ? "Needs review" : result.matchStatus
+      const [search] = await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, result.searchId)).limit(1)
+      const filters = search ? storedDiscoveryFilters(search.filtersJson) : defaultDirectoryFilters()
+      const qualification = qualificationForResult(result, filters, nowDate)
+      const matchStatus = affiliationStatus === "Confirmed degree alumnus" && qualification.eligibleForAddition && !result.currentRoleAmbiguous && !result.linkedInternalAlumnusId ? "New" : result.matchStatus === "New" ? "Needs review" : result.matchStatus
       await db.update(externalDiscoveryResults).set({ affiliationStatus, matchStatus, reviewNote: `Affiliation classified by ${actor}.` }).where(eq(externalDiscoveryResults.id, result.id))
       await writeSecurityAudit(context, { action: "education_affiliation_qualified", entityType: "discovery_result", entityId: result.id, metadata: { affiliationStatus, provider: result.provider } })
       return Response.json({ qualified: true, affiliationStatus, matchStatus })
@@ -145,7 +182,10 @@ export async function POST(request: Request) {
       const resultIds = [...new Set(payload.resultIds?.filter(Number.isInteger) ?? [])].slice(0, 25)
       if (!resultIds.length) return Response.json({ error: "Select at least one confirmed degree alumnus." }, { status: 400 })
       const results = await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.id, resultIds))
-      if (results.some(result => result.matchStatus !== "New" || result.affiliationStatus !== "Confirmed degree alumnus" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending)) return Response.json({ error: "Only confirmed degree alumni that are clearly new and pending review can be added in a batch." }, { status: 409 })
+      const searchIds = [...new Set(results.map(result => result.searchId))]
+      const searches = searchIds.length ? await db.select().from(externalDiscoverySearches).where(inArray(externalDiscoverySearches.id, searchIds)) : []
+      const filtersBySearch = new Map(searches.map(search => [search.id, storedDiscoveryFilters(search.filtersJson)]))
+      if (results.some(result => result.matchStatus !== "New" || result.affiliationStatus !== "Confirmed degree alumnus" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending || !qualificationForResult(result, filtersBySearch.get(result.searchId) ?? defaultDirectoryFilters(), nowDate).eligibleForAddition)) return Response.json({ error: "Only past alumni with a confirmed selected programme that are clearly new and pending review can be added in a batch." }, { status: 409 })
       const added = []
       for (const result of results) {
         const [created] = await db.insert(alumni).values(alumnusValues(result, actor, now)).returning()
@@ -176,7 +216,9 @@ export async function POST(request: Request) {
 
     if (payload.action === "keep_separate" && Number.isInteger(payload.resultId)) {
       const [result] = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.id, payload.resultId!)).limit(1)
-      if (!result || result.matchStatus !== "Possible duplicate" || result.affiliationStatus !== "Confirmed degree alumnus" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return Response.json({ error: "Only a confirmed pending possible duplicate can be kept as a separate record." }, { status: 409 })
+      const [search] = result ? await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, result.searchId)).limit(1) : []
+      const filters = search ? storedDiscoveryFilters(search.filtersJson) : defaultDirectoryFilters()
+      if (!result || result.matchStatus !== "Possible duplicate" || result.affiliationStatus !== "Confirmed degree alumnus" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending || !qualificationForResult(result, filters, nowDate).eligibleForAddition) return Response.json({ error: "Only a past alumnus with a confirmed selected programme and pending possible-duplicate review can be kept as a separate record." }, { status: 409 })
       const [created] = await db.insert(alumni).values(alumnusValues(result, actor, now, " after duplicate review")).returning()
       await db.update(externalDiscoveryResults).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id))
       await writeSecurityAudit(context, { action: "possible_duplicate_kept_separate", entityType: "alumnus", entityId: created.id, metadata: { provider: PROFESSIONAL_DATA_PROVIDER, discoveryResultId: result.id } })

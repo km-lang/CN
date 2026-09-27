@@ -9,6 +9,7 @@ import {
 } from "@/lib/alumni-search"
 import { collectCoresignalEmployee, CORESIGNAL_IIML_INSTITUTION_URL, CoresignalProviderError, searchCoresignalIiml } from "@/lib/coresignal-client"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
+import { DEFAULT_DISCOVERY_PROGRAMMES, discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
 import { coresignalLiveSearchMaximum, providerConfigured, providerMode } from "@/lib/provider-runtime"
 import {
   mockProviderUsage,
@@ -58,9 +59,10 @@ export function validCurrentEmployment(profile: Row) {
 
 export function classifyIimlAffiliation(education: Row | undefined): AffiliationStatus {
   if (!education) return "Potential alumnus — review required"
-  const programme = normalized(first(education, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"]))
+  const rawProgramme = first(education, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"])
+  const programme = normalized(rawProgramme)
   if (/exchange|visiting|short term|short-term|certificate|executive education|summer school/.test(programme)) return "Short-term / exchange affiliation"
-  if (/\bmba\b|\bpgdm\b|\bpgp\b|master|bachelor|doctor|\bphd\b|post graduate|postgraduate/.test(programme)) return "Confirmed degree alumnus"
+  if (normalizeCoresignalProgramme(rawProgramme).code) return "Confirmed degree alumnus"
   return "Potential alumnus — review required"
 }
 
@@ -74,10 +76,16 @@ function dateValue(value: unknown) {
   return month ? `${year}-${month.padStart(2, "0")}` : year
 }
 
-function mapProfile(record: Row, index: number): DiscoveryProfile | null {
+function mapProfile(record: Row, index: number, options: { now?: Date; selectedProgrammes?: readonly string[] } = {}): DiscoveryProfile | null {
   if (!notDeleted(record)) return null
   const employeeId = first(record, ["id", "employee_id", "employee_base_id"])
-  const education = iimlEducationRecords(record)[0]
+  const selectedProgrammes = options.selectedProgrammes ?? DEFAULT_DISCOVERY_PROGRAMMES
+  const educationRecords = iimlEducationRecords(record)
+  const education = educationRecords.find(candidate => {
+    const programme = first(candidate, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"])
+    const normalizedProgramme = normalizeCoresignalProgramme(programme).code
+    return Boolean(normalizedProgramme && selectedProgrammes.includes(normalizedProgramme))
+  }) ?? educationRecords[0]
   const current = validCurrentEmployment(record)
   const currentRoleAmbiguous = current.length > 1
   const employment = currentRoleAmbiguous ? {} : current[0] ?? {}
@@ -88,6 +96,7 @@ function mapProfile(record: Row, index: number): DiscoveryProfile | null {
   const endDate = education ? dateValue(education.date_to) || dateValue(education.end_date) || dateValue(education.date_to_year) || dateValue(education.end_year) : ""
   const graduationYear = Number(endDate.match(/\d{4}/)?.[0] ?? 0)
   const linkedinUrl = normalizeProfessionalProfileUrl(first(record, ["profile_url", "professional_network_url", "linkedin_url", "url"]))
+  const qualification = discoveryQualification(programme, endDate, selectedProgrammes, options.now)
   return {
     providerResultId: employeeId || `coresignal-${index + 1}`,
     providerPersonId: employeeId,
@@ -104,6 +113,10 @@ function mapProfile(record: Row, index: number): DiscoveryProfile | null {
     matchConfidence: education ? 90 : 60,
     affiliationStatus: classifyIimlAffiliation(education),
     educationProgramme: programme,
+    normalizedProgramme: qualification.normalizedProgramme,
+    programmeStatus: qualification.programmeStatus,
+    alumniStatus: qualification.alumniStatus,
+    eligibleForAddition: qualification.eligibleForAddition,
     educationStartDate: education ? dateValue(education.date_from) || dateValue(education.start_date) || dateValue(education.date_from_year) || dateValue(education.start_year) : "",
     educationEndDate: endDate,
     institutionId: education ? first(education, ["institution_id", "school_id"]) : "",
@@ -126,6 +139,8 @@ function filterProfiles(profiles: DiscoveryProfile[], filters: DirectoryFilters)
       && (!filters.location || normalized(profile.location).includes(normalized(filters.location)))
       && (!filters.batch || profile.graduationYear === Number(filters.batch))
       && (filters.seniority === "All levels" || profile.seniority === filters.seniority.replace(/\+$/, ""))
+      && (filters.alumniStatus !== "Past alumni only" || profile.alumniStatus === "Past alumnus")
+      && (!(filters.discoveryProgrammes ?? []).length || (filters.discoveryProgrammes ?? []).includes(profile.normalizedProgramme))
   })
 }
 
@@ -160,11 +175,13 @@ export function successfulCoresignalOperationCredits(searchSucceeded: boolean, s
 }
 
 async function searchCandidates(filters: DirectoryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult> {
+  const now = new Date()
+  const selectedProgrammes = filters.discoveryProgrammes ?? DEFAULT_DISCOVERY_PROGRAMMES
   if (providerMode("coresignal") === "mock") {
-    const profiles = filterProfiles(mockRows(filters, internal).map(mapProfile).filter(Boolean) as DiscoveryProfile[], filters).slice(0, limit)
+    const profiles = filterProfiles(mockRows(filters, internal).map((record, index) => mapProfile(record, index, { now, selectedProgrammes })).filter(Boolean) as DiscoveryProfile[], filters).slice(0, limit)
     return { profiles, totalAvailable: profiles.length, responseSummary: `${profiles.length} demonstration Coresignal profiles returned for qualification and review.`, usage: mockProviderUsage(profiles.length) }
   }
-  const previewRows = responseRows(await searchCoresignalIiml())
+  const previewRows = responseRows(await searchCoresignalIiml({ filters, now }))
   const candidateIds = previewRows.map(item => first(item, ["id", "employee_id", "employee_base_id"])).filter(Boolean)
   const collected: Row[] = []
   for (const employeeId of candidateIds.slice(0, Math.min(limit, coresignalLiveSearchMaximum()))) {
@@ -174,14 +191,14 @@ async function searchCandidates(filters: DirectoryFilters, internal: InternalPro
       throw error
     }
   }
-  const all = filterProfiles(collected.map(mapProfile).filter(Boolean) as DiscoveryProfile[], filters)
+  const all = filterProfiles(collected.map((record, index) => mapProfile(record, index, { now, selectedProgrammes })).filter(Boolean) as DiscoveryProfile[], filters)
   const profiles = all.slice(0, Math.min(limit, coresignalLiveSearchMaximum()))
   return { profiles, totalAvailable: candidateIds.length, responseSummary: profiles.length ? `${profiles.length} Coresignal affiliation candidates returned for qualification and review.` : "No additional external affiliation candidates were found.", usage: unknownProviderUsage(successfulCoresignalOperationCredits(true, collected.length)) }
 }
 
 async function refreshProfile(person: InternalProfessionalPerson): Promise<ProfessionalRefreshResult> {
   if (providerMode("coresignal") === "mock") {
-    const profile = mapProfile(mockRows({ name: "", company: "All companies", role: "", function: "All functions", seniority: "All levels", location: "", programme: "All programmes", batch: "", previousCompany: "", minRelevance: 0, minConfidence: 0, contactStatus: "All contact states", outreachStatus: "All outreach states", relationship: "All relationships" }, [person])[0], 0)
+    const profile = mapProfile(mockRows({ name: "", company: "All companies", role: "", function: "All functions", seniority: "All levels", location: "", programme: "All programmes", discoveryProgrammes: [...DEFAULT_DISCOVERY_PROGRAMMES], alumniStatus: "Past alumni only", batch: "", previousCompany: "", minRelevance: 0, minConfidence: 0, contactStatus: "All contact states", outreachStatus: "All outreach states", relationship: "All relationships" }, [person])[0], 0)
     return profile ? { status: "success", changes: changesFrom(profile), responseSummary: "Demonstration Coresignal profile collected for review.", usage: mockProviderUsage(1) } : { status: "no_match", changes: {}, responseSummary: "No matching professional profile found.", usage: mockProviderUsage(1) }
   }
   if (!person.coresignalEmployeeId) return { status: "no_match", changes: {}, responseSummary: "No stable Coresignal employee ID is stored for this alumnus.", usage: unknownProviderUsage(0) }

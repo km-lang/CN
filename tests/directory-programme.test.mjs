@@ -69,6 +69,17 @@ test("Directory copy separates internal filtering from explicit external discove
   assert.match(page, /Hide advanced filters/)
 })
 
+test("external discovery has independent multi-programme and past-alumni controls", () => {
+  const defaults = search.defaultDirectoryFilters()
+  assert.deepEqual(defaults.discoveryProgrammes, ["PGP", "ABM", "SM"])
+  assert.equal(defaults.alumniStatus, "Past alumni only")
+  assert.match(page, /External discovery alumni status/)
+  assert.match(page, /programme-multiselect/)
+  assert.match(page, /activeProgrammeChoices\.map/)
+  assert.match(page, /All graduation statuses \(review only\)/)
+  assert.match(page, /Select at least one programme for external discovery/)
+})
+
 test("programme maintenance is additive, Admin-only, and code-stable", () => {
   assert.match(migration, /CREATE TABLE `programme_options`/)
   assert.match(migration, /\('PGP', 'PGP'/)

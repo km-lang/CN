@@ -1,4 +1,5 @@
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
+import { DEFAULT_DISCOVERY_PROGRAMMES, type AlumniStatus, type AlumniStatusFilter, type ProgrammeStatus } from "@/lib/discovery-qualification";
 
 export const FIXED_ALUMNI_SCHOOL = "Indian Institute of Management Lucknow";
 
@@ -10,6 +11,8 @@ export type DirectoryFilters = {
   seniority: string;
   location: string;
   programme: string;
+  discoveryProgrammes: string[];
+  alumniStatus: AlumniStatusFilter;
   batch: string;
   previousCompany: string;
   minRelevance: number;
@@ -51,6 +54,10 @@ export type DiscoveryProfile = {
   matchConfidence: number;
   affiliationStatus: "Confirmed degree alumnus" | "Potential alumnus — review required" | "Short-term / exchange affiliation";
   educationProgramme: string;
+  normalizedProgramme: string;
+  programmeStatus: ProgrammeStatus;
+  alumniStatus: AlumniStatus;
+  eligibleForAddition: boolean;
   educationStartDate: string;
   educationEndDate: string;
   institutionId: string;
@@ -89,11 +96,21 @@ export function normalizeFunction(raw: string, title = "") {
 }
 
 export function normalizeSeniority(raw: string, title = "") {
-  const value = normalized(`${raw} ${title}`);
+  const titleValue = normalized(title);
+  if (/chief|\bcxo\b|c suite|country head|managing partner|managing director/.test(titleValue)) return "CXO";
+  if (/executive vice president|senior vice president|\bevp\b|\bsvp\b/.test(titleValue)) return "EVP/SVP";
+  if (/assistant vice president|vice president|\bavp\b|\bvp\b|partner/.test(titleValue)) return "VP";
+  if (/\bhead of\b|\bdirector\b/.test(titleValue)) return "Director";
+  if (/general manager|\bgm\b/.test(titleValue)) return "GM";
+  if (/senior manager|\bsenior\b/.test(titleValue)) return "Senior Manager";
+  if (/\bmanager\b/.test(titleValue)) return "Manager";
+  if (/associate|consultant/.test(titleValue)) return "Associate/Consultant";
+  if (/analyst|junior|executive/.test(titleValue)) return "Analyst/Junior";
+  const value = normalized(raw);
   if (/chief|\bcxo\b|c suite|country head|managing partner|managing director/.test(value)) return "CXO";
   if (/executive vice president|senior vice president|\bevp\b|\bsvp\b/.test(value)) return "EVP/SVP";
-  if (/vice president|\bvp\b|partner/.test(value)) return "VP";
-  if (/director/.test(value)) return "Director";
+  if (/assistant vice president|vice president|\bavp\b|\bvp\b|partner/.test(value)) return "VP";
+  if (/\bhead of\b|director/.test(value)) return "Director";
   if (/general manager|\bgm\b/.test(value)) return "GM";
   if (/senior manager/.test(value)) return "Senior Manager";
   if (/manager/.test(value)) return "Manager";
@@ -205,6 +222,8 @@ export function buildPdlQuery(filters: DirectoryFilters, canonicalSchoolId = "")
 
 export function criteriaSummary(filters: DirectoryFilters) {
   const parts = [`Education: ${FIXED_ALUMNI_SCHOOL}`];
+  parts.push(`Alumni status: ${filters.alumniStatus}`);
+  if (filters.discoveryProgrammes.length) parts.push(`Programmes: ${filters.discoveryProgrammes.join(", ")}`);
   if (filters.company !== "All companies") parts.push(`Company: ${filters.company}`);
   if (filters.role) parts.push(`Role: ${filters.role}`);
   if (filters.function !== "All functions") parts.push(`Function: ${filters.function}`);
@@ -258,6 +277,10 @@ export function toDiscoveryProfile(record: Record<string, unknown>, index: numbe
     matchConfidence: Math.min(95, 65 + completeness * 5),
     affiliationStatus: "Potential alumnus — review required",
     educationProgramme: "",
+    normalizedProgramme: "",
+    programmeStatus: "Programme requires review",
+    alumniStatus: "Graduation status unknown — review required",
+    eligibleForAddition: false,
     educationStartDate: "",
     educationEndDate: "",
     institutionId: clean(school?.id),
@@ -280,6 +303,8 @@ export function defaultDirectoryFilters(): DirectoryFilters {
     seniority: "All levels",
     location: "",
     programme: "All programmes",
+    discoveryProgrammes: [...DEFAULT_DISCOVERY_PROGRAMMES],
+    alumniStatus: "Past alumni only",
     batch: "",
     previousCompany: "",
     minRelevance: 0,
