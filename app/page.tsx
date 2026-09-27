@@ -30,7 +30,7 @@ import {
 import { apiPath, appConfig } from "@/lib/app-config"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
-import { maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
+import { discoveryApplicationUnits, maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
 import { alumnusProfileUrl, canonicalWorkspaceUrl, controlledEmailReturnUrl, controlledEmailUrl, engagementEventUrl, parseControlledEmailIntent, parseEngagementEventId, profileRouteState, workspaceTabUrl } from "@/lib/controlled-email-navigation"
 import { initializeControlledEmail } from "@/lib/controlled-email-initialization"
@@ -772,9 +772,11 @@ export default function Home() {
     && ["Standard engagement allowed", "Birthday engagement allowed"].includes(event.preference)
     && !isCompletedEngagement(event.status)
   const reviewableBirthdaysNextWeek = birthdaysNextWeek.filter(birthdayReady)
-  const discoveryMaximum = maximumDiscoveryCount(providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100)
+  const discoverySearchOperationReserve = providerModes.coresignal === "live" ? 1 : 0
+  const discoveryMaximum = maximumDiscoveryCount(providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100, discoverySearchOperationReserve)
   const discoveryCountPreset = ["1", "5", "10", "20"].includes(discoveryLimit) ? discoveryLimit : "custom"
-  const discoveryCountValidation = validateDiscoveryCount(Number(discoveryLimit), providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100)
+  const discoveryCountValidation = validateDiscoveryCount(Number(discoveryLimit), providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100, discoverySearchOperationReserve)
+  const discoveryMaximumApplicationUsage = discoveryApplicationUnits(Number(discoveryLimit), discoverySearchOperationReserve)
   const visibleEngagements = engagements.filter(event => engagementMatches(event, {
     queue: engagementFilter, period: engagementPeriod, company: engagementCompany,
     assignee: engagementAssignee, actionState: engagementActionState,
@@ -1436,7 +1438,7 @@ export default function Home() {
 
   function discoverMoreAlumni(searchFilters: DirectoryFilters = filters) {
     const requested = Number(discoveryLimit)
-    const validation = validateDiscoveryCount(requested, providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100)
+    const validation = validateDiscoveryCount(requested, providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100, discoverySearchOperationReserve)
     if (!validation.ok) {
       setDiscoveryState("blocked")
       setDiscoveryMessage(validation.message)
@@ -2201,7 +2203,7 @@ export default function Home() {
       </Dialog>
 
       <Dialog open={Boolean(pendingDiscoveryFilters)} onOpenChange={open => { if (!open) setPendingDiscoveryFilters(null) }}>
-        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live Coresignal employee search?</DialogTitle><DialogDescription>Confirm this controlled search before it reaches Coresignal. The fixed query is IIM Lucknow education plus active experience; optional filters are applied to returned candidates.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>Coresignal — LIVE</strong></div><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div><div><span>Company filter</span><strong>{pendingDiscoveryFilters?.company ?? "Any company"}</strong></div><div><span>Role</span><strong>{pendingDiscoveryFilters?.role || "Any role"}</strong></div><div><span>Function</span><strong>{pendingDiscoveryFilters?.function ?? "Any function"}</strong></div><div><span>Seniority</span><strong>{pendingDiscoveryFilters?.seniority ?? "Any level"}</strong></div><div><span>Location</span><strong>{pendingDiscoveryFilters?.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{pendingDiscoveryFilters?.batch || "Any year"}</strong></div><div><span>Profiles requested</span><strong>{discoveryLimit}</strong></div><div><span>Application units remaining</span><strong>{providerUsage.coresignal.remaining}</strong></div><div><span>Maximum application usage</span><strong>{discoveryLimit}</strong></div></div><div className="credit-notice"><Activity /><span>Application usage and provider-account usage are recorded separately. Unknown provider usage is never presented as zero. Results remain review-only and are never added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || !validateDiscoveryCount(Number(discoveryLimit), providerUsage.coresignal.remaining, coresignalLiveMaximum).ok} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live Coresignal employee search?</DialogTitle><DialogDescription>Confirm this controlled search before it reaches Coresignal. The fixed query is IIM Lucknow education plus active experience; optional filters are applied to returned candidates.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>Coresignal — LIVE</strong></div><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div><div><span>Company filter</span><strong>{pendingDiscoveryFilters?.company ?? "Any company"}</strong></div><div><span>Role</span><strong>{pendingDiscoveryFilters?.role || "Any role"}</strong></div><div><span>Function</span><strong>{pendingDiscoveryFilters?.function ?? "Any function"}</strong></div><div><span>Seniority</span><strong>{pendingDiscoveryFilters?.seniority ?? "Any level"}</strong></div><div><span>Location</span><strong>{pendingDiscoveryFilters?.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{pendingDiscoveryFilters?.batch || "Any year"}</strong></div><div><span>Profiles requested</span><strong>{discoveryLimit}</strong></div><div><span>Application units remaining</span><strong>{providerUsage.coresignal.remaining}</strong></div><div><span>Maximum application usage</span><strong>{discoveryMaximumApplicationUsage}</strong></div></div><div className="credit-notice"><Activity /><span>Maximum usage includes one Search operation plus up to one Collect operation per requested profile. Application usage and provider-account usage are recorded separately. Unknown provider usage is never presented as zero. Results remain review-only and are never added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || !discoveryCountValidation.ok} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>

@@ -40,7 +40,7 @@ for (const value of [0, -1, 1.5, "7", Number.NaN]) {
 
 test("final sprint Coresignal server independently validates bypass attempts", () => {
   assert.match(discoveryRoute, /const searchOperationReserve = coresignalProvider\.mode\(\) === "live" \? 1 : 0/)
-  assert.match(discoveryRoute, /validateDiscoveryCount\(payload\.limit, remaining - searchOperationReserve, maximum\)/)
+  assert.match(discoveryRoute, /validateDiscoveryCount\(payload\.limit, remaining, maximum, searchOperationReserve\)/)
   assert.match(discoveryRoute, /status: 400/)
 })
 
@@ -60,6 +60,8 @@ test("final sprint persists requested separately from returned and provider usag
 
 test("final sprint Coresignal confirmation lists active filters and separated usage", () => {
   for (const label of ["Education", "Company filter", "Role", "Function", "Seniority", "Location", "Graduation year", "Profiles requested", "Application units remaining", "Maximum application usage"]) assert.match(page, new RegExp(label))
+  assert.match(page, /Maximum usage includes one Search operation plus up to one Collect operation per requested profile/)
+  assert.match(page, /discoveryMaximumApplicationUsage/)
   assert.match(page, /Application usage and provider-account usage are recorded separately/)
 })
 

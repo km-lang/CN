@@ -36,7 +36,9 @@ export function validEducationRecords(profile: Row) {
 
 function institutionName(education: Row) {
   const institution = row(education.institution ?? education.school)
-  return first(education, ["institution_name", "school_name"]) || first(institution, ["name", "title"])
+  const scalarInstitution = typeof education.institution === "string" ? clean(education.institution) : ""
+  const scalarSchool = typeof education.school === "string" ? clean(education.school) : ""
+  return scalarInstitution || scalarSchool || first(education, ["institution_name", "school_name"]) || first(institution, ["name", "title"])
 }
 
 function institutionUrl(education: Row) {
@@ -68,7 +70,8 @@ function dateValue(value: unknown) {
   const date = row(value)
   const year = clean(date.year)
   const month = clean(date.month)
-  return [year, month.padStart(2, "0")].filter(Boolean).join("-")
+  if (!year) return ""
+  return month ? `${year}-${month.padStart(2, "0")}` : year
 }
 
 function mapProfile(record: Row, index: number): DiscoveryProfile | null {
@@ -82,9 +85,9 @@ function mapProfile(record: Row, index: number): DiscoveryProfile | null {
   const rawTitle = first(employment, ["title", "position", "role"]) || first(record, ["active_experience_title", "current_title", "headline"])
   const currentCompany = first(employment, ["company_name", "organization_name"]) || first(company, ["name"]) || first(record, ["active_experience_company_name", "current_company_name"])
   const programme = education ? first(education, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"]) : ""
-  const endDate = education ? dateValue(education.date_to ?? education.end_date) : ""
+  const endDate = education ? dateValue(education.date_to) || dateValue(education.end_date) || dateValue(education.date_to_year) || dateValue(education.end_year) : ""
   const graduationYear = Number(endDate.match(/\d{4}/)?.[0] ?? 0)
-  const linkedinUrl = normalizeProfessionalProfileUrl(first(record, ["professional_network_url", "linkedin_url", "url"]))
+  const linkedinUrl = normalizeProfessionalProfileUrl(first(record, ["profile_url", "professional_network_url", "linkedin_url", "url"]))
   return {
     providerResultId: employeeId || `coresignal-${index + 1}`,
     providerPersonId: employeeId,
@@ -101,7 +104,7 @@ function mapProfile(record: Row, index: number): DiscoveryProfile | null {
     matchConfidence: education ? 90 : 60,
     affiliationStatus: classifyIimlAffiliation(education),
     educationProgramme: programme,
-    educationStartDate: education ? dateValue(education.date_from ?? education.start_date) : "",
+    educationStartDate: education ? dateValue(education.date_from) || dateValue(education.start_date) || dateValue(education.date_from_year) || dateValue(education.start_year) : "",
     educationEndDate: endDate,
     institutionId: education ? first(education, ["institution_id", "school_id"]) : "",
     institutionUrl: education ? institutionUrl(education) : CORESIGNAL_IIML_INSTITUTION_URL,

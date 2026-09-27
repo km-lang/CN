@@ -110,7 +110,7 @@ export async function POST(request: Request) {
       const searchOperationReserve = coresignalProvider.mode() === "live" ? 1 : 0
       if (remaining <= searchOperationReserve) return Response.json({ error: "External search was not run because the Coresignal application limit cannot cover a Search and at least one Collect operation.", blocked: true, reason: "application_limit", filters, effectiveLimit: 0 }, { status: 429 })
       const maximum = coresignalProvider.mode() === "live" ? coresignalLiveSearchMaximum() : 100
-      const validation = validateDiscoveryCount(payload.limit, remaining - searchOperationReserve, maximum)
+      const validation = validateDiscoveryCount(payload.limit, remaining, maximum, searchOperationReserve)
       if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, filters, effectiveLimit: 0, maximumAllowed: validation.maximumAllowed }, { status: 400 })
       const people = await db.select().from(alumni).orderBy(alumni.name)
       let response

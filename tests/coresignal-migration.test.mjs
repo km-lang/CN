@@ -102,6 +102,27 @@ test("successful Search and Collect operations each cost one direct API operatio
   assert.equal(adapter.successfulCoresignalOperationCredits(false, 3), 3)
 })
 
+test("live discovery preflight reserves one Search unit plus one Collect unit per requested profile", () => {
+  assert.equal(limits.discoveryApplicationUnits(5, 1), 6)
+  assert.equal(limits.maximumDiscoveryCount(19, 20, 1), 18)
+  assert.equal(limits.validateDiscoveryCount(18, 19, 20, 1).ok, true)
+  assert.deepEqual(limits.validateDiscoveryCount(19, 19, 20, 1).reason, "remaining_allowance")
+})
+
+test("documented Base Employee fields retain profile URL and scalar IIML education evidence", () => {
+  const mapped = adapter.mapCoresignalProfile(employee({
+    professional_network_url: undefined,
+    profile_url: "https://www.linkedin.com/in/teginder-kaleka",
+    education: [{ institution: "Indian Institute of Management Lucknow", program: "PGDM", date_from: null, date_from_year: 2007, date_to: null, date_to_year: 2009, deleted: 0 }],
+  }), 0)
+  assert.equal(mapped.linkedinUrl, "https://www.linkedin.com/in/teginder-kaleka")
+  assert.equal(mapped.educationProgramme, "PGDM")
+  assert.equal(mapped.educationStartDate, "2007")
+  assert.equal(mapped.educationEndDate, "2009")
+  assert.equal(mapped.graduationYear, 2009)
+  assert.equal(mapped.affiliationStatus, "Confirmed degree alumnus")
+})
+
 test("failed non-200 requests are not recorded as successful operation credits", async () => {
   await assert.rejects(
     () => client.collectCoresignalEmployee("421745303", { fetcher: async () => new Response("unavailable", { status: 503 }) }),
