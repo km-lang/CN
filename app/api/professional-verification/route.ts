@@ -13,11 +13,13 @@ const historyFields = [
   "profile_match",
   "current_company_verification",
   "designation_verification",
+  "location_verification",
   "company",
   "title",
   "rawTitle",
   "function",
   "seniority",
+  "location",
   "linkedinUrl",
 ]
 
@@ -25,6 +27,7 @@ const databaseFields = {
   profileMatch: { column: "profile_match", property: "profileMatch" },
   currentCompany: { column: "current_company_verification", property: "currentCompanyVerification" },
   designation: { column: "designation_verification", property: "designationVerification" },
+  location: { column: "location_verification", property: "locationVerification" },
 } as const
 
 export async function GET(request: Request) {
@@ -44,6 +47,10 @@ export async function GET(request: Request) {
     const [refreshReview] = coresignalHistory[0]
       ? await db.select().from(providerRefreshReviews).where(eq(providerRefreshReviews.providerResponseId, coresignalHistory[0].id)).orderBy(desc(providerRefreshReviews.id)).limit(1)
       : []
+    const proposedChanges = refreshReview
+      ? JSON.parse(refreshReview.proposedChangesJson) as Array<{ field?: string; label?: string; oldValue?: string; newValue?: string }>
+      : []
+    const locationEvidence = proposedChanges.find(change => change.field === "location") ?? null
 
     return Response.json({
       evidence: {
@@ -51,6 +58,7 @@ export async function GET(request: Request) {
           name: person.name,
           company: person.company,
           designation: person.title,
+          location: person.location,
           professionalProfileUrl: person.linkedinUrl,
           programme: person.programme,
           graduationYear: person.graduationYear || person.batch,
@@ -58,12 +66,14 @@ export async function GET(request: Request) {
             profileMatch: person.profileMatch,
             currentCompany: person.currentCompanyVerification,
             designation: person.designationVerification,
+            location: person.locationVerification,
           },
         },
         coresignal: {
           identityAvailable: Boolean(person.coresignalEmployeeId),
           lastRefresh: person.lastProfessionalDataRefresh,
           freshness: person.providerFreshnessAt,
+          locationEvidence,
           operation: coresignalHistory[0] ? {
             status: coresignalHistory[0].status,
             responseSummary: coresignalHistory[0].responseSummary,
@@ -71,7 +81,7 @@ export async function GET(request: Request) {
           } : null,
           review: refreshReview ? {
             status: refreshReview.status,
-            proposedChanges: JSON.parse(refreshReview.proposedChangesJson) as unknown,
+            proposedChanges,
             reviewedBy: refreshReview.reviewedBy,
             reviewedAt: refreshReview.reviewedAt,
           } : null,
@@ -162,6 +172,7 @@ export async function POST(request: Request) {
         profileMatch: updates.profileMatch ?? person.profileMatch,
         currentCompany: updates.currentCompanyVerification ?? person.currentCompanyVerification,
         designation: updates.designationVerification ?? person.designationVerification,
+        location: updates.locationVerification ?? person.locationVerification,
       },
       reviewedBy: context.displayName,
       reviewedAt: now,

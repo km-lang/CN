@@ -80,6 +80,7 @@ type ProfessionalVerificationEvidence = {
     name: string
     company: string
     designation: string
+    location: string
     professionalProfileUrl: string
     programme: string
     graduationYear: number
@@ -89,6 +90,7 @@ type ProfessionalVerificationEvidence = {
     identityAvailable: boolean
     lastRefresh: string
     freshness: string
+    locationEvidence: { field?: string; label?: string; oldValue?: string; newValue?: string } | null
     operation: { status: string; responseSummary: string; createdAt: string } | null
     review: { status: string; proposedChanges: Array<{ field?: string; label?: string; oldValue?: string; newValue?: string }>; reviewedBy: string; reviewedAt: string } | null
   }
@@ -1021,6 +1023,7 @@ export default function Home() {
       profileMatch: person.verification.profileMatch,
       currentCompany: person.verification.currentCompany,
       designation: person.verification.designation,
+      location: person.verification.location,
     })
     setVerificationEvidence(null)
     setVerificationEvidenceSource("")
@@ -1047,6 +1050,7 @@ export default function Home() {
       profileMatch: verificationTarget.verification.profileMatch,
       currentCompany: verificationTarget.verification.currentCompany,
       designation: verificationTarget.verification.designation,
+      location: verificationTarget.verification.location,
     }
     return (Object.keys(current) as ProfessionalVerificationField[])
       .filter(field => current[field] !== verificationDraft[field])
@@ -1086,7 +1090,7 @@ export default function Home() {
           confirmed: true,
         }),
       })
-      const data = await response.json() as { verification?: Pick<Alumni["verification"], "profileMatch" | "currentCompany" | "designation">; reviewedBy?: string; reviewedAt?: string; error?: string }
+      const data = await response.json() as { verification?: Pick<Alumni["verification"], "profileMatch" | "currentCompany" | "designation" | "location">; reviewedBy?: string; reviewedAt?: string; error?: string }
       if (!response.ok || !data.verification) throw new Error(data.error || "Unable to save professional verification.")
       const updated = {
         ...verificationTarget,
@@ -2328,10 +2332,10 @@ export default function Home() {
           {!verificationLoading && verificationTarget && verificationEvidence && verificationDraft && verificationStage === "review" && <div className="verification-review-body">
             <section className="verification-evidence-card">
               <h3>Stored professional record</h3>
-              <dl><div><dt>Name</dt><dd>{verificationEvidence.stored.name}</dd></div><div><dt>Current company</dt><dd>{verificationEvidence.stored.company}</dd></div><div><dt>Designation</dt><dd>{verificationEvidence.stored.designation}</dd></div><div><dt>Programme / graduation</dt><dd>{verificationEvidence.stored.programme} · {verificationEvidence.stored.graduationYear || "Year not recorded"}</dd></div><div><dt>Professional profile</dt><dd>{verificationEvidence.stored.professionalProfileUrl ? <a href={verificationEvidence.stored.professionalProfileUrl} target="_blank" rel="noopener noreferrer">Open stored profile <ArrowUpRight /></a> : "Not stored"}</dd></div></dl>
+              <dl><div><dt>Name</dt><dd>{verificationEvidence.stored.name}</dd></div><div><dt>Current company</dt><dd>{verificationEvidence.stored.company}</dd></div><div><dt>Designation</dt><dd>{verificationEvidence.stored.designation}</dd></div><div><dt>Location</dt><dd>{verificationEvidence.stored.location || "Not recorded"}</dd></div><div><dt>Programme / graduation</dt><dd>{verificationEvidence.stored.programme} · {verificationEvidence.stored.graduationYear || "Year not recorded"}</dd></div><div><dt>Professional profile</dt><dd>{verificationEvidence.stored.professionalProfileUrl ? <a href={verificationEvidence.stored.professionalProfileUrl} target="_blank" rel="noopener noreferrer">Open stored profile <ArrowUpRight /></a> : "Not stored"}</dd></div></dl>
             </section>
             <div className="verification-provider-grid">
-              <section className="verification-evidence-card"><h3>Coresignal evidence</h3><p>{verificationEvidence.coresignal.identityAvailable ? "Stable Coresignal employee identity stored." : "No stable Coresignal employee identity stored."}</p><p>Last refresh: {verificationEvidence.coresignal.lastRefresh ? new Date(verificationEvidence.coresignal.lastRefresh).toLocaleString() : "Not refreshed"}</p><p>Provider freshness: {verificationEvidence.coresignal.freshness || "Not reported"}</p>{verificationEvidence.coresignal.operation && <p>{verificationEvidence.coresignal.operation.status}: {verificationEvidence.coresignal.operation.responseSummary}</p>}{verificationEvidence.coresignal.review && <><p>Review: {verificationEvidence.coresignal.review.status}{verificationEvidence.coresignal.review.proposedChanges.length ? ` · ${verificationEvidence.coresignal.review.proposedChanges.length} proposed change(s)` : ""}</p>{verificationEvidence.coresignal.review.proposedChanges.length > 0 && <div className="verification-proposed-changes">{verificationEvidence.coresignal.review.proposedChanges.slice(0, 8).map((change, index) => <small key={`${change.field ?? "field"}-${index}`}><strong>{change.label || change.field || "Professional field"}</strong>{change.oldValue || "Empty"} → {change.newValue || "Empty"}</small>)}</div>}</>}</section>
+              <section className="verification-evidence-card"><h3>Coresignal evidence</h3><p>{verificationEvidence.coresignal.identityAvailable ? "Stable Coresignal employee identity stored." : "No stable Coresignal employee identity stored."}</p><p>Last refresh: {verificationEvidence.coresignal.lastRefresh ? new Date(verificationEvidence.coresignal.lastRefresh).toLocaleString() : "Not refreshed"}</p><p>Provider freshness: {verificationEvidence.coresignal.freshness || "Not reported"}</p><p>Latest location evidence: {verificationEvidence.coresignal.locationEvidence?.newValue || "No distinct location change retained in the latest sanitized review."}</p>{verificationEvidence.coresignal.operation && <p>{verificationEvidence.coresignal.operation.status}: {verificationEvidence.coresignal.operation.responseSummary}</p>}{verificationEvidence.coresignal.review && <><p>Review: {verificationEvidence.coresignal.review.status}{verificationEvidence.coresignal.review.proposedChanges.length ? ` · ${verificationEvidence.coresignal.review.proposedChanges.length} proposed change(s)` : ""}</p>{verificationEvidence.coresignal.review.proposedChanges.length > 0 && <div className="verification-proposed-changes">{verificationEvidence.coresignal.review.proposedChanges.slice(0, 8).map((change, index) => <small key={`${change.field ?? "field"}-${index}`}><strong>{change.label || change.field || "Professional field"}</strong>{change.oldValue || "Empty"} → {change.newValue || "Empty"}</small>)}</div>}</>}</section>
               <section className="verification-evidence-card"><h3>Lusha identity evidence</h3><p>{verificationEvidence.lusha.stableIdentityAvailable ? "Stable Lusha contact identity stored." : "No stable Lusha contact identity stored."}</p>{verificationEvidence.lusha.operation && <p>{verificationEvidence.lusha.operation.operation} · {verificationEvidence.lusha.operation.status}: {verificationEvidence.lusha.operation.responseSummary}</p>}{verificationEvidence.lusha.conflictEvidence && <p className="verification-conflict">{verificationEvidence.lusha.conflictEvidence}</p>}</section>
             </div>
             <section className="verification-evidence-card"><h3>Professional-data review state</h3><p><strong>{verificationEvidence.professionalDataStatus}</strong>{verificationEvidence.professionalDataNote ? ` · ${verificationEvidence.professionalDataNote}` : ""}</p><small>This aggregate state remains separate and will not be changed by field verification.</small></section>

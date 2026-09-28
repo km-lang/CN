@@ -8,22 +8,24 @@ export const PROFESSIONAL_VERIFICATION_SOURCES = [
 ] as const
 
 export type ProfessionalVerificationSource = typeof PROFESSIONAL_VERIFICATION_SOURCES[number]
-export type ProfessionalVerificationField = "profileMatch" | "currentCompany" | "designation"
+export type ProfessionalVerificationField = "profileMatch" | "currentCompany" | "designation" | "location"
 
 export const PROFESSIONAL_VERIFICATION_OPTIONS = Object.freeze({
   profileMatch: ["Confirmed", "Mismatch", "Unverified"],
   currentCompany: ["Verified", "Possibly outdated", "Unverified"],
   designation: ["Verified", "Likely", "Possibly outdated", "Unverified"],
+  location: ["Verified", "Possibly outdated", "Unverified"],
 } satisfies Record<ProfessionalVerificationField, readonly string[]>)
 
 export const PROFESSIONAL_VERIFICATION_LABELS: Record<ProfessionalVerificationField, string> = {
   profileMatch: "Profile match",
   currentCompany: "Current company",
   designation: "Designation",
+  location: "Location",
 }
 
 const requestKeys = new Set(["action", "alumnusId", "fields", "evidenceSource", "note", "confirmed"])
-const fieldKeys = new Set<ProfessionalVerificationField>(["profileMatch", "currentCompany", "designation"])
+const fieldKeys = new Set<ProfessionalVerificationField>(["profileMatch", "currentCompany", "designation", "location"])
 
 export type ProfessionalVerificationRequest = {
   action: "verify_professional_fields"
@@ -36,8 +38,8 @@ export type ProfessionalVerificationRequest = {
 
 export function isPositiveProfessionalVerification(field: ProfessionalVerificationField, value: string) {
   if (field === "profileMatch") return value === "Confirmed"
-  if (field === "currentCompany") return value === "Verified"
-  return value === "Verified" || value === "Likely"
+  if (field === "designation") return value === "Verified" || value === "Likely"
+  return value === "Verified"
 }
 
 export function validateProfessionalVerificationRequest(input: unknown): ProfessionalVerificationRequest {

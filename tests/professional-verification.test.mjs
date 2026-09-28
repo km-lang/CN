@@ -37,11 +37,13 @@ test("all supported independent verification states validate", () => {
   for (const state of ["Confirmed", "Mismatch", "Unverified"]) assert.equal(verification.validateProfessionalVerificationRequest(request({ profileMatch: state })).fields.profileMatch, state)
   for (const state of ["Verified", "Possibly outdated", "Unverified"]) assert.equal(verification.validateProfessionalVerificationRequest(request({ currentCompany: state })).fields.currentCompany, state)
   for (const state of ["Verified", "Likely", "Possibly outdated", "Unverified"]) assert.equal(verification.validateProfessionalVerificationRequest(request({ designation: state })).fields.designation, state)
+  for (const state of ["Verified", "Possibly outdated", "Unverified"]) assert.equal(verification.validateProfessionalVerificationRequest(request({ location: state })).fields.location, state)
 })
 
 test("positive verification requires a controlled evidence source", () => {
   assert.throws(() => verification.validateProfessionalVerificationRequest(request({ profileMatch: "Confirmed" }, "")), /evidence source is required/i)
   assert.throws(() => verification.validateProfessionalVerificationRequest(request({ currentCompany: "Verified" }, "Free text source")), /supported verification evidence source/i)
+  assert.throws(() => verification.validateProfessionalVerificationRequest(request({ location: "Verified" }, "")), /evidence source is required/i)
   assert.equal(verification.validateProfessionalVerificationRequest(request({ designation: "Likely" }, "Institutional record")).evidenceSource, "Institutional record")
 })
 
@@ -52,6 +54,7 @@ test("other documented evidence requires a note", () => {
 
 test("invalid states, unsupported fields, and forged reviewer identity are rejected", () => {
   assert.throws(() => verification.validateProfessionalVerificationRequest(request({ profileMatch: "Verified" })), /unsupported profile match state/i)
+  assert.throws(() => verification.validateProfessionalVerificationRequest(request({ location: "Likely" })), /unsupported location state/i)
   assert.throws(() => verification.validateProfessionalVerificationRequest(request({ company: "Verified" })), /unsupported verification field/i)
   assert.throws(() => verification.validateProfessionalVerificationRequest({ ...request({ profileMatch: "Confirmed" }), reviewedBy: "Forged reviewer" }), /unsupported verification property/i)
 })
@@ -71,11 +74,13 @@ test("server writes only verification state plus reviewer metadata and audits ea
   assert.match(route, /profileMatch: \{ column: "profile_match", property: "profileMatch" \}/)
   assert.match(route, /currentCompany: \{ column: "current_company_verification", property: "currentCompanyVerification" \}/)
   assert.match(route, /designation: \{ column: "designation_verification", property: "designationVerification" \}/)
+  assert.match(route, /location: \{ column: "location_verification", property: "locationVerification" \}/)
   assert.match(route, /source: "Manual verification"/)
   assert.match(route, /initiatedBy: context\.displayName/)
   assert.match(route, /action: "professional_fields_verified"/)
   assert.match(route, /await db\.batch\(\[updatePerson, \.\.\.historyWrites, audit\]\)/)
-  assert.doesNotMatch(route, /updates\.(company|title|email|phone|professionalDataStatus)\s*=/)
+  assert.doesNotMatch(route, /updates\.(company|title|location|email|phone|professionalDataStatus)\s*=/)
+  assert.match(route, /person\[databaseFields\[field\]\.property\] !== value/)
 })
 
 test("verification workflow never calls a provider and leaves aggregate status independent", () => {
@@ -93,4 +98,22 @@ test("profile UI provides evidence review, independent controls, and explicit co
   assert.match(page, /Recent professional field history/)
   assert.match(page, /Coresignal evidence/)
   assert.match(page, /Lusha identity evidence/)
+  assert.match(page, /Latest location evidence/)
+  assert.match(page, /verificationEvidence\.stored\.location/)
+  assert.match(page, /location: person\.verification\.location/)
+  assert.match(page, /location: verificationTarget\.verification\.location/)
+})
+
+test("location verification preserves actual professional and contact data", () => {
+  assert.doesNotMatch(route, /updates\.(location|company|title|email|phone|professionalDataStatus)\s*=/)
+  assert.doesNotMatch(route, /providerResponseHistory\).*insert|fetch\(|refreshProfile|searchLusha|fetchLusha|revealLusha/)
+  assert.match(route, /field: databaseFields\[field\]\.column/)
+  assert.match(route, /source: "Manual verification"/)
+  assert.match(route, /action: "professional_fields_verified"/)
+})
+
+test("location does not alter the established contact-readiness badge calculation", () => {
+  const base = { profileMatch: "Confirmed", currentCompany: "Verified", designation: "Verified", email: "Unverified", phone: "Unverified" }
+  assert.equal(metrics.contactReadiness({ ...base, location: "Unverified" }), "Partially verified")
+  assert.equal(metrics.contactReadiness({ ...base, location: "Verified" }), "Partially verified")
 })
