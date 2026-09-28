@@ -46,6 +46,13 @@ import { contactEnrichmentPlan, eligibleContactChannels, type ContactChannel } f
 import { engagementMatches } from "@/lib/engagement-filters"
 import { mailPresentation, signalsPresentation } from "@/lib/runtime-readiness"
 import { alumniEducationLabel } from "@/lib/alumni-education"
+import {
+  PROFESSIONAL_VERIFICATION_LABELS,
+  PROFESSIONAL_VERIFICATION_OPTIONS,
+  PROFESSIONAL_VERIFICATION_SOURCES,
+  isPositiveProfessionalVerification,
+  type ProfessionalVerificationField,
+} from "@/lib/professional-verification"
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
@@ -54,6 +61,7 @@ const API_ROUTES = Object.freeze({
   discovery: apiPath("/api/discovery"),
   signals: apiPath("/api/signals"),
   outreachRoute: apiPath("/api/outreach-route"),
+  professionalVerification: apiPath("/api/professional-verification"),
 })
 
 const ADDED_DISCOVERY_STATUSES = new Set<string>([
@@ -64,6 +72,35 @@ const ADDED_DISCOVERY_STATUSES = new Set<string>([
 
 type OutreachStatus = "Not contacted" | "Contacted" | "Responded" | "Meeting set"
 type VerificationState = "Confirmed" | "Verified" | "Likely" | "Unverified" | "Possibly outdated" | "Mismatch"
+
+type ProfessionalVerificationDraft = Record<ProfessionalVerificationField, VerificationState>
+
+type ProfessionalVerificationEvidence = {
+  stored: {
+    name: string
+    company: string
+    designation: string
+    professionalProfileUrl: string
+    programme: string
+    graduationYear: number
+    verification: ProfessionalVerificationDraft
+  }
+  coresignal: {
+    identityAvailable: boolean
+    lastRefresh: string
+    freshness: string
+    operation: { status: string; responseSummary: string; createdAt: string } | null
+    review: { status: string; proposedChanges: Array<{ field?: string; label?: string; oldValue?: string; newValue?: string }>; reviewedBy: string; reviewedAt: string } | null
+  }
+  lusha: {
+    stableIdentityAvailable: boolean
+    conflictEvidence: string
+    operation: { operation: string; status: string; responseSummary: string; createdAt: string } | null
+  }
+  professionalDataStatus: string
+  professionalDataNote: string
+  recentChanges: Array<{ field: string; oldValue: string; newValue: string; source: string; action: string; reviewedBy: string; createdAt: string }>
+}
 
 type Alumni = {
   id: number
@@ -534,6 +571,15 @@ export default function Home() {
   const [lushaRevealConfirmOpen, setLushaRevealConfirmOpen] = useState(false)
   const [professionalNoteDrafts, setProfessionalNoteDrafts] = useState<Record<number, string>>({})
   const [privacyNoteDrafts, setPrivacyNoteDrafts] = useState<Record<number, string>>({})
+  const [verificationTarget, setVerificationTarget] = useState<Alumni | null>(null)
+  const [verificationEvidence, setVerificationEvidence] = useState<ProfessionalVerificationEvidence | null>(null)
+  const [verificationDraft, setVerificationDraft] = useState<ProfessionalVerificationDraft | null>(null)
+  const [verificationEvidenceSource, setVerificationEvidenceSource] = useState("")
+  const [verificationReviewNote, setVerificationReviewNote] = useState("")
+  const [verificationStage, setVerificationStage] = useState<"review" | "confirm">("review")
+  const [verificationLoading, setVerificationLoading] = useState(false)
+  const [verificationSaving, setVerificationSaving] = useState(false)
+  const [verificationMessage, setVerificationMessage] = useState("")
   const [outreachSearch, setOutreachSearch] = useState("")
   const [outreachCompany, setOutreachCompany] = useState("All companies")
   const [outreachStatus, setOutreachStatus] = useState("All alumni")
@@ -956,6 +1002,105 @@ export default function Home() {
       }
     } finally {
       finishSync()
+    }
+  }
+
+  function closeProfessionalVerification() {
+    setVerificationTarget(null)
+    setVerificationEvidence(null)
+    setVerificationDraft(null)
+    setVerificationEvidenceSource("")
+    setVerificationReviewNote("")
+    setVerificationStage("review")
+    setVerificationMessage("")
+  }
+
+  async function openProfessionalVerification(person: Alumni) {
+    setVerificationTarget(person)
+    setVerificationDraft({
+      profileMatch: person.verification.profileMatch,
+      currentCompany: person.verification.currentCompany,
+      designation: person.verification.designation,
+    })
+    setVerificationEvidence(null)
+    setVerificationEvidenceSource("")
+    setVerificationReviewNote("")
+    setVerificationStage("review")
+    setVerificationMessage("")
+    setVerificationLoading(true)
+    try {
+      const response = await fetch(`${API_ROUTES.professionalVerification}?alumnusId=${person.id}`, { cache: "no-store" })
+      const data = await response.json() as { evidence?: ProfessionalVerificationEvidence; error?: string }
+      if (!response.ok || !data.evidence) throw new Error(data.error || "Unable to load verification evidence.")
+      setVerificationEvidence(data.evidence)
+      setVerificationDraft(data.evidence.stored.verification)
+    } catch (error) {
+      setVerificationMessage(error instanceof Error ? error.message : "Unable to load verification evidence.")
+    } finally {
+      setVerificationLoading(false)
+    }
+  }
+
+  function professionalVerificationChanges() {
+    if (!verificationTarget || !verificationDraft) return []
+    const current: ProfessionalVerificationDraft = verificationEvidence?.stored.verification ?? {
+      profileMatch: verificationTarget.verification.profileMatch,
+      currentCompany: verificationTarget.verification.currentCompany,
+      designation: verificationTarget.verification.designation,
+    }
+    return (Object.keys(current) as ProfessionalVerificationField[])
+      .filter(field => current[field] !== verificationDraft[field])
+      .map(field => ({ field, oldValue: current[field], newValue: verificationDraft[field] }))
+  }
+
+  function reviewProfessionalVerification() {
+    const changes = professionalVerificationChanges()
+    if (!changes.length) return setVerificationMessage("Choose at least one changed verification state.")
+    if (changes.some(change => isPositiveProfessionalVerification(change.field, change.newValue)) && !verificationEvidenceSource) {
+      return setVerificationMessage("Choose an evidence source before positively verifying a field.")
+    }
+    if (verificationEvidenceSource === "Other documented evidence" && !verificationReviewNote.trim()) {
+      return setVerificationMessage("Add a review note for other documented evidence.")
+    }
+    setVerificationMessage("")
+    setVerificationStage("confirm")
+  }
+
+  async function saveProfessionalVerification() {
+    if (!verificationTarget || !verificationDraft) return
+    const changes = professionalVerificationChanges()
+    if (!changes.length) return setVerificationMessage("No verification states changed.")
+    setVerificationSaving(true)
+    setVerificationMessage("")
+    try {
+      const fields = Object.fromEntries(changes.map(change => [change.field, change.newValue]))
+      const response = await fetch(API_ROUTES.professionalVerification, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "verify_professional_fields",
+          alumnusId: verificationTarget.id,
+          fields,
+          evidenceSource: verificationEvidenceSource,
+          note: verificationReviewNote,
+          confirmed: true,
+        }),
+      })
+      const data = await response.json() as { verification?: Pick<Alumni["verification"], "profileMatch" | "currentCompany" | "designation">; reviewedBy?: string; reviewedAt?: string; error?: string }
+      if (!response.ok || !data.verification) throw new Error(data.error || "Unable to save professional verification.")
+      const updated = {
+        ...verificationTarget,
+        verification: { ...verificationTarget.verification, ...data.verification },
+        updatedBy: data.reviewedBy ?? verificationTarget.updatedBy,
+        updatedAt: data.reviewedAt ?? verificationTarget.updatedAt,
+      }
+      replaceAlumnus(updated)
+      setWorkspaceMessage("Professional verification saved with field history and security audit.")
+      closeProfessionalVerification()
+    } catch (error) {
+      setVerificationMessage(error instanceof Error ? error.message : "Unable to save professional verification.")
+    } finally {
+      setVerificationSaving(false)
     }
   }
 
@@ -2166,11 +2311,38 @@ export default function Home() {
               <div><span>Email · {selected.email || "Not enriched"}</span><strong className={verificationTone(selected.verification.email)}>{contactDataLabel(selected, "email").status} · {contactDataLabel(selected, "email").detail}</strong></div>
               <div><span>Phone · {selected.phone || "Not enriched"}</span><strong className={verificationTone(selected.verification.phone)}>{contactDataLabel(selected, "phone").status} · {contactDataLabel(selected, "phone").detail}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">{session.canViewContacts ? "A stored Verified status reflects the recorded workflow state. Provider-sourced data is identified separately and does not imply independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p><div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastProfessionalDataRefresh || selected.lastPdlRefresh ? new Date(selected.lastProfessionalDataRefresh || selected.lastPdlRefresh!).toLocaleString() : "Not refreshed yet"}. Coresignal professional data is staged for review; email and phone remain Lusha-owned.</span></div>{session.canOperate && (() => { const missing = missingLushaChannels(selected); const contactBlocked = selected.privacy?.generalContactStatus === "Do not contact"; return <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.coresignal.remaining < 1 || (providerModes.coresignal === "live" && !providerUsage.coresignal.configured)} onClick={() => compareProfessionalProfile(selected)}>Refresh Profile via Coresignal</Button>{providerModes.lusha === "live" ? <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored; no additional email credit is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.email === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "email")}>Prepare Email Reveal</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored; no repeat provider call is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.phone === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "phone")}>Prepare Phone Reveal</Button></> : <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored." : undefined} disabled={selected.verification.email === "Verified" || enriching || providerUsage.lusha.remaining < 1} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored." : undefined} disabled={selected.verification.phone === "Verified" || enriching || providerUsage.lusha.remaining < 5} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button title={!missing.length ? "Verified email and phone are already stored." : `Only missing or unverified channels will be requested: ${missing.join(" and ")}.`} disabled={!missing.length || enriching || providerUsage.lusha.remaining < (missing.includes("phone") ? 5 : 0) + (missing.includes("email") ? 1 : 0)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", missing)}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div> })()}</section>
+            </div><p className="verified-copy">{session.canViewContacts ? "A stored Verified status reflects the recorded workflow state. Provider-sourced data is identified separately and does not imply independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p>{session.canOperate && <Button className="verification-review-button" variant="outline" onClick={() => void openProfessionalVerification(selected)}><UserRoundCheck /> Review verification evidence</Button>}<div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastProfessionalDataRefresh || selected.lastPdlRefresh ? new Date(selected.lastProfessionalDataRefresh || selected.lastPdlRefresh!).toLocaleString() : "Not refreshed yet"}. Coresignal professional data is staged for review; email and phone remain Lusha-owned.</span></div>{session.canOperate && (() => { const missing = missingLushaChannels(selected); const contactBlocked = selected.privacy?.generalContactStatus === "Do not contact"; return <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.coresignal.remaining < 1 || (providerModes.coresignal === "live" && !providerUsage.coresignal.configured)} onClick={() => compareProfessionalProfile(selected)}>Refresh Profile via Coresignal</Button>{providerModes.lusha === "live" ? <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored; no additional email credit is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.email === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "email")}>Prepare Email Reveal</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored; no repeat provider call is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.phone === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "phone")}>Prepare Phone Reveal</Button></> : <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored." : undefined} disabled={selected.verification.email === "Verified" || enriching || providerUsage.lusha.remaining < 1} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored." : undefined} disabled={selected.verification.phone === "Verified" || enriching || providerUsage.lusha.remaining < 5} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button title={!missing.length ? "Verified email and phone are already stored." : `Only missing or unverified channels will be requested: ${missing.join(" and ")}.`} disabled={!missing.length || enriching || providerUsage.lusha.remaining < (missing.includes("phone") ? 5 : 0) + (missing.includes("email") ? 1 : 0)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", missing)}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div> })()}</section>
             {session.canOperate && <section className="profile-section profile-order-status"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>}
           </div></>}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(verificationTarget)} onOpenChange={open => { if (!open && !verificationSaving) closeProfessionalVerification() }}>
+        <DialogContent className="verification-review-dialog">
+          <DialogHeader>
+            <DialogTitle>{verificationStage === "confirm" ? "Verify professional data?" : "Review verification evidence"}</DialogTitle>
+            <DialogDescription>{verificationStage === "confirm" ? "Confirm the field-level changes and their evidence. This does not change professional values or call a provider." : "Review stored, provider, and change-history evidence before choosing each field's independent verification state."}</DialogDescription>
+          </DialogHeader>
+          {verificationLoading && <div className="verification-loading"><LoaderCircle className="spin" /> Loading stored verification evidence…</div>}
+          {verificationMessage && <p className="verification-review-message" role="alert">{verificationMessage}</p>}
+          {!verificationLoading && verificationTarget && verificationEvidence && verificationDraft && verificationStage === "review" && <div className="verification-review-body">
+            <section className="verification-evidence-card">
+              <h3>Stored professional record</h3>
+              <dl><div><dt>Name</dt><dd>{verificationEvidence.stored.name}</dd></div><div><dt>Current company</dt><dd>{verificationEvidence.stored.company}</dd></div><div><dt>Designation</dt><dd>{verificationEvidence.stored.designation}</dd></div><div><dt>Programme / graduation</dt><dd>{verificationEvidence.stored.programme} · {verificationEvidence.stored.graduationYear || "Year not recorded"}</dd></div><div><dt>Professional profile</dt><dd>{verificationEvidence.stored.professionalProfileUrl ? <a href={verificationEvidence.stored.professionalProfileUrl} target="_blank" rel="noopener noreferrer">Open stored profile <ArrowUpRight /></a> : "Not stored"}</dd></div></dl>
+            </section>
+            <div className="verification-provider-grid">
+              <section className="verification-evidence-card"><h3>Coresignal evidence</h3><p>{verificationEvidence.coresignal.identityAvailable ? "Stable Coresignal employee identity stored." : "No stable Coresignal employee identity stored."}</p><p>Last refresh: {verificationEvidence.coresignal.lastRefresh ? new Date(verificationEvidence.coresignal.lastRefresh).toLocaleString() : "Not refreshed"}</p><p>Provider freshness: {verificationEvidence.coresignal.freshness || "Not reported"}</p>{verificationEvidence.coresignal.operation && <p>{verificationEvidence.coresignal.operation.status}: {verificationEvidence.coresignal.operation.responseSummary}</p>}{verificationEvidence.coresignal.review && <><p>Review: {verificationEvidence.coresignal.review.status}{verificationEvidence.coresignal.review.proposedChanges.length ? ` · ${verificationEvidence.coresignal.review.proposedChanges.length} proposed change(s)` : ""}</p>{verificationEvidence.coresignal.review.proposedChanges.length > 0 && <div className="verification-proposed-changes">{verificationEvidence.coresignal.review.proposedChanges.slice(0, 8).map((change, index) => <small key={`${change.field ?? "field"}-${index}`}><strong>{change.label || change.field || "Professional field"}</strong>{change.oldValue || "Empty"} → {change.newValue || "Empty"}</small>)}</div>}</>}</section>
+              <section className="verification-evidence-card"><h3>Lusha identity evidence</h3><p>{verificationEvidence.lusha.stableIdentityAvailable ? "Stable Lusha contact identity stored." : "No stable Lusha contact identity stored."}</p>{verificationEvidence.lusha.operation && <p>{verificationEvidence.lusha.operation.operation} · {verificationEvidence.lusha.operation.status}: {verificationEvidence.lusha.operation.responseSummary}</p>}{verificationEvidence.lusha.conflictEvidence && <p className="verification-conflict">{verificationEvidence.lusha.conflictEvidence}</p>}</section>
+            </div>
+            <section className="verification-evidence-card"><h3>Professional-data review state</h3><p><strong>{verificationEvidence.professionalDataStatus}</strong>{verificationEvidence.professionalDataNote ? ` · ${verificationEvidence.professionalDataNote}` : ""}</p><small>This aggregate state remains separate and will not be changed by field verification.</small></section>
+            <section className="verification-field-controls"><h3>Choose field-level states</h3>{(Object.keys(PROFESSIONAL_VERIFICATION_OPTIONS) as ProfessionalVerificationField[]).map(field => <label key={field}><span>{PROFESSIONAL_VERIFICATION_LABELS[field]}</span><Select value={verificationDraft[field]} onValueChange={value => setVerificationDraft(current => current ? { ...current, [field]: value as VerificationState } : current)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{PROFESSIONAL_VERIFICATION_OPTIONS[field].map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></label>)}</section>
+            <section className="verification-evidence-entry"><label><span>Verification evidence source</span><Select value={verificationEvidenceSource || "not-selected"} onValueChange={value => setVerificationEvidenceSource(value === "not-selected" ? "" : value)}><SelectTrigger><SelectValue placeholder="Choose evidence source" /></SelectTrigger><SelectContent><SelectItem value="not-selected">Choose evidence source</SelectItem>{PROFESSIONAL_VERIFICATION_SOURCES.map(source => <SelectItem key={source} value={source}>{source}</SelectItem>)}</SelectContent></Select></label><label><span>Optional review note{verificationEvidenceSource === "Other documented evidence" ? " (required)" : ""}</span><Textarea value={verificationReviewNote} maxLength={1000} onChange={event => setVerificationReviewNote(event.target.value)} placeholder="Record what was reviewed; do not paste raw provider payloads or secrets." /></label></section>
+            <section className="verification-evidence-card"><h3>Recent professional field history</h3>{verificationEvidence.recentChanges.length ? <div className="verification-history">{verificationEvidence.recentChanges.map((change, index) => <div key={`${change.field}-${change.createdAt}-${index}`}><strong>{change.field}</strong><span>{change.oldValue || "Empty"} → {change.newValue || "Empty"}</span><small>{change.source} · {change.reviewedBy} · {new Date(change.createdAt).toLocaleString()}</small></div>)}</div> : <p>No recent professional field changes recorded.</p>}</section>
+          </div>}
+          {!verificationLoading && verificationTarget && verificationDraft && verificationStage === "confirm" && <div className="verification-confirm-body"><h3>{verificationTarget.name}</h3>{professionalVerificationChanges().map(change => <div key={change.field}><span>{PROFESSIONAL_VERIFICATION_LABELS[change.field]}</span><strong>{change.oldValue} → {change.newValue}</strong></div>)}<div><span>Evidence</span><strong>{verificationEvidenceSource || "Not required for non-positive state"}</strong></div>{verificationReviewNote && <div><span>Review note</span><strong>{verificationReviewNote}</strong></div>}<p>This action records the verifier, server timestamp, evidence source, field-change history, and security audit.</p></div>}
+          <DialogFooter>{verificationStage === "confirm" ? <><Button variant="outline" disabled={verificationSaving} onClick={() => setVerificationStage("review")}>Back to evidence</Button><Button disabled={verificationSaving} onClick={() => void saveProfessionalVerification()}>{verificationSaving ? <LoaderCircle className="spin" /> : <UserRoundCheck />} Confirm verification</Button></> : <><Button variant="outline" disabled={verificationSaving} onClick={closeProfessionalVerification}>Cancel</Button><Button disabled={verificationLoading || !verificationEvidence || !professionalVerificationChanges().length} onClick={reviewProfessionalVerification}>Review changes</Button></>}</DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(contactConfirm)} onOpenChange={open => { if (!open) setContactConfirm(null) }}>
         <DialogContent className="refresh-confirm-dialog">
