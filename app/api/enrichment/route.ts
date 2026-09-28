@@ -1,14 +1,14 @@
 import { desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
+import { alumni, alumniPrivacyControls, communicationPreferences, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
 import { coresignalProvider } from "@/lib/coresignal-adapter";
 import { safeCoresignalError } from "@/lib/coresignal-client";
-import { getLushaAccountUsage, revealLushaEmail, searchLushaContact } from "@/lib/lusha-client";
+import { getLushaAccountUsage, revealLushaEmail, revealLushaPhone, searchLushaContact } from "@/lib/lusha-client";
 import { coresignalLiveRefreshMaximum } from "@/lib/provider-runtime";
 import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL, type ProfessionalRefreshResult } from "@/lib/professional-data";
 import { providerUsageState } from "@/lib/provider-usage";
-import { eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment";
+import { contactEnrichmentPermission, eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment";
 import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 
 const providers: ProviderName[] = ["coresignal", "lusha"];
@@ -85,7 +85,7 @@ export async function PATCH(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const payload = await request.json() as { action?: string; alumniIds?: number[]; alumnusId?: number; providers?: ProviderName[]; operation?: string; contactChannels?: ("email" | "phone")[]; reviewId?: number; historyId?: number; fields?: string[]; confirmed?: boolean; reconciledCredits?: number; reconciliationSource?: string };
+    const payload = await request.json() as { action?: string; alumniIds?: number[]; alumnusId?: number; providers?: ProviderName[]; operation?: string; contactChannel?: "email" | "phone"; contactChannels?: ("email" | "phone")[]; reviewId?: number; historyId?: number; fields?: string[]; confirmed?: boolean; reconciledCredits?: number; reconciliationSource?: string };
     const requiredPermission = payload.action === "validate_lusha" ? "MANAGE_PROVIDER_SETTINGS" : payload.action === "reconcile_usage" ? "MANAGE_PROVIDER_SETTINGS" : payload.action === "refresh_history" ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM";
     const context = await authorizeRequest(request, requiredPermission);
     const db = getDb();
@@ -132,6 +132,15 @@ export async function POST(request: Request) {
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
       const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);
       if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
+      if (payload.contactChannel === "phone") {
+        const [privacy, preferences] = await Promise.all([
+          db.select().from(alumniPrivacyControls).where(eq(alumniPrivacyControls.alumnusId, person.id)).limit(1),
+          db.select().from(communicationPreferences).where(eq(communicationPreferences.alumnusId, person.id)),
+        ]);
+        const permission = contactEnrichmentPermission({ ...person, privacy: privacy[0] }, preferences.map(preference => preference.status));
+        if (!permission.allowed) return Response.json({ error: permission.reason }, { status: 409 });
+        if (!eligibleContactChannels(person, ["phone"]).includes("phone")) return Response.json({ error: "A verified phone is already stored. No contact search was made." }, { status: 409 });
+      }
       const identifier = person.linkedinUrl ? "professional profile" : "name and current company";
       const result = await searchLushaContact({ name: person.name, company: person.company, linkedinUrl: person.linkedinUrl });
       const recordedCredits = result.creditsUsed ?? 0;
@@ -153,7 +162,7 @@ export async function POST(request: Request) {
         creditsUsed: recordedCredits, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0,
         requestSummary: `Identifier: ${identifier} · Requested fields: availability preview`,
         responseSummary: result.status === "success"
-          ? `Stable Lusha contact ID found. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
+          ? `Stable Lusha contact ID found. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. Phone availability: ${result.phoneAvailable === null ? "not reported" : result.phoneAvailable ? "available" : "not available"}. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
           : `No Lusha contact match. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`,
         requestedBy: actor,
       });
@@ -195,6 +204,41 @@ export async function POST(request: Request) {
         requestedBy: actor,
       });
       await writeSecurityAudit(context, { action: "lusha_email_reveal", entityType: "alumnus", entityId: person.id, metadata: { requestedFields: ["email"], outcome: result.status, creditsUsed: result.creditsUsed } });
+      return authenticatedJsonResponse(context, { result: { status: result.status, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
+    }
+
+    if (payload.action === "lusha_reveal_phone") {
+      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE is not available." }, { status: 409 });
+      if (!Number.isInteger(payload.alumnusId) || payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before a Lusha phone reveal." }, { status: 400 });
+      const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
+      if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
+      const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);
+      if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
+      const [privacy, preferences] = await Promise.all([
+        db.select().from(alumniPrivacyControls).where(eq(alumniPrivacyControls.alumnusId, person.id)).limit(1),
+        db.select().from(communicationPreferences).where(eq(communicationPreferences.alumnusId, person.id)),
+      ]);
+      const permission = contactEnrichmentPermission({ ...person, privacy: privacy[0] }, preferences.map(preference => preference.status));
+      if (!permission.allowed) return Response.json({ error: permission.reason }, { status: 409 });
+      if (!eligibleContactChannels(person, ["phone"]).includes("phone")) return Response.json({ error: "A verified phone is already stored. No repeat provider call was made." }, { status: 409 });
+      if (!person.lushaPersonId.trim()) return Response.json({ error: "Run the Lusha contact preview first so a stable contact ID can be confirmed." }, { status: 409 });
+      const result = await revealLushaPhone(person.lushaPersonId);
+      const recordedCredits = result.creditsUsed ?? 0;
+      if (result.status === "success" && result.phone) {
+        const now = new Date().toISOString();
+        if (result.phone !== person.phone) await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field: "phone", oldValue: person.phone, newValue: result.phone, source: "Lusha", providerAction: "Phone Reveal", creditsCharged: recordedCredits, initiatedBy: actor });
+        await db.update(alumni).set({ phone: result.phone, phoneVerification: "Unverified", phoneSource: "Lusha", phoneRetrievedAt: now, lastLushaEnrichment: now, updatedBy: actor, updatedAt: now }).where(eq(alumni.id, person.id));
+      }
+      await db.insert(providerResponseHistory).values({
+        provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Phone Reveal", mode: "live", status: result.status,
+        creditsUsed: recordedCredits, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0,
+        requestSummary: "Stable Lusha contact ID · Requested fields: phone only",
+        responseSummary: result.status === "success"
+          ? `Phone returned by Lusha. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
+          : `No phone was returned. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`,
+        requestedBy: actor,
+      });
+      await writeSecurityAudit(context, { action: "lusha_phone_reveal", entityType: "alumnus", entityId: person.id, metadata: { requestedFields: ["phone"], outcome: result.status, creditsUsed: result.creditsUsed } });
       return authenticatedJsonResponse(context, { result: { status: result.status, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
     }
 
@@ -279,7 +323,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Select 1 to 25 alumni and at least one provider." }, { status: 400 });
     }
     if (requestedProviders.includes("coresignal")) return Response.json({ error: "Use Refresh Profiles for Coresignal professional data checks." }, { status: 400 });
-    if (requestedProviders.includes("lusha") && enrichmentMode("lusha") === "live") return Response.json({ error: "Use the controlled Lusha contact preview and email-only confirmation workflow in LIVE mode." }, { status: 409 });
+    if (requestedProviders.includes("lusha") && enrichmentMode("lusha") === "live") return Response.json({ error: "Use the controlled single-alumnus Lusha contact preview and channel-specific confirmation workflow in LIVE mode." }, { status: 409 });
     const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
     const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
     const results = [];

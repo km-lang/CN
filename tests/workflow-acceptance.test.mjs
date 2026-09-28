@@ -62,10 +62,11 @@ test("acceptance 8: Lusha is not offered before a new discovery result is added"
   assert.match(page, /\{added && \(\(\) =>/)
 })
 
-test("acceptance 9: added discovery results expose controlled live Lusha email preparation", () => {
+test("acceptance 9: added discovery results expose controlled live Lusha channel preparation", () => {
   assert.match(page, /Prepare Email Reveal/)
+  assert.match(page, /Prepare Phone Reveal/)
   assert.match(page, /providerModes\.lusha === "live"/)
-  assert.match(page, /Confirm Email-Only Reveal/)
+  assert.match(page, /Confirm \{lushaRevealChannel === "email" \? "Email" : "Phone"\}-Only Reveal/)
 })
 
 test("acceptance 10: zero results and blocked searches are different user-visible states", () => {

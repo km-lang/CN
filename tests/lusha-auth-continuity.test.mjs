@@ -28,10 +28,10 @@ test("lusha auth 1: Google Workspace PCOM and ChatGPT Admin use the same provide
   assert.equal(policy.hasPermission("ADMIN", "OPERATE_PCOM"), true);
 });
 
-test("lusha auth 2: Contact Search and Email Reveal share canonical authorization and explicit same-origin credentials", () => {
+test("lusha auth 2: Contact Search and channel reveals share canonical authorization and explicit same-origin credentials", () => {
   assert.match(route, /requiredPermission = payload\.action === "validate_lusha" \? "MANAGE_PROVIDER_SETTINGS"/);
   assert.match(route, /authorizeRequest\(request, requiredPermission\)/);
-  assert.equal((page.match(/credentials: "same-origin"/g) ?? []).length >= 2, true);
+  assert.equal((page.match(/credentials: "same-origin"/g) ?? []).length >= 3, true);
   assert.match(route, /authenticatedJsonResponse\(context, \{\s*preview:/);
   assert.match(route, /authenticatedJsonResponse\(context, \{ result:/);
 });

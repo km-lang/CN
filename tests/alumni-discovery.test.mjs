@@ -34,7 +34,10 @@ test("11. Lusha stores channel provenance and provider history", () => { assert.
 test("12. approved professional changes create field history", () => { assert.match(route, /fieldChangeHistory/); assert.match(route, /oldValue/); assert.match(route, /newValue/) })
 test("13. no-change refresh remains visible and recorded", () => { assert.match(page, /No professional changes detected/); assert.match(route + enrichment, /Reviewed — kept existing|No changes/); assert.match(enrichment, /providerResponseHistory/) })
 test("14. filtering internal data makes no provider request", () => { const block = page.match(/const filtered = useMemo\([\s\S]*?\[alumni, companyPriorities, engagements, filters\]\)/)?.[0] ?? ""; assert.match(block, /matchesInternalFilters/); assert.doesNotMatch(block, /fetch\(/) })
-test("15. provider usage is attached to explicit controls", () => { for (const label of ["Confirm Live Search", "Prepare Email Reveal", "Confirm Contact Search", "Confirm Email-Only Reveal"]) assert.match(page, new RegExp(label)) })
+test("15. provider usage is attached to explicit controls", () => {
+  for (const label of ["Confirm Live Search", "Prepare Email Reveal", "Prepare Phone Reveal", "Confirm Contact Search"]) assert.match(page, new RegExp(label))
+  assert.match(page, /Confirm \{lushaRevealChannel === "email" \? "Email" : "Phone"\}-Only Reveal/)
+})
 test("16. current application configuration retains root-hosted defaults", () => { const current = config.createAppConfig({}); assert.equal(current.name, "Corporate Network"); assert.equal(current.basePath, ""); assert.equal(current.publicUrl, "http://localhost:3000") })
 test("17. application configuration supports another base path", () => { const future = config.createAppConfig({ NEXT_PUBLIC_APP_NAME: "ABC", NEXT_PUBLIC_APP_PUBLIC_URL: "https://teamsynapse.app/corporate_network/", NEXT_PUBLIC_APP_BASE_PATH: "/corporate_network/" }); assert.equal(future.basePath, "/corporate_network"); assert.equal(config.withBasePath("/api/workspace", future.basePath), "/corporate_network/api/workspace") })
 test("18. UI and metadata consume centralized configuration", () => { assert.match(page, /appConfig\.name/); assert.match(page, /apiPath\("\/api\/workspace"\)/); assert.doesNotMatch(page, /fetch\("\/api\//); assert.match(layout, /metadataBase: new URL\(appConfig\.publicUrl\)/) })

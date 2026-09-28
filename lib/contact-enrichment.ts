@@ -10,6 +10,19 @@ export type ContactCandidate = {
   phoneVerification?: string | null
   verification?: { email?: string; phone?: string }
   lushaPersonId?: string | null
+  privacy?: { generalContactStatus?: string | null } | null
+}
+
+export type ContactPermission = {
+  allowed: boolean
+  reason: string
+}
+
+export function contactEnrichmentPermission(person: ContactCandidate, legacyStatuses: readonly string[] = []): ContactPermission {
+  if (person.privacy?.generalContactStatus === "Do not contact" || legacyStatuses.includes("Do not contact")) {
+    return { allowed: false, reason: "Contact enrichment is blocked by the alumnus's do-not-contact preference" }
+  }
+  return { allowed: true, reason: "" }
 }
 
 function verificationFor(person: ContactCandidate, channel: ContactChannel) {
@@ -32,7 +45,10 @@ export function contactEnrichmentPlan(people: readonly ContactCandidate[], reque
   const rows = people.map(person => {
     const states = Object.fromEntries((["email", "phone"] as const).map(channel => [channel, contactChannelState(person, channel)])) as Record<ContactChannel, ContactEligibilityState>
     const eligible = eligibleContactChannels(person, requested)
-    const blockedReason = requireStableIdentity && !String(person.lushaPersonId ?? "").trim() ? "Stable Lusha identity required" : ""
+    const permission = contactEnrichmentPermission(person)
+    const blockedReason = !permission.allowed
+      ? permission.reason
+      : requireStableIdentity && !String(person.lushaPersonId ?? "").trim() ? "Stable Lusha identity required" : ""
     return {
       id: person.id,
       name: person.name,

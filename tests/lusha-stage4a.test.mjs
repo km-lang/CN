@@ -111,25 +111,26 @@ test("stage4a 7: account validation uses the non-contact usage endpoint", async 
   assert.deepEqual(usage, { used: 7, remaining: 93, limit: 100 });
 });
 
-test("stage4a 8: live UI requires search preview and a second email-only confirmation", () => {
+test("stage4a 8: live UI requires search preview and a second channel-only confirmation", () => {
   assert.match(page, /Check Lusha contact availability\?/);
   assert.match(page, /Confirm Contact Search/);
-  assert.match(page, /Continue to Email Reveal/);
-  assert.match(page, /Confirm Email-Only Reveal/);
+  assert.match(page, /Continue to \{lushaRevealChannel === "email" \? "Email" : "Phone"\} Reveal/);
+  assert.match(page, /Confirm \{lushaRevealChannel === "email" \? "Email" : "Phone"\}-Only Reveal/);
   assert.match(page, /No email or phone is revealed in this step/);
 });
 
-test("stage4a 9: live phone and bulk reveals are not offered", () => {
-  const liveBatch = page.match(/providerModes\.lusha === "live" \? <Button[\s\S]*? : <><Button/)?.[0] ?? "";
+test("stage4a 9: live channel-specific reveals are offered while combined and bulk reveals remain unavailable", () => {
+  const liveBatch = page.match(/providerModes\.lusha === "live" \? <>[\s\S]*? : <><Button/)?.[0] ?? "";
   assert.match(liveBatch, /Prepare Email Reveal/);
-  assert.doesNotMatch(liveBatch, /Get Phone|Get Both|batch/);
-  assert.match(page, /Phone and bulk reveal remain disabled/);
+  assert.match(liveBatch, /Prepare Phone Reveal/);
+  assert.doesNotMatch(liveBatch, /Get Both|Get Phones|batch/);
+  assert.match(page, /Combined and bulk reveal remain disabled/);
 });
 
 test("stage4a 10: server rejects the legacy combined live path", () => {
   assert.doesNotMatch(provider, /\/v3\/contacts\/search-and-enrich/);
   assert.match(provider, /controlled Lusha V3 contact-search preview/);
-  assert.match(route, /Use the controlled Lusha contact preview and email-only confirmation workflow in LIVE mode/);
+  assert.match(route, /Use the controlled single-alumnus Lusha contact preview and channel-specific confirmation workflow in LIVE mode/);
 });
 
 test("stage4a 11: Lusha actions remain PCOM-operational and settings remain Admin-only", () => {

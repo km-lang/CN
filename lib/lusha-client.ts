@@ -37,6 +37,13 @@ export type LushaEmailReveal = {
   usageSource: "provider_response" | "unavailable"
 }
 
+export type LushaPhoneReveal = {
+  status: "success" | "no_match"
+  phone: string
+  creditsUsed: number | null
+  usageSource: "provider_response" | "unavailable"
+}
+
 export class LushaProviderError extends Error {
   constructor(message: string, readonly kind: "authentication" | "credit_limit" | "rate_limit" | "timeout" | "invalid_request" | "unavailable") {
     super(message)
@@ -151,6 +158,12 @@ function firstEmail(record: Record<string, unknown>) {
   return textValue(emails[0]?.email ?? record.email)
 }
 
+function firstPhone(record: Record<string, unknown>) {
+  const phones = Array.isArray(record.phones) ? record.phones.map(recordValue) : []
+  const first = phones[0] ?? {}
+  return textValue(first.number ?? first.phone ?? first.phoneNumber ?? first.internationalNumber ?? record.phone ?? record.phoneNumber)
+}
+
 export async function revealLushaEmail(contactId: string, options: { fetcher?: Fetcher } = {}): Promise<LushaEmailReveal> {
   if (!contactId.trim()) throw new LushaProviderError("A stable Lusha contact ID is required before email reveal.", "invalid_request")
   const { response, body } = await lushaRequest("/v3/contacts/enrich", {
@@ -161,6 +174,18 @@ export async function revealLushaEmail(contactId: string, options: { fetcher?: F
   const email = first ? firstEmail(first) : ""
   const creditsUsed = providerCredits(response, body)
   return { status: email ? "success" : "no_match", email, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
+}
+
+export async function revealLushaPhone(contactId: string, options: { fetcher?: Fetcher } = {}): Promise<LushaPhoneReveal> {
+  if (!contactId.trim()) throw new LushaProviderError("A stable Lusha contact ID is required before phone reveal.", "invalid_request")
+  const { response, body } = await lushaRequest("/v3/contacts/enrich", {
+    method: "POST",
+    body: JSON.stringify({ ids: [contactId.trim()], reveal: ["phones"] }),
+  }, options)
+  const first = responseRecords(body)[0]
+  const phone = first ? firstPhone(first) : ""
+  const creditsUsed = providerCredits(response, body)
+  return { status: phone ? "success" : "no_match", phone, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
 }
 
 function firstMetric(body: Record<string, unknown>, keys: string[]) {
