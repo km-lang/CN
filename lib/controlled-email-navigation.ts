@@ -1,4 +1,4 @@
-const VALID_TABS = new Set(["overview", "directory", "companies", "engagement", "outreach", "data-import", "enrichment", "admin"])
+const VALID_TABS = new Set(["overview", "directory", "companies", "engagement", "outreach", "data-import", "enrichment", "intelligence", "admin"])
 const EMAIL_STATE_KEYS = ["compose", "alumnusId", "returnAlumnusId", "returnTab"]
 
 export type WorkspaceAccess = { canOperate: boolean; canAdminister: boolean }
@@ -57,6 +57,7 @@ export function workspaceTabUrl(href: string, tab: string) {
   url.searchParams.delete("profileAlumnusId")
   url.searchParams.delete("engagementEventId")
   url.searchParams.set("tab", VALID_TABS.has(tab) ? tab : "overview")
+  if (tab !== "intelligence") url.searchParams.delete("view")
   return `${url.pathname}${url.search}${url.hash}`
 }
 
@@ -118,5 +119,6 @@ export function canonicalWorkspaceUrl(
   }
 
   url.searchParams.set("tab", tab)
+  if (tab !== "intelligence") url.searchParams.delete("view")
   return `${url.pathname}${url.search}${url.hash}`
 }

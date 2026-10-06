@@ -56,6 +56,12 @@ export default defineConfig(async ({ command }) => {
         MAIL_LIVE_ENABLED: "false",
         APP_PUBLIC_URL: "http://localhost:3000",
         APP_BASE_PATH: "/",
+        ...(process.env.INTELLIGENCE_SERVICE_URL?.trim()
+          ? { INTELLIGENCE_SERVICE_URL: process.env.INTELLIGENCE_SERVICE_URL.trim() }
+          : {}),
+        ...(process.env.INTELLIGENCE_SERVICE_SECRET?.trim()
+          ? { INTELLIGENCE_SERVICE_SECRET: process.env.INTELLIGENCE_SERVICE_SECRET.trim() }
+          : {}),
       }
     : {};
 
