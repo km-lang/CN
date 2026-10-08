@@ -32,12 +32,40 @@ test("current CN state controls eligibility independent of record origin", () =>
   }
 })
 
+test("equivalent LinkedIn profile URL variants preserve the same cross-service identity", () => {
+  for (const linkedinUrl of [
+    "https://www.linkedin.com/in/approved-person/",
+    "https://linkedin.com/in/approved-person/?trk=profile#about",
+    "https://IN.LINKEDIN.COM/in/approved-person/?trk=profile#about",
+  ]) {
+    const [result] = revalidateBrightItems([
+      { ...item, normalizedLinkedinUrl: "https://www.linkedin.com/in/approved-person" },
+    ], new Map([[17, current({ linkedinUrl })]]))
+    assert.equal(result.eligible, true, linkedinUrl)
+    assert.equal(result.reason, "ELIGIBLE", linkedinUrl)
+  }
+})
+
 test("malformed, missing, mismatched, inactive, unverified, and conflicted records fail closed", () => {
   assert.equal(revalidateBrightItems([{ ...item, sourceId: "cn:not-an-id" }], new Map())[0].reason, "INVALID_SOURCE_ID")
   assert.equal(revalidateBrightItems([item], new Map())[0].reason, "NOT_FOUND")
   assert.equal(revalidateBrightItems([item], new Map([[17, current({ linkedinUrl: "https://www.linkedin.com/in/changed/" })]]))[0].reason, "LINKEDIN_CHANGED")
+  assert.equal(revalidateBrightItems([item], new Map([[17, current({ linkedinUrl: "https://www.linkedin.com/in/person-a/" })]]))[0].reason, "LINKEDIN_CHANGED")
+  assert.equal(revalidateBrightItems([{ ...item, normalizedLinkedinUrl: "https://www.linkedin.com/in/person-b" }], new Map([[17, current({ linkedinUrl: "https://www.linkedin.com/in/person-a/" })]]))[0].reason, "LINKEDIN_CHANGED")
+  for (const invalidUrl of [
+    "https://www.linkedin.com/company/example/",
+    "https://www.linkedin.com/jobs/example/",
+    "https://www.linkedin.com/posts/example/",
+    "https://www.linkedin.com/feed/",
+    "https://www.linkedin.com/",
+    "https://example.com/in/approved-person",
+    "not a valid url",
+  ]) {
+    assert.equal(revalidateBrightItems([item], new Map([[17, current({ linkedinUrl: invalidUrl })]]))[0].reason, "LINKEDIN_CHANGED", invalidUrl)
+  }
   assert.equal(revalidateBrightItems([item], new Map([[17, current({ lifecycleStatus: "Inactive" })]]))[0].reason, "INACTIVE")
   assert.equal(revalidateBrightItems([item], new Map([[17, current({ profileMatch: "Unverified" })]]))[0].reason, "LINKEDIN_NOT_VERIFIED")
+  assert.equal(revalidateBrightItems([item], new Map([[17, current({ profileMatch: "Mismatch" })]]))[0].reason, "IDENTITY_CONFLICT")
   assert.equal(revalidateBrightItems([item], new Map([[17, current({ professionalDataStatus: "Conflict — manual verification required" })]]))[0].reason, "IDENTITY_CONFLICT")
   assert.equal(revalidateBrightItems([{ ...item, sourceId: "cn:18" }], new Map([[18, current({ id: 18, linkedinUrl: "https://www.linkedin.com/in/different-person/" })]]))[0].reason, "LINKEDIN_CHANGED")
 })

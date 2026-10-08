@@ -17,6 +17,24 @@ export function authenticateBrightRevalidation(request: Request, expectedSecret:
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
+function normalizedIdentityUrl(value: unknown) {
+  const normalized = normalizeProfessionalProfileUrl(value)
+  if (!normalized) return ""
+  try {
+    const url = new URL(normalized)
+    const host = url.hostname.toLowerCase().replace(/^www\./, "")
+    const segments = url.pathname.split("/").filter(Boolean)
+    if (host === "linkedin.com" || host.endsWith(".linkedin.com")) {
+      return segments.length === 2 && segments[0]?.toLowerCase() === "in" && segments[1]
+        ? `https://www.linkedin.com/in/${segments[1]}`
+        : ""
+    }
+    return ""
+  } catch {
+    return ""
+  }
+}
+
 export function revalidateBrightItems(items: BrightRevalidationItem[], records: Map<number, CurrentCnBrightRecord>): BrightRevalidationResult[] {
   return items.map(item => {
     const match = item.sourceId.match(/^cn:([1-9]\d*)$/)
@@ -24,8 +42,8 @@ export function revalidateBrightItems(items: BrightRevalidationItem[], records: 
     if (!match) return { ...base, eligible: false, reason: "INVALID_SOURCE_ID" }
     const record = records.get(Number(match[1]))
     if (!record) return { ...base, eligible: false, reason: "NOT_FOUND" }
-    const currentUrl = normalizeProfessionalProfileUrl(record.linkedinUrl)
-    if (!currentUrl || currentUrl !== normalizeProfessionalProfileUrl(item.normalizedLinkedinUrl)) return { ...base, eligible: false, reason: "LINKEDIN_CHANGED" }
+    const currentUrl = normalizedIdentityUrl(record.linkedinUrl)
+    if (!currentUrl || currentUrl !== normalizedIdentityUrl(item.normalizedLinkedinUrl)) return { ...base, eligible: false, reason: "LINKEDIN_CHANGED" }
     const eligibility = evaluateBrightEligibility({ lifecycleStatus: record.lifecycleStatus, linkedinUrl: record.linkedinUrl, profileMatch: record.profileMatch, professionalDataStatus: record.professionalDataStatus, mappingStatus: "MAPPED", intelligenceEnrollmentApproved: true })
     return { ...base, eligible: eligibility.eligible, reason: eligibility.reason }
   })
