@@ -52,6 +52,7 @@ test("Directory selections are materialized into a fixed intelligence cohort", (
 test("Refresh preview is explicitly non-mutating and supports score operators", () => {
   assert.match(refresh, /Canonical mutations/)
   assert.match(refresh, /No provider call or canonical mutation occurs during preview/)
+  assert.match(refresh, /Eligibility is revalidated immediately before Bright execution/)
   for (const operator of ["EQ", "GT", "GTE", "LT", "LTE", "BETWEEN"]) assert.match(refresh, new RegExp(`"${operator}"`))
 })
 
@@ -71,4 +72,14 @@ test("profile panel uses the accurate Last Bright attempt label", () => {
   assert.match(profile, /Last Bright attempt/)
   assert.doesNotMatch(profile, /Last Bright refresh/)
   assert.match(profile, /Find LinkedIn profile/)
+  assert.match(profile, /Enroll for Bright/)
+  assert.match(profile, /eligibility\.eligible/)
+})
+
+test("Bright preview exposes identity eligibility without changing evidence-only semantics", () => {
+  assert.match(cohort, /evaluateBrightEligibility/)
+  assert.match(cohort, /linkedinNotVerified/)
+  assert.match(refresh, /Bright eligible/)
+  assert.match(refresh, /Canonical mutations/)
+  assert.match(refresh, /No provider call or canonical mutation occurs during preview/)
 })

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import type { RefreshJobRecord, RefreshPreview, RefreshRunRecord, ScoreOperator } from "@/lib/intelligence-contracts"
+import type { IntelligenceCohortResolution, RefreshJobRecord, RefreshPreview, RefreshRunRecord, ScoreOperator } from "@/lib/intelligence-contracts"
 import { JobHistory } from "./job-history"
 import { SelectionSummary } from "./selection-summary"
 
@@ -25,7 +25,7 @@ export function RefreshCenter({ selectedIds, pageIds, matchingIds, canOperate, c
   const [intervalDays, setIntervalDays] = useState("7")
   const [runAt, setRunAt] = useState("")
   const [preview, setPreview] = useState<RefreshPreview | null>(null)
-  const [cohortNotice, setCohortNotice] = useState<{ unresolved?: unknown[] } | null>(null)
+  const [cohortNotice, setCohortNotice] = useState<IntelligenceCohortResolution | null>(null)
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
   const [jobs, setJobs] = useState<RefreshJobRecord[]>([])
@@ -90,8 +90,8 @@ export function RefreshCenter({ selectedIds, pageIds, matchingIds, canOperate, c
       <div className="intelligence-actions"><Button variant="outline" disabled={!canOperate || busy} onClick={() => void submit("preview")}>Preview</Button><Button disabled={!canOperate || busy || !preview} onClick={() => void submit("create")}>{timing === "RUN_NOW" ? "Create Run Now job" : "Create schedule"}</Button></div>
       {message && <p role="alert" className="intelligence-message">{message}</p>}
     </section>
-    <section className="panel intelligence-preview"><div className="panel-heading"><div><p className="eyebrow">Non-mutating preview</p><h2>{preview ? `${preview.selectedProfiles} profiles selected` : "Preview required"}</h2><span>No provider call or canonical mutation occurs during preview.</span></div></div>
-      {preview ? <dl><div><dt>Matching alumni</dt><dd>{preview.matchingProfiles}</dd></div><div><dt>Selected alumni</dt><dd>{preview.selectedProfiles}</dd></div><div><dt>Truncated</dt><dd>{preview.selectionExceedsRunLimit ? "Yes" : "No"}</dd></div><div><dt>Mode</dt><dd>{preview.mode}</dd></div><div><dt>Cohort</dt><dd>{preview.cohortType}</dd></div><div><dt>Timing</dt><dd>{timing}</dd></div><div><dt>Maximum Bright exposure</dt><dd>{mode === "SOCAI_MONITOR" ? maxTargetedBright : maxProfiles}</dd></div><div><dt>Maximum Socai calls</dt><dd>{preview.maxSocaiCalls}</dd></div><div><dt>Maximum targeted Bright</dt><dd>{preview.maxTargetedBright}</dd></div><div><dt>Canonical mutations</dt><dd>{preview.canonicalMutations}</dd></div></dl> : <p>Choose a selection and preview it before creating a job.</p>}
+    <section className="panel intelligence-preview"><div className="panel-heading"><div><p className="eyebrow">Non-mutating preview</p><h2>{preview ? `${preview.selectedProfiles} profiles selected` : "Preview required"}</h2><span>No provider call or canonical mutation occurs during preview. Eligibility is revalidated immediately before Bright execution.</span></div></div>
+      {preview ? <dl><div><dt>Selected</dt><dd>{cohortNotice?.requested ?? preview.matchingProfiles}</dd></div><div><dt>Bright eligible</dt><dd>{cohortNotice?.brightEligible ?? preview.selectedProfiles}</dd></div><div><dt>Missing LinkedIn</dt><dd>{cohortNotice?.missingLinkedin ?? 0}</dd></div><div><dt>LinkedIn/profile not approved</dt><dd>{cohortNotice?.linkedinNotVerified ?? 0}</dd></div><div><dt>Identity/mapping review required</dt><dd>{cohortNotice?.identityReviewRequired ?? 0}</dd></div><div><dt>Inactive</dt><dd>{cohortNotice?.inactive ?? 0}</dd></div><div><dt>Other exclusions</dt><dd>{cohortNotice?.otherExcluded ?? 0}</dd></div><div><dt>Profiles that would be sent to Bright</dt><dd>{preview.selectedProfiles}</dd></div><div><dt>Truncated</dt><dd>{preview.selectionExceedsRunLimit ? "Yes" : "No"}</dd></div><div><dt>Mode</dt><dd>{preview.mode}</dd></div><div><dt>Cohort</dt><dd>{preview.cohortType}</dd></div><div><dt>Timing</dt><dd>{timing}</dd></div><div><dt>Maximum Bright exposure</dt><dd>{mode === "SOCAI_MONITOR" ? maxTargetedBright : Math.min(Number(maxProfiles), preview.selectedProfiles)}</dd></div><div><dt>Maximum Socai calls</dt><dd>{preview.maxSocaiCalls}</dd></div><div><dt>Maximum targeted Bright</dt><dd>{preview.maxTargetedBright}</dd></div><div><dt>Canonical mutations</dt><dd>{preview.canonicalMutations}</dd></div></dl> : <p>Choose a selection and preview it before creating a job.</p>}
     </section>
     <JobHistory jobs={jobs} runs={runs} loading={historyLoading} />
   </div>
