@@ -35,11 +35,13 @@ test("local scripts hard-disable every live provider and mail gate", () => {
   assert.match(viteConfig, /command === "serve"/)
   assert.match(viteConfig, /NODE_ENV: "development"/)
   assert.match(viteConfig, /LOCAL_DEV_AUTH_ENABLED: "true"/)
-  assert.match(viteConfig, /CORESIGNAL_LIVE_ENABLED: "false"/)
+  assert.match(viteConfig, /CORESIGNAL_LIVE_ENABLED: localCoresignalDemo \? "true" : "false"/)
+  assert.match(viteConfig, /localCoresignalLiveDemoEnabled\(localEnvironment\)/)
   assert.match(viteConfig, /LUSHA_LIVE_ENABLED: "false"/)
   assert.match(viteConfig, /LUSHA_SIGNALS_LIVE_ENABLED: "false"/)
   assert.match(viteConfig, /MAIL_MODE: "mock"/)
   assert.match(viteConfig, /MAIL_LIVE_ENABLED: "false"/)
+  assert.match(viteConfig, /GMAIL_SEND_SCOPE_CONFIRMED: "false"/)
 })
 
 test("local fixture contains alumnus 15, a recipient, and completed email history", () => {

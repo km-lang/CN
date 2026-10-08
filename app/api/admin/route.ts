@@ -31,7 +31,7 @@ import { InvalidEmailError, isLikelyInstitutionalEmailTypo, normalizeEmail } fro
 import { validateLushaSignalsEntitlement } from "@/lib/lusha-signals-entitlement"
 import { classifyMockDataset } from "@/lib/mock-cleanup"
 import { mailConfiguration, mailRuntimeStatus, validateGmailConnectivity } from "@/lib/mail-service"
-import { providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/provider-runtime"
+import { coresignalLiveRefreshMaximum, coresignalLiveSearchMaximum, providerConfigured, providerMode, signalsRuntimeStatus } from "@/lib/provider-runtime"
 import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurityAudit } from "@/lib/security"
 import { safeAuditMetadata } from "@/lib/security-policy"
 import { normaliseProgrammeCode } from "@/lib/programme-options"
@@ -141,7 +141,12 @@ export async function GET(request: Request) {
       providerLimits,
       programmeOptions: programmes,
       operationalReadiness: {
-        coresignal: { mode: providerMode("coresignal"), configured: providerConfigured("coresignal") },
+        coresignal: {
+          mode: providerMode("coresignal"),
+          configured: providerConfigured("coresignal"),
+          searchMaximum: coresignalLiveSearchMaximum(),
+          refreshMaximum: coresignalLiveRefreshMaximum(),
+        },
         lushaContacts: { mode: providerMode("lusha"), configured: providerConfigured("lusha") },
         signals: signalsRuntimeStatus(),
         mail: { ...mailRuntimeStatus(), ...mailConfiguration(), ...mailValidationReadiness(mailValidationRows[0]) },

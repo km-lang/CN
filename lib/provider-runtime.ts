@@ -1,3 +1,5 @@
+import { localCoresignalLiveDemoEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
+
 export type ProviderName = "coresignal" | "lusha"
 export type ProviderMode = "mock" | "live"
 
@@ -6,6 +8,10 @@ type ProviderRuntimeEnvironment = {
   CORESIGNAL_LIVE_ENABLED?: string
   CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?: string
   CORESIGNAL_LIVE_REFRESH_MAX_PROFILES?: string
+  LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED?: string
+  LOCAL_CORESIGNAL_LIVE_DEMO_HOST?: string
+  LOCAL_DEV_AUTH_ENABLED?: string
+  NODE_ENV?: string
   LUSHA_API_KEY?: string
   LUSHA_LIVE_ENABLED?: string
   LUSHA_SIGNALS_LIVE_ENABLED?: string
@@ -24,7 +30,12 @@ function enabled(value?: string) {
 
 export function providerMode(provider: ProviderName): ProviderMode {
   const values = runtimeEnvironment()
-  if (provider === "coresignal") return enabled(values.CORESIGNAL_LIVE_ENABLED) ? "live" : "mock"
+  if (provider === "coresignal") {
+    if (localDevelopmentAuthEnabled(values)) {
+      return localCoresignalLiveDemoEnabled(values) ? "live" : "mock"
+    }
+    return enabled(values.CORESIGNAL_LIVE_ENABLED) ? "live" : "mock"
+  }
   return enabled(values.LUSHA_LIVE_ENABLED) ? "live" : "mock"
 }
 
@@ -46,6 +57,7 @@ function boundedInteger(value: string | undefined, fallback: number, maximum: nu
 }
 
 export function coresignalLiveSearchMaximum() {
+  if (localCoresignalLiveDemoEnabled(runtimeEnvironment())) return 1
   return boundedInteger(runtimeEnvironment().CORESIGNAL_LIVE_SEARCH_MAX_RESULTS, 20, 20)
 }
 

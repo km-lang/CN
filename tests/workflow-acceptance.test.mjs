@@ -43,9 +43,11 @@ test("acceptance 5: every recommendation returns its rationale and evidence", ()
 
 test("acceptance 6: external discovery preserves and displays the submitted filters", () => {
   assert.match(page, /setLastDiscoveryFilters\(searchFilters\)/)
+  assert.match(page, /setLastDiscoveryFilters\(data\.filters \?\? null\)/)
   assert.match(page, /Education/)
   assert.match(page, /FIXED_ALUMNI_SCHOOL/)
-  assert.match(page, /Results requested \/ returned/)
+  assert.match(page, /<span>Requested<\/span>/)
+  assert.match(page, /<span>Provider returned<\/span>/)
 })
 
 test("acceptance 7: mock discovery covers confirmed, excluded, and review-required affiliations", () => {

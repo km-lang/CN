@@ -179,6 +179,8 @@ The live discovery adapter uses Coresignal Base Employee `POST /cdapi/v2/employe
 
 `dev:local` enables a development-only Admin identity on loopback hosts. The bypass cannot activate in a production build or on a non-loopback host. It also explicitly disables live Coresignal, Lusha Contact, Lusha Professional Signals, and Gmail delivery. Local mail uses the mock adapter. Do not add production credentials to local environment files.
 
+For an explicitly approved, single-result local Coresignal demonstration, place only `CORESIGNAL_API_KEY=<secret>` in the ignored `.env.local` file and run `npm run dev:local:coresignal-live`. That command is restricted to development on `127.0.0.1`, requires the explicit local-demo gate and key, and enforces a search maximum of one result and a refresh maximum of one profile. Lusha Contacts, Professional Signals, and mail remain disabled. Merely opening Directory, Enrichment, Admin, Provider History, or a confirmation dialog makes no provider request; only confirming a live search or refresh invokes Coresignal. Never commit `.env.local` or its contents.
+
 ## Source layout
 
 - `app/page.tsx`: main dashboard and enrichment interface

@@ -228,9 +228,29 @@ type DiscoveryResult = {
   alumniStatus?: "Past alumnus" | "Current student" | "Graduation status unknown — review required"
   eligibleForAddition?: boolean
   currentRoleAmbiguous?: boolean
+  searchProvider?: string
+  searchMode?: string
+  retrievedAt?: string
+  providerIntegrity?: "consistent" | "provider_mismatch" | "search_missing"
 }
 
 type DiscoveryCounts = { existing: number; new: number; possibleDuplicate: number; needsReview: number }
+type DiscoveryRunSummary = {
+  searchId: number
+  provider: string
+  mode: string
+  initiatedBy: string
+  createdAt: string
+  criteriaSummary: string
+  requestedCount: number | null
+  providerResultCount: number
+  storedResultCount: number
+  pendingCount: number
+  counts: DiscoveryCounts
+  creditsUsed: number
+  applicationUnits: number | null
+  providerReportedCredits: number | null
+}
 
 type EngagementStatus = "New" | "Viewed" | "Acknowledged" | "Action Planned" | "Action Taken" | "Response Received" | "Follow-up Due" | "Closed" | "Completed" | "Skipped"
 type EngagementActivity = { id: number; action: string; actor: string; details: string; createdAt: string }
@@ -515,8 +535,9 @@ export default function Home() {
   const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
   const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
   const [coresignalLiveMaximum, setCoresignalLiveMaximum] = useState(5)
-  const [discoveryRequestedCount, setDiscoveryRequestedCount] = useState<number | null>(null)
-  const [discoveryReturnedCount, setDiscoveryReturnedCount] = useState<number | null>(null)
+  const [activeDiscoveryRun, setActiveDiscoveryRun] = useState<DiscoveryRunSummary | null>(null)
+  const [previousDiscoveryRuns, setPreviousDiscoveryRuns] = useState<DiscoveryRunSummary[]>([])
+  const [activeDiscoveryHistory, setActiveDiscoveryHistory] = useState<ProviderHistory[]>([])
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
@@ -1663,16 +1684,20 @@ export default function Home() {
     void runDiscovery(searchFilters)
   }
 
-  async function reviewPendingDiscoveryResults() {
+  async function reviewPendingDiscoveryResults(searchId?: number) {
     setLoadingPendingReview(true)
     setDiscoveryMessage("")
     try {
-      const response = await fetch(`${API_ROUTES.discovery}?view=pending`, { cache: "no-store" })
+      const query = new URLSearchParams({ view: "pending", ...(searchId ? { searchId: String(searchId) } : {}) })
+      const response = await fetch(`${API_ROUTES.discovery}?${query}`, { cache: "no-store" })
       const data = await response.json() as {
         pendingCount?: number
         results?: DiscoveryResult[]
         counts?: DiscoveryCounts
         filters?: DiscoveryFilters
+        activeSearch?: DiscoveryRunSummary | null
+        previousSearches?: DiscoveryRunSummary[]
+        providerHistory?: ProviderHistory[]
         creditsUsed?: number
         retrieval?: string
         source?: { provider: string; mode: string; searchId: number }
@@ -1684,8 +1709,11 @@ export default function Home() {
       setDiscoveryCounts(data.counts)
       setSelectedDiscoveryIds([])
       setLastDiscoveryFilters(data.filters ?? null)
+      setActiveDiscoveryRun(data.activeSearch ?? null)
+      setPreviousDiscoveryRuns(data.previousSearches ?? [])
+      setActiveDiscoveryHistory(data.providerHistory ?? [])
       setDiscoveryState(data.results.length ? "results" : "empty")
-      const provenance = data.source ? `${data.source.provider.toUpperCase()} ${data.source.mode.toUpperCase()}` : "external"
+      const provenance = data.activeSearch ? `${data.activeSearch.provider.toUpperCase()} ${data.activeSearch.mode.toUpperCase()} Search #${data.activeSearch.searchId}` : "external"
       setDiscoveryMessage(data.results.length
         ? `Loaded ${data.results.length} stored ${provenance} profile${data.results.length === 1 ? "" : "s"} for review. No provider call was made and 0 credits were used.`
         : "There are no external alumni awaiting review.")
@@ -1706,7 +1734,7 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
       })
-      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; error?: string; blocked?: boolean }
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; activeSearch?: DiscoveryRunSummary; previousSearches?: DiscoveryRunSummary[]; providerHistory?: ProviderHistory[]; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; error?: string; blocked?: boolean }
       if (data.blocked) {
         setDiscoveryState("blocked")
         setDiscoveryMessage(data.error || "External search could not be run because the Coresignal application limit has been reached.")
@@ -1714,8 +1742,9 @@ export default function Home() {
       }
       if (!response.ok || !data.results || !data.counts) throw new Error(data.error || "Unable to search external professional data.")
       if (data.effectiveLimit) setDiscoveryLimit(String(data.effectiveLimit))
-      setDiscoveryRequestedCount(data.requestedCount ?? data.effectiveLimit ?? Number(discoveryLimit))
-      setDiscoveryReturnedCount(data.returnedCount ?? data.results.length)
+      setPreviousDiscoveryRuns(data.previousSearches ?? (activeDiscoveryRun ? [activeDiscoveryRun] : []))
+      setActiveDiscoveryRun(data.activeSearch ?? null)
+      setActiveDiscoveryHistory(data.providerHistory ?? [])
       setDiscoveryResults(data.results)
       setDiscoveryCounts(data.counts)
       setSelectedDiscoveryIds([])
@@ -1776,12 +1805,14 @@ export default function Home() {
       })
       const data = await response.json() as { addedCount?: number; added?: Array<{ resultId: number; alumnusId: number }>; error?: string }
       if (!response.ok || !data.added) throw new Error(data.error || "Unable to add the selected alumni.")
-      const addedMap = new Map(data.added.map(item => [item.resultId, item.alumnusId]))
+      const added = data.added
+      const addedMap = new Map(added.map(item => [item.resultId, item.alumnusId]))
       setDiscoveryResults(current => current.map(item => addedMap.has(item.id)
         ? { ...item, linkedInternalAlumnusId: addedMap.get(item.id) ?? null, reviewStatus: DISCOVERY_REVIEW_STATUS.added }
         : item))
+      setActiveDiscoveryRun(current => current ? { ...current, pendingCount: Math.max(0, current.pendingCount - added.length) } : current)
       setSelectedDiscoveryIds([])
-      setDiscoveryMessage(`${data.addedCount ?? data.added.length} alumn${data.added.length === 1 ? "us" : "i"} added. Contact enrichment is now available.`)
+      setDiscoveryMessage(`${data.addedCount ?? added.length} alumn${added.length === 1 ? "us" : "i"} added. Contact enrichment is now available.`)
       await Promise.all([loadWorkspace(), loadPendingDiscoverySummary()])
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to add the selected alumni.")
@@ -1794,6 +1825,7 @@ export default function Home() {
     const response = await fetch(API_ROUTES.discovery, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "ignore", resultId, reason }) })
     if (response.ok) {
       setDiscoveryResults(current => current.map(item => item.id === resultId ? { ...item, reviewStatus: "Ignored", reviewNote: reason } : item))
+      setActiveDiscoveryRun(current => current ? { ...current, pendingCount: Math.max(0, current.pendingCount - 1) } : current)
       setIgnoreResult(null)
       setDiscoveryMessage(`External result ignored: ${reason}. The decision is saved for other committee members.`)
       await loadPendingDiscoverySummary()
@@ -1827,6 +1859,7 @@ export default function Home() {
       const data = await response.json() as { changedFields?: string[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to apply the selected updates.")
       setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, reviewStatus: data.changedFields?.length ? "Updates applied" : "Compared, no changes" } : item))
+      setActiveDiscoveryRun(current => current ? { ...current, pendingCount: Math.max(0, current.pendingCount - 1) } : current)
       setDiscoveryMessage(data.changedFields?.length ? `${data.changedFields.length} professional fields updated and recorded in Change History.` : "No professional changes detected. The Coresignal interaction remains in Provider History.")
       setComparisonResult(null)
       setSelectedComparisonFields([])
@@ -1846,6 +1879,7 @@ export default function Home() {
       const data = await response.json() as { alumnusId?: number; error?: string }
       if (!response.ok || !data.alumnusId) throw new Error(data.error || "Unable to keep this alumnus as a separate record.")
       setDiscoveryResults(current => current.map(item => item.id === comparisonResult.id ? { ...item, linkedInternalAlumnusId: data.alumnusId!, reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate } : item))
+      setActiveDiscoveryRun(current => current ? { ...current, pendingCount: Math.max(0, current.pendingCount - 1) } : current)
       setComparisonResult(null)
       setSelectedComparisonFields([])
       setDiscoveryMessage("The reviewed profile was added as a separate alumnus. Lusha enrichment is now available from the internal profile.")
@@ -2114,26 +2148,29 @@ export default function Home() {
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">
-                <div><p className="eyebrow">External discovery</p><h2>{discoveryState === "blocked" ? "External search not run" : discoveryState === "empty" ? "No additional profiles found" : `${discoveryResults.length} external profiles found`}</h2><span>{discoveryState === "blocked" ? "The previous search state is retained below." : `Education affiliation and current-role evidence are reviewed before any record enters ${appConfig.name}.`}</span></div>
-                <div className="fixed-criterion"><span>Fixed alumni criterion</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div>
+                <div><p className="eyebrow">External discovery</p><h2>{discoveryState === "blocked" ? "External search not run" : discoveryState === "empty" ? "No additional profiles found" : `${discoveryResults.length} external profiles found`}</h2><span>{discoveryState === "blocked" ? "The previous search state is retained below." : activeDiscoveryRun ? `Search #${activeDiscoveryRun.searchId} · ${activeDiscoveryRun.provider.toUpperCase()} · ${activeDiscoveryRun.mode.toUpperCase()}` : `Education affiliation and current-role evidence are reviewed before any record enters ${appConfig.name}.`}</span></div>
+                <div className="fixed-criterion"><span>{activeDiscoveryRun ? "Active discovery run" : "Fixed alumni criterion"}</span><strong>{activeDiscoveryRun ? `Search #${activeDiscoveryRun.searchId}` : FIXED_ALUMNI_SCHOOL}</strong>{activeDiscoveryRun && <small>{activeDiscoveryRun.provider.toUpperCase()} · {activeDiscoveryRun.mode.toUpperCase()}</small>}</div>
               </div>
-              {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Alumni status</span><strong>{lastDiscoveryFilters.alumniStatus}</strong></div><div><span>Programmes</span><strong>{lastDiscoveryFilters.discoveryProgrammes.join(", ") || "None selected"}</strong></div><div><span>Company</span><strong>{lastDiscoveryFilters.company || "Any company"}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.graduationYear || "Any year"}</strong></div><div><span>Results requested / returned</span><strong>{discoveryRequestedCount ?? discoveryLimit} / {discoveryReturnedCount ?? discoveryResults.length}</strong></div></div>}
+              {lastDiscoveryFilters && <div className="external-search-summary"><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong><small>Fixed</small></div><div><span>Alumni status</span><strong>{lastDiscoveryFilters.alumniStatus}</strong></div><div><span>Programmes</span><strong>{lastDiscoveryFilters.discoveryProgrammes.join(", ") || "None selected"}</strong></div><div><span>Company</span><strong>{lastDiscoveryFilters.company || "Any company"}</strong></div><div><span>Role</span><strong>{lastDiscoveryFilters.role || "Any role"}</strong></div><div><span>Function</span><strong>{lastDiscoveryFilters.function}</strong></div><div><span>Seniority</span><strong>{lastDiscoveryFilters.seniority}</strong></div><div><span>Location</span><strong>{lastDiscoveryFilters.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{lastDiscoveryFilters.graduationYear || "Any year"}</strong></div><div><span>Requested</span><strong>{activeDiscoveryRun?.requestedCount ?? "Unavailable for this historical run"}</strong></div><div><span>Provider returned</span><strong>{activeDiscoveryRun?.providerResultCount ?? "Not recorded"}</strong></div><div><span>Stored for review</span><strong>{activeDiscoveryRun?.storedResultCount ?? discoveryResults.length}</strong><small>{activeDiscoveryRun ? `${activeDiscoveryRun.pendingCount} pending review` : "Current result set"}</small></div><div><span>Run</span><strong>{activeDiscoveryRun ? displayEventDate(activeDiscoveryRun.createdAt) : "Not recorded"}</strong><small>{activeDiscoveryRun?.initiatedBy || "Initiator unavailable"}</small></div><div><span>Application units</span><strong>{activeDiscoveryRun?.applicationUnits ?? "Not recorded"}</strong><small>Search-scoped provider history</small></div></div>}
+              {previousDiscoveryRuns.length > 0 && <div className="previous-discovery-runs"><div><strong>Previous discovery runs</strong><small>Each run retains its own results, filters, and provider provenance.</small></div><div>{previousDiscoveryRuns.map(run => <Button key={run.searchId} size="sm" variant="outline" disabled={loadingPendingReview} onClick={() => void reviewPendingDiscoveryResults(run.searchId)}><span>#{run.searchId} · {run.provider.toUpperCase()} · {run.mode.toUpperCase()}</span><small>{run.criteriaSummary || "Criteria unavailable"} · {run.pendingCount} pending · {displayEventDate(run.createdAt)}</small></Button>)}</div></div>}
               <div className="discovery-controls">
                 <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
-                {discoveryCountControl("Run again", "outline")}
+                <div className="discovery-run-again"><strong>Run again</strong><small>These controls create a separate discovery run.</small>{discoveryCountControl("Run new search", "outline")}</div>
               </div>
+              {activeDiscoveryHistory.length > 0 && <div className="discovery-run-history"><strong>Search #{activeDiscoveryRun?.searchId} provider operations</strong>{activeDiscoveryHistory.map(item => <span key={item.id}>{item.operation} · {item.status} · {item.applicationUnits ?? 0} application unit{item.applicationUnits === 1 ? "" : "s"} · {item.createdAt}</span>)}</div>}
               <div className="credit-notice"><Activity /><span>External discovery consumes the configured application allowance separately from provider-account usage. If Coresignal does not report account usage, it remains unknown until reconciled. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
               {selectedDiscoveryIds.length > 0 && <div className="batch-approval"><span>{selectedDiscoveryIds.length} clearly new profile{selectedDiscoveryIds.length === 1 ? "" : "s"} selected</span><Button onClick={() => void approveDiscoveryResults(selectedDiscoveryIds)} disabled={discovering}><Plus /> Add Selected to {appConfig.name}</Button></div>}
               <div className="discovery-table-wrap"><Table>
                 <TableHeader><TableRow><TableHead>Select</TableHead><TableHead>Name and education</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Seniority</TableHead><TableHead>Location</TableHead><TableHead>Database match</TableHead><TableHead>Identity match confidence</TableHead><TableHead>Professional profile</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                 <TableBody>{discoveryResults.map(result => {
-                  const canAdd = result.matchStatus === "New" && result.reviewStatus === "Pending review" && result.eligibleForAddition === true
+                  const provenanceConsistent = result.providerIntegrity === "consistent"
+                  const canAdd = provenanceConsistent && result.matchStatus === "New" && result.reviewStatus === "Pending review" && result.eligibleForAddition === true
                   const added = ADDED_DISCOVERY_STATUSES.has(result.reviewStatus) && result.linkedInternalAlumnusId
                   const professionalProfileUrl = normalizeProfessionalProfileUrl(result.linkedinUrl)
                   return <TableRow key={result.id}>
                     <TableCell><input type="checkbox" aria-label={`Select ${result.name}`} disabled={!canAdd} checked={selectedDiscoveryIds.includes(result.id)} onChange={() => toggleDiscoverySelection(result.id)} /></TableCell>
-                    <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>{result.education}</small><small>Raw programme: {result.educationProgramme || "Not returned"}</small><small>Corporate Network programme: {result.normalizedProgramme || result.programmeStatus || "Programme requires review"}</small><small>Graduation: {result.graduationYear || "Date not returned"} · {result.alumniStatus || "Graduation status unknown — review required"}</small><small>{result.affiliationStatus ?? "Potential alumnus — review required"}</small></span></TableCell>
+                    <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>Search #{result.searchId} · {(result.provider || "Provider unavailable").toUpperCase()} · {(result.searchMode || "mode unavailable").toUpperCase()}</small><small>Provider person ID: {result.providerPersonId || "Not returned"} · Retrieved: {result.retrievedAt ? displayEventDate(result.retrievedAt) : "Not recorded"}</small>{!provenanceConsistent && <small className="provider-integrity-warning">Provider mismatch — review actions blocked</small>}<small>{result.education}</small><small>Raw programme: {result.educationProgramme || "Not returned"}</small><small>Corporate Network programme: {result.normalizedProgramme || result.programmeStatus || "Programme requires review"}</small><small>Graduation: {result.graduationYear || "Date not returned"} · {result.alumniStatus || "Graduation status unknown — review required"}</small><small>{result.affiliationStatus ?? "Potential alumnus — review required"}</small></span></TableCell>
                     <TableCell><span className="stacked-cell"><strong>{result.currentRoleAmbiguous ? "Multiple current roles — review required" : result.currentCompany}</strong><small>{result.currentRoleAmbiguous ? "No current employer selected automatically" : result.role}</small></span></TableCell>
                     <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
                     <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{discoveryReviewLabel(result.reviewStatus)}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small></TableCell>
@@ -2141,11 +2178,11 @@ export default function Home() {
                     <TableCell>{professionalProfileUrl ? <span className="stacked-cell"><a className="professional-link" href={professionalProfileUrl} target="_blank" rel="noopener noreferrer">View LinkedIn Profile <ArrowUpRight /></a><small>{result.provider?.toLowerCase() === "pdl" ? "Historical PDL" : "Coresignal"} sourced professional profile</small></span> : <span className="muted-cell">Not returned or invalid</span>}</TableCell>
                     <TableCell><div className="row-actions">
                       {canAdd && <Button size="sm" onClick={() => void approveDiscoveryResults([result.id])}><Plus /> Add</Button>}
-                      {result.reviewStatus === "Pending review" && (result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate") && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><GitCompare /> Compare</Button>}
-                      {result.reviewStatus === "Pending review" && result.matchStatus === "Needs review" && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><Eye /> Review</Button>}
-                      {result.reviewStatus === "Pending review" && result.affiliationStatus !== "Confirmed degree alumnus" && <Select value={result.affiliationStatus ?? "Potential alumnus — review required"} onValueChange={value => void qualifyDiscoveryResult(result, value as NonNullable<DiscoveryResult["affiliationStatus"]>)}><SelectTrigger aria-label={`Classify ${result.name} affiliation`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Confirmed degree alumnus">Confirmed degree alumnus</SelectItem><SelectItem value="Potential alumnus — review required">Potential alumnus — review required</SelectItem><SelectItem value="Short-term / exchange affiliation">Short-term / exchange affiliation</SelectItem></SelectContent></Select>}
+                      {provenanceConsistent && result.reviewStatus === "Pending review" && (result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate") && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><GitCompare /> Compare</Button>}
+                      {provenanceConsistent && result.reviewStatus === "Pending review" && result.matchStatus === "Needs review" && <Button size="sm" variant="outline" onClick={() => openComparison(result)}><Eye /> Review</Button>}
+                      {provenanceConsistent && result.reviewStatus === "Pending review" && result.affiliationStatus !== "Confirmed degree alumnus" && <Select value={result.affiliationStatus ?? "Potential alumnus — review required"} onValueChange={value => void qualifyDiscoveryResult(result, value as NonNullable<DiscoveryResult["affiliationStatus"]>)}><SelectTrigger aria-label={`Classify ${result.name} affiliation`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Confirmed degree alumnus">Confirmed degree alumnus</SelectItem><SelectItem value="Potential alumnus — review required">Potential alumnus — review required</SelectItem><SelectItem value="Short-term / exchange affiliation">Short-term / exchange affiliation</SelectItem></SelectContent></Select>}
                       {added && (() => { const person = alumni.find(item => item.id === result.linkedInternalAlumnusId); return person ? providerModes.lusha === "live" ? <><Button size="sm" variant="outline" onClick={() => prepareLushaReveal(person, "email")}>Prepare Email Reveal</Button><Button size="sm" variant="outline" onClick={() => prepareLushaReveal(person, "phone")}>Prepare Phone Reveal</Button></> : <><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email", "phone"])}>Get Both Contacts</Button></> : null })()}
-                      {result.reviewStatus === "Pending review" && <Button size="sm" variant="ghost" onClick={() => { setIgnoreResult(result); setIgnoreReason("Wrong person") }}><XCircle /> Ignore</Button>}
+                      {provenanceConsistent && result.reviewStatus === "Pending review" && <Button size="sm" variant="ghost" onClick={() => { setIgnoreResult(result); setIgnoreReason("Wrong person") }}><XCircle /> Ignore</Button>}
                     </div></TableCell>
                   </TableRow>
                 })}</TableBody>

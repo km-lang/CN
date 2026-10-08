@@ -320,7 +320,7 @@ test("zero results and provider failures remain explicit", async () => {
 test("review-before-add, Keep Existing, and selected-field apply remain enforced", () => {
   assert.match(discoveryRoute, /affiliationStatus !== "Confirmed degree alumnus"/)
   assert.match(discoveryRoute, /qualificationForResult[\s\S]*eligibleForAddition/)
-  assert.match(discoveryRoute, /Only past alumni with a confirmed selected programme/)
+  assert.match(discoveryRoute, /Only provenance-consistent past alumni with a confirmed selected programme/)
   assert.match(discoveryRoute, /action === "qualify"/)
   assert.match(enrichmentRoute, /status: applied\.length \? "Applied" : "Reviewed — kept existing"/)
   assert.match(page, /Apply Selected Updates/)
