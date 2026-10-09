@@ -72,11 +72,11 @@ export default defineConfig(async ({ command, mode }) => {
         GMAIL_SEND_SCOPE_CONFIRMED: "false",
         APP_PUBLIC_URL: "http://localhost:3000",
         APP_BASE_PATH: "/",
-        ...(process.env.INTELLIGENCE_SERVICE_URL?.trim()
-          ? { INTELLIGENCE_SERVICE_URL: process.env.INTELLIGENCE_SERVICE_URL.trim() }
+        ...(localEnvironment.INTELLIGENCE_SERVICE_URL?.trim()
+          ? { INTELLIGENCE_SERVICE_URL: localEnvironment.INTELLIGENCE_SERVICE_URL.trim() }
           : {}),
-        ...(process.env.INTELLIGENCE_SERVICE_SECRET?.trim()
-          ? { INTELLIGENCE_SERVICE_SECRET: process.env.INTELLIGENCE_SERVICE_SECRET.trim() }
+        ...(localEnvironment.INTELLIGENCE_SERVICE_SECRET?.trim()
+          ? { INTELLIGENCE_SERVICE_SECRET: localEnvironment.INTELLIGENCE_SERVICE_SECRET.trim() }
           : {}),
       }
     : {};

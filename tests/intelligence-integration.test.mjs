@@ -36,8 +36,8 @@ test("service credential remains in the server adapter and is never referenced b
 
 test("local development forwards intelligence configuration only as server runtime variables", async () => {
   const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8")
-  assert.match(viteConfig, /INTELLIGENCE_SERVICE_URL: process\.env\.INTELLIGENCE_SERVICE_URL\.trim\(\)/)
-  assert.match(viteConfig, /INTELLIGENCE_SERVICE_SECRET: process\.env\.INTELLIGENCE_SERVICE_SECRET\.trim\(\)/)
+  assert.match(viteConfig, /INTELLIGENCE_SERVICE_URL: localEnvironment\.INTELLIGENCE_SERVICE_URL\.trim\(\)/)
+  assert.match(viteConfig, /INTELLIGENCE_SERVICE_SECRET: localEnvironment\.INTELLIGENCE_SERVICE_SECRET\.trim\(\)/)
   assert.doesNotMatch(viteConfig, /NEXT_PUBLIC_INTELLIGENCE/)
 })
 
