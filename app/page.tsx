@@ -235,9 +235,34 @@ type DiscoveryResult = {
   searchMode?: string
   retrievedAt?: string
   providerIntegrity?: "consistent" | "provider_mismatch" | "search_missing"
+  plannerClassification?: "KNOWN_PROVIDER_ID" | "KNOWN_PROFILE_URL" | "KNOWN_STRONG_IDENTITY" | "NEW_CANDIDATE" | "AMBIGUOUS" | "PREVIOUSLY_REJECTED"
+  collectDecision?: "DO_NOT_COLLECT" | "COLLECT_RECOMMENDED" | "REVIEW_BEFORE_COLLECT"
+  plannerReasonCode?: string
+  plannerRationale?: string
+  reconciledAlumnusId?: number | null
 }
 
 type DiscoveryCounts = { existing: number; new: number; possibleDuplicate: number; needsReview: number }
+type DiscoveryCoveragePlan = {
+  overallState: "NEVER_SEARCHED" | "RECENTLY_SEARCHED" | "STALE_SEARCH" | "PARTIALLY_COVERED"
+  policy: { recentSearchWindowDays: number; advisoryOnly: boolean }
+  counts: { requested: number; recentlySearched: number; stale: number; neverSearched: number }
+  searchSegmentsRequiringProviderQuery: number
+  lastEquivalentSearch: { lastSearchId: number | null; lastSearchedAt: string | null; daysSinceLastSearch: number | null; mode: string | null } | null
+}
+type ReconciliationSummary = {
+  candidatesReturned: number
+  knownProviderIds: number
+  knownProfileUrls: number
+  knownStrongIdentities: number
+  newCandidates: number
+  ambiguousCandidates: number
+  previouslyRejected: number
+  alreadyKnown: number
+  collectRecommended: number
+  collectReviewRequired: number
+  collectAvoided: number
+}
 type DiscoveryRunSummary = {
   searchId: number
   provider: string
@@ -543,6 +568,10 @@ export default function Home() {
   const [activeDiscoveryRun, setActiveDiscoveryRun] = useState<DiscoveryRunSummary | null>(null)
   const [previousDiscoveryRuns, setPreviousDiscoveryRuns] = useState<DiscoveryRunSummary[]>([])
   const [activeDiscoveryHistory, setActiveDiscoveryHistory] = useState<ProviderHistory[]>([])
+  const [discoveryCoverage, setDiscoveryCoverage] = useState<DiscoveryCoveragePlan | null>(null)
+  const [discoveryCoverageLoading, setDiscoveryCoverageLoading] = useState(false)
+  const [discoveryCoverageError, setDiscoveryCoverageError] = useState("")
+  const [discoveryReconciliation, setDiscoveryReconciliation] = useState<ReconciliationSummary | null>(null)
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
@@ -732,6 +761,33 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadPendingDiscoverySummary(), 0)
     return () => window.clearTimeout(timer)
   }, [loadPendingDiscoverySummary, session.canOperate])
+
+  useEffect(() => {
+    if (!session.canOperate) return
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      setDiscoveryCoverageLoading(true)
+      setDiscoveryCoverageError("")
+      try {
+        const response = await fetch(API_ROUTES.discovery, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "plan", filters: discoveryFilters }),
+          signal: controller.signal,
+        })
+        const data = await response.json() as { coverage?: DiscoveryCoveragePlan; providerCallMade?: boolean; applicationUnits?: number; error?: string }
+        if (!response.ok || !data.coverage) throw new Error(data.error || "Unable to plan discovery coverage.")
+        setDiscoveryCoverage(data.coverage)
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return
+        setDiscoveryCoverage(null)
+        setDiscoveryCoverageError(error instanceof Error ? error.message : "Unable to plan discovery coverage.")
+      } finally {
+        if (!controller.signal.aborted) setDiscoveryCoverageLoading(false)
+      }
+    }, 250)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [discoveryFilters, session.canOperate])
 
   const loadEngagements = useCallback(async () => {
     if (!session.canOperate) return
@@ -1652,6 +1708,7 @@ export default function Home() {
     setDiscoveryMessage("")
     setDiscoveryState("idle")
     setLastDiscoveryFilters(null)
+    setDiscoveryReconciliation(null)
   }
 
   function toggleDiscoveryProgramme(code: string) {
@@ -1706,6 +1763,7 @@ export default function Home() {
         activeSearch?: DiscoveryRunSummary | null
         previousSearches?: DiscoveryRunSummary[]
         providerHistory?: ProviderHistory[]
+        reconciliationSummary?: ReconciliationSummary | null
         creditsUsed?: number
         retrieval?: string
         source?: { provider: string; mode: string; searchId: number }
@@ -1720,6 +1778,7 @@ export default function Home() {
       setActiveDiscoveryRun(data.activeSearch ?? null)
       setPreviousDiscoveryRuns(data.previousSearches ?? [])
       setActiveDiscoveryHistory(data.providerHistory ?? [])
+      setDiscoveryReconciliation(data.reconciliationSummary ?? null)
       setDiscoveryState(data.results.length ? "results" : "empty")
       const provenance = data.activeSearch ? `${data.activeSearch.provider.toUpperCase()} ${data.activeSearch.mode.toUpperCase()} Search #${data.activeSearch.searchId}` : "external"
       setDiscoveryMessage(data.results.length
@@ -1742,7 +1801,7 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
       })
-      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; activeSearch?: DiscoveryRunSummary; previousSearches?: DiscoveryRunSummary[]; providerHistory?: ProviderHistory[]; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; error?: string; blocked?: boolean }
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; reconciliationSummary?: ReconciliationSummary | null; activeSearch?: DiscoveryRunSummary; previousSearches?: DiscoveryRunSummary[]; providerHistory?: ProviderHistory[]; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; error?: string; blocked?: boolean }
       if (data.blocked) {
         setDiscoveryState("blocked")
         setDiscoveryMessage(data.error || "External search could not be run because the Coresignal application limit has been reached.")
@@ -1755,6 +1814,7 @@ export default function Home() {
       setActiveDiscoveryHistory(data.providerHistory ?? [])
       setDiscoveryResults(data.results)
       setDiscoveryCounts(data.counts)
+      setDiscoveryReconciliation(data.reconciliationSummary ?? null)
       setSelectedDiscoveryIds([])
       setDiscoveryState(data.results.length ? "results" : "empty")
       setDiscoveryMessage(data.results.length
@@ -2158,6 +2218,15 @@ export default function Home() {
                 <label><span>Location</span><Input value={discoveryFilters.location} onChange={event => updateDiscoveryFilter("location", event.target.value)} placeholder="Any location" aria-label="Discovery location" /></label>
                 <label><span>Graduation year</span><Input type="number" min="1980" max="2100" value={discoveryFilters.graduationYear} onChange={event => updateDiscoveryFilter("graduationYear", event.target.value)} placeholder="Any year" aria-label="Discovery graduation year" /></label>
               </div>
+              <div className="discovery-coverage-plan" role="status" aria-live="polite">
+                <div><span>Discovery coverage</span><strong>{discoveryCoverageLoading ? "Checking stored search history…" : discoveryCoverage?.overallState.replaceAll("_", " ") ?? "Unavailable"}</strong><small>{discoveryCoverage?.lastEquivalentSearch?.lastSearchedAt ? `Last equivalent search ${discoveryCoverage.lastEquivalentSearch.daysSinceLastSearch} day${discoveryCoverage.lastEquivalentSearch.daysSinceLastSearch === 1 ? "" : "s"} ago · Search #${discoveryCoverage.lastEquivalentSearch.lastSearchId}` : "No equivalent stored search found for the current filters."}</small></div>
+                <div><span>Segments requested</span><strong>{discoveryCoverage?.counts.requested ?? "—"}</strong></div>
+                <div><span>Recently searched</span><strong>{discoveryCoverage?.counts.recentlySearched ?? "—"}</strong></div>
+                <div><span>Stale</span><strong>{discoveryCoverage?.counts.stale ?? "—"}</strong></div>
+                <div><span>Never searched</span><strong>{discoveryCoverage?.counts.neverSearched ?? "—"}</strong></div>
+                <div><span>Provider-query segments</span><strong>{discoveryCoverage?.searchSegmentsRequiringProviderQuery ?? "—"}</strong><small>Plan only · no provider call</small></div>
+              </div>
+              {discoveryCoverageError && <small className="discovery-coverage-error">{discoveryCoverageError}</small>}
               {discoveryCountControl("Discover More Alumni")}
             </section>}
 
@@ -2172,6 +2241,18 @@ export default function Home() {
                 <div className="reconciliation-summary"><span><strong>{discoveryCounts.existing}</strong> already mapped</span><span><strong>{discoveryCounts.new}</strong> new</span><span><strong>{discoveryCounts.possibleDuplicate}</strong> possible duplicates</span><span><strong>{discoveryCounts.needsReview}</strong> needs review</span></div>
                 <div className="discovery-run-again"><strong>Run again</strong><small>These controls create a separate discovery run.</small>{discoveryCountControl("Run new search", "outline")}</div>
               </div>
+              {discoveryReconciliation && <div className="selective-collect-plan">
+                <div><span>Candidate reconciliation</span><strong>{discoveryReconciliation.candidatesReturned} provider candidates</strong><small>Derived from stored CN identity and review evidence.</small></div>
+                <span><strong>{discoveryReconciliation.knownProviderIds}</strong> known provider IDs</span>
+                <span><strong>{discoveryReconciliation.knownProfileUrls}</strong> known profile URLs</span>
+                <span><strong>{discoveryReconciliation.knownStrongIdentities}</strong> strong identity matches</span>
+                <span><strong>{discoveryReconciliation.newCandidates}</strong> new candidates</span>
+                <span><strong>{discoveryReconciliation.ambiguousCandidates}</strong> needs identity review</span>
+                <span><strong>{discoveryReconciliation.previouslyRejected}</strong> previously rejected</span>
+                <span><strong>{discoveryReconciliation.collectRecommended}</strong> profile collects recommended</span>
+                <span><strong>{discoveryReconciliation.collectReviewRequired}</strong> review before collect</span>
+                <span><strong>{discoveryReconciliation.collectAvoided}</strong> potential profile collections avoided</span>
+              </div>}
               {activeDiscoveryHistory.length > 0 && <div className="discovery-run-history"><strong>Search #{activeDiscoveryRun?.searchId} provider operations</strong>{activeDiscoveryHistory.map(item => <span key={item.id}>{item.operation} · {item.status} · {item.applicationUnits ?? 0} application unit{item.applicationUnits === 1 ? "" : "s"} · {item.createdAt}</span>)}</div>}
               <div className="credit-notice"><Activity /><span>External discovery consumes the configured application allowance separately from provider-account usage. If Coresignal does not report account usage, it remains unknown until reconciled. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
@@ -2188,7 +2269,7 @@ export default function Home() {
                     <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>Search #{result.searchId} · {(result.provider || "Provider unavailable").toUpperCase()} · {(result.searchMode || "mode unavailable").toUpperCase()}</small><small>Provider person ID: {result.providerPersonId || "Not returned"} · Retrieved: {result.retrievedAt ? displayEventDate(result.retrievedAt) : "Not recorded"}</small>{!provenanceConsistent && <small className="provider-integrity-warning">Provider mismatch — review actions blocked</small>}<small>{result.education}</small><small>Raw programme: {result.educationProgramme || "Not returned"}</small><small>Corporate Network programme: {result.normalizedProgramme || result.programmeStatus || "Programme requires review"}</small><small>Graduation: {result.graduationYear || "Date not returned"} · {result.alumniStatus || "Graduation status unknown — review required"}</small><small>{result.affiliationStatus ?? "Potential alumnus — review required"}</small></span></TableCell>
                     <TableCell><span className="stacked-cell"><strong>{result.currentRoleAmbiguous ? "Multiple current roles — review required" : result.currentCompany}</strong><small>{result.currentRoleAmbiguous ? "No current employer selected automatically" : result.role}</small></span></TableCell>
                     <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
-                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{discoveryReviewLabel(result.reviewStatus)}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small></TableCell>
+                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{discoveryReviewLabel(result.reviewStatus)}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small>{result.plannerClassification && <span className="planner-rationale"><strong>{result.plannerClassification.replaceAll("_", " ")}</strong><small>{result.plannerRationale}</small><em>{result.collectDecision?.replaceAll("_", " ")}</em></span>}</TableCell>
                     <TableCell><span className={`score-pill ${scoreTone(result.matchConfidence)}`}>{result.matchConfidence}%</span></TableCell>
                     <TableCell>{professionalProfileUrl ? <span className="stacked-cell"><a className="professional-link" href={professionalProfileUrl} target="_blank" rel="noopener noreferrer">View LinkedIn Profile <ArrowUpRight /></a><small>{result.provider?.toLowerCase() === "pdl" ? "Historical PDL" : "Coresignal"} sourced professional profile</small></span> : <span className="muted-cell">Not returned or invalid</span>}</TableCell>
                     <TableCell><div className="row-actions">

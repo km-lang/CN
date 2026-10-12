@@ -13,6 +13,9 @@ import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib
 import { discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
 import { discoveredAlumniYearValues } from "@/lib/alumni-education"
 import { discoveryClassificationCounts, discoveryRunSummary, previousDiscoveryRuns, resultProviderIntegrity, selectActiveDiscoveryRun } from "@/lib/discovery-runs"
+import { discoveryCoveragePlan } from "@/lib/discovery-coverage"
+import { CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES } from "@/lib/discovery-provider-capabilities"
+import { reconcileDiscoveryCandidate, reconcileDiscoveryCandidates, selectiveCollectSummary, type ReconciliationCandidate, type RejectedCandidateEvidence } from "@/lib/discovery-reconciliation"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -53,6 +56,16 @@ function qualificationForResult(result: typeof externalDiscoveryResults.$inferSe
   return discoveryQualification(result.educationProgramme, result.educationEndDate, filters.discoveryProgrammes, now)
 }
 
+function reconciliationPresentation(reconciliation?: ReturnType<typeof reconcileDiscoveryCandidate>) {
+  return reconciliation ? {
+    plannerClassification: reconciliation.classification,
+    collectDecision: reconciliation.collectDecision,
+    plannerReasonCode: reconciliation.reasonCode,
+    plannerRationale: reconciliation.rationale,
+    reconciledAlumnusId: reconciliation.linkedAlumnusId,
+  } : {}
+}
+
 function presentResult(result: typeof externalDiscoveryResults.$inferSelect, filters: DiscoveryFilters, now: Date, search?: typeof externalDiscoverySearches.$inferSelect) {
   return {
     ...result,
@@ -64,19 +77,48 @@ function presentResult(result: typeof externalDiscoveryResults.$inferSelect, fil
   }
 }
 
-function classify(profile: DiscoveryProfile, people: (typeof alumni.$inferSelect)[]) {
-  const providerId = normalized(profile.providerPersonId)
-  const linkedin = normalized(profile.linkedinUrl)
-  const name = normalized(profile.name)
-  const exact = people.find(person => (providerId && normalized(person.coresignalEmployeeId) === providerId)
-    || (linkedin && normalized(person.linkedinUrl) === linkedin)
-    || (name === normalized(person.name) && profile.graduationYear > 0 && (person.graduationYear || person.batch) === profile.graduationYear))
-  if (exact) return { matchStatus: "Already in database" as MatchStatus, linkedInternalAlumnusId: exact.id, matchConfidence: Math.max(95, profile.matchConfidence) }
-  const possible = people.find(person => name === normalized(person.name)
-    || (normalized(person.name).split(" ").at(-1) === name.split(" ").at(-1) && normalized(person.company) === normalized(profile.currentCompany)))
-  if (possible) return { matchStatus: "Possible duplicate" as MatchStatus, linkedInternalAlumnusId: possible.id, matchConfidence: Math.min(84, profile.matchConfidence) }
-  if (profile.affiliationStatus !== "Confirmed degree alumnus" || profile.currentRoleAmbiguous || !profile.eligibleForAddition) return { matchStatus: "Needs review" as MatchStatus, linkedInternalAlumnusId: null, matchConfidence: profile.matchConfidence }
-  return { matchStatus: "New" as MatchStatus, linkedInternalAlumnusId: null, matchConfidence: profile.matchConfidence }
+function profileCandidate(profile: DiscoveryProfile): ReconciliationCandidate {
+  return {
+    candidateKey: profile.providerResultId || profile.providerPersonId,
+    providerEmployeeId: profile.providerPersonId,
+    profileUrl: profile.linkedinUrl,
+    name: profile.name,
+    educationInstitution: profile.education,
+    programme: profile.normalizedProgramme || profile.educationProgramme,
+    graduationYear: profile.graduationYear,
+    currentCompany: profile.currentCompany,
+    currentTitle: profile.role,
+  }
+}
+
+function storedCandidate(result: typeof externalDiscoveryResults.$inferSelect): ReconciliationCandidate {
+  return {
+    candidateKey: result.providerResultId || result.providerPersonId,
+    providerEmployeeId: result.providerPersonId || result.providerResultId,
+    profileUrl: result.linkedinUrl,
+    name: result.name,
+    educationInstitution: result.education,
+    programme: result.educationProgramme,
+    graduationYear: result.graduationYear,
+    currentCompany: result.currentCompany,
+    currentTitle: result.role,
+  }
+}
+
+function rejectedEvidence(results: readonly (typeof externalDiscoveryResults.$inferSelect)[]): RejectedCandidateEvidence[] {
+  return results.filter(result => result.reviewStatus === "Ignored").map(result => ({ ...storedCandidate(result), reviewStatus: result.reviewStatus, resultId: result.id }))
+}
+
+function classify(profile: DiscoveryProfile, people: (typeof alumni.$inferSelect)[], rejected: readonly RejectedCandidateEvidence[]) {
+  const reconciliation = reconcileDiscoveryCandidate(profileCandidate(profile), people, rejected, CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
+  if (["KNOWN_PROVIDER_ID", "KNOWN_PROFILE_URL", "KNOWN_STRONG_IDENTITY"].includes(reconciliation.classification)) {
+    return { matchStatus: "Already in database" as MatchStatus, linkedInternalAlumnusId: reconciliation.linkedAlumnusId, matchConfidence: Math.max(95, profile.matchConfidence), reconciliation }
+  }
+  if (reconciliation.classification === "NEW_CANDIDATE" && profile.affiliationStatus === "Confirmed degree alumnus" && !profile.currentRoleAmbiguous && profile.eligibleForAddition) {
+    return { matchStatus: "New" as MatchStatus, linkedInternalAlumnusId: null, matchConfidence: profile.matchConfidence, reconciliation }
+  }
+  const possibleDuplicate = reconciliation.classification === "AMBIGUOUS" && reconciliation.reasonCode.includes("MATCH")
+  return { matchStatus: (possibleDuplicate ? "Possible duplicate" : "Needs review") as MatchStatus, linkedInternalAlumnusId: reconciliation.linkedAlumnusId, matchConfidence: Math.min(84, profile.matchConfidence), reconciliation }
 }
 
 async function remainingApplicationUnits() {
@@ -149,20 +191,35 @@ export async function GET(request: Request) {
     const activeProviderHistory = activeSearch ? await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.searchId, activeSearch.id)).orderBy(providerResponseHistory.id) : []
     const activeSearchSummary = activeSearch ? discoveryRunSummary(activeSearch, activeResults, activeProviderHistory) : null
     const previousSearches = previousDiscoveryRuns(recentSearches, historyResults, activeSearch?.id ?? null)
-    const common = { pendingCount: pendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER }
+    const common = { pendingCount: pendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES }
     if (view === "summary") return Response.json(common)
     if (!activeSearch) return Response.json({ ...common, activeSearch: null, results: [], counts: discoveryClassificationCounts([]), filters: defaultDiscoveryFilters(), providerHistory: [], retrieval: "stored", source: null })
     const filters = storedDiscoveryFilters(activeSearch.filtersJson)
-    const presentedResults = activeResults.map(result => presentResult(result, filters, new Date(), activeSearch))
+    const [people, ignoredResults] = activeSearch.provider === PROFESSIONAL_DATA_PROVIDER ? await Promise.all([
+      db.select().from(alumni).orderBy(alumni.id),
+      db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.reviewStatus, "Ignored")),
+    ]) : [[], []]
+    const reconciliations = activeSearch.provider === PROFESSIONAL_DATA_PROVIDER
+      ? reconcileDiscoveryCandidates(activeResults.map(storedCandidate), people, rejectedEvidence(ignoredResults), CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
+      : []
+    const reconciliationByKey = new Map(reconciliations.map(item => [item.candidateKey, item]))
+    const presentedResults = activeResults.map(result => ({ ...presentResult(result, filters, new Date(), activeSearch), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)) }))
     const counts = discoveryClassificationCounts(activeResults)
-    return Response.json({ ...common, activeSearch: activeSearchSummary, results: presentedResults, counts, filters, providerHistory: activeProviderHistory, creditsUsed: activeSearch.creditsUsed, retrieval: "stored", source: { provider: activeSearch.provider, mode: activeSearch.mode, searchId: activeSearch.id, createdAt: activeSearch.createdAt } })
+    return Response.json({ ...common, activeSearch: activeSearchSummary, results: presentedResults, counts, reconciliationSummary: reconciliations.length ? selectiveCollectSummary(reconciliations) : null, filters, providerHistory: activeProviderHistory, creditsUsed: activeSearch.creditsUsed, retrieval: "stored", source: { provider: activeSearch.provider, mode: activeSearch.mode, searchId: activeSearch.id, createdAt: activeSearch.createdAt } })
   } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return Response.json({ error: error instanceof Error ? error.message : "Unable to load discovery history." }, { status: 500 }) }
 }
 
 export async function POST(request: Request) {
   try {
-    const payload = await request.json() as { action?: string; filters?: Partial<DiscoveryFilters>; limit?: number; resultIds?: number[]; resultId?: number; fields?: string[]; reason?: string; affiliationStatus?: string }
+    const payload = await request.json() as { action?: string; filters?: Partial<DiscoveryFilters>; graduationYears?: number[]; limit?: number; resultIds?: number[]; resultId?: number; fields?: string[]; reason?: string; affiliationStatus?: string }
     const context = await authorizeRequest(request, "OPERATE_PCOM"); const db = getDb(); const actor = context.displayName; const nowDate = new Date(); const now = nowDate.toISOString()
+
+    if (payload.action === "plan") {
+      const filters = normalizedDiscoveryFilters(payload.filters)
+      const history = await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.provider, PROFESSIONAL_DATA_PROVIDER)).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id))
+      const coverage = discoveryCoveragePlan(filters, history, { now: nowDate, provider: PROFESSIONAL_DATA_PROVIDER, mode: coresignalProvider.mode(), graduationYears: payload.graduationYears })
+      return Response.json({ provider: PROFESSIONAL_DATA_PROVIDER, mode: coresignalProvider.mode(), coverage, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, providerCallMade: false, applicationUnits: 0 })
+    }
 
     if (payload.action === "search") {
       const filters = normalizedDiscoveryFilters(payload.filters)
@@ -173,7 +230,11 @@ export async function POST(request: Request) {
       const maximum = coresignalProvider.mode() === "live" ? coresignalLiveSearchMaximum() : 100
       const validation = validateDiscoveryCount(payload.limit, remaining, maximum, searchOperationReserve)
       if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, filters, effectiveLimit: 0, maximumAllowed: validation.maximumAllowed }, { status: 400 })
-      const people = await db.select().from(alumni).orderBy(alumni.name)
+      const [people, ignoredResults] = await Promise.all([
+        db.select().from(alumni).orderBy(alumni.name),
+        db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.reviewStatus, "Ignored")),
+      ])
+      const rejected = rejectedEvidence(ignoredResults)
       let response
       try { response = await coresignalProvider.searchCandidates(filters, people, validation.requested) }
       catch (error) {
@@ -182,19 +243,20 @@ export async function POST(request: Request) {
         return Response.json({ error: failure.message, failureType: failure.kind, blocked: true, reason: "provider_error", filters, effectiveLimit: validation.requested }, { status: failure.status === 429 ? 429 : 502 })
       }
       const [search] = await db.insert(externalDiscoverySearches).values({ provider: PROFESSIONAL_DATA_PROVIDER, filtersJson: JSON.stringify(filters), criteriaSummary: criteriaSummary(filters), requestedCount: validation.requested, resultCount: response.profiles.length, creditsUsed: 0, mode: coresignalProvider.mode(), initiatedBy: actor }).returning()
-      const reconciled = response.profiles.map(profile => ({ profile, ...classify(profile, people) }))
+      const reconciled = response.profiles.map(profile => ({ profile, ...classify(profile, people, rejected) }))
       for (const item of reconciled) await db.insert(externalDiscoveryResults).values(resultValues(search.id, item.profile, item))
       const counts = { existing: reconciled.filter(i => i.matchStatus === "Already in database").length, new: reconciled.filter(i => i.matchStatus === "New").length, possibleDuplicate: reconciled.filter(i => i.matchStatus === "Possible duplicate").length, needsReview: reconciled.filter(i => i.matchStatus === "Needs review").length }
       await db.update(externalDiscoverySearches).set({ existingCount: counts.existing, newCount: counts.new, duplicateCount: counts.possibleDuplicate }).where(eq(externalDiscoverySearches.id, search.id))
       const [history] = await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: "Education affiliation search", mode: coresignalProvider.mode(), status: "success", creditsUsed: response.usage.providerReportedUsage ?? 0, applicationUnits: response.usage.applicationUnits, providerReportedCredits: response.usage.providerReportedUsage, usageState: response.usage.usageState, resultCount: response.profiles.length, requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: response.responseSummary, requestedBy: actor }).returning()
       const storedRows = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id)
-      const storedResults = storedRows.map(result => presentResult(result, filters, nowDate, search))
+      const reconciliationByKey = new Map(reconciled.map(item => [item.reconciliation.candidateKey, item.reconciliation]))
+      const storedResults = storedRows.map(result => ({ ...presentResult(result, filters, nowDate, search), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)) }))
       const recentSearches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10)
       const recentSearchIds = recentSearches.map(item => item.id)
       const recentResults = recentSearchIds.length ? await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, recentSearchIds)) : []
       const previousSearches = previousDiscoveryRuns(recentSearches, recentResults, search.id)
       await writeSecurityAudit(context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, mode: coresignalProvider.mode() } })
-      return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [history]), previousSearches, providerHistory: [history], results: storedResults, counts, requestedCount: validation.requested, returnedCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
+      return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [history]), previousSearches, providerHistory: [history], results: storedResults, counts, reconciliationSummary: selectiveCollectSummary(reconciled.map(item => item.reconciliation)), previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: validation.requested, returnedCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
     }
 
     if (payload.action === "qualify" && Number.isInteger(payload.resultId) && affiliationStatuses.has(String(payload.affiliationStatus))) {
