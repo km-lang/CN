@@ -17,6 +17,7 @@ import {
 } from "@/db/schema";
 import { createMailDraft, mailConfiguration, mailMode, sendMail } from "@/lib/mail-service";
 import { reusableManualEmailEvent } from "@/lib/controlled-email-draft";
+import { resolveEngagementOwner } from "@/lib/engagement-presentation";
 import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
 
 const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Completed", "Skipped"]);
@@ -40,7 +41,7 @@ async function loadWorkspace() {
     db.select().from(eventViews).orderBy(desc(eventViews.viewedAt), desc(eventViews.id)),
     db.select().from(engagementAuditLog).orderBy(desc(engagementAuditLog.createdAt), desc(engagementAuditLog.id)),
     db.select().from(alumniPrivacyControls),
-    db.select({ id: applicationUsers.id, displayName: applicationUsers.displayName }).from(applicationUsers).where(and(eq(applicationUsers.enabled, true), inArray(applicationUsers.role, ["ADMIN", "PCOM"]))),
+    db.select({ id: applicationUsers.id, displayName: applicationUsers.displayName, email: applicationUsers.email, enabled: applicationUsers.enabled, role: applicationUsers.role }).from(applicationUsers),
   ]);
   const peopleById = new Map(people.map(person => [person.id, person]));
   const birthdayByAlumnus = new Map(birthdays.map(item => [item.alumnusId, item]));
@@ -50,11 +51,12 @@ async function loadWorkspace() {
     mode: mailMode(),
     mail: { mode: mailMode(), ...mailConfiguration() },
     templates,
-    assignees,
+    assignees: assignees.filter(user => user.enabled && ["ADMIN", "PCOM"].includes(user.role)).map(({ id, displayName }) => ({ id, displayName })),
     events: events.map(event => {
       const person = peopleById.get(event.alumnusId);
       return {
         ...event,
+        owner: resolveEngagementOwner(event.assignedTo, assignees),
         alumnus: person ? {
           id: person.id,
           name: person.name,

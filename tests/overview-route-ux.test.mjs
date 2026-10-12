@@ -30,8 +30,10 @@ test("Overview birthday zero state is compact and reports ready-for-review work"
   assert.match(styles, /\.birthday-overview-empty\s*\{[^}]*padding-block:/s)
 })
 
-test("Overview uses one searchable target selector and deterministic ranking", () => {
-  assert.match(page, /<AlumnusCombobox options=\{targetAlumni}/)
+test("Overview uses searchable company and globally discoverable active-alumnus selectors with deterministic ranking", () => {
+  assert.match(page, /<CompanyCombobox options=\{companies\}/)
+  assert.match(page, /<AlumnusCombobox options=\{routeEligibleAlumni}/)
+  assert.match(page, /preferredCompany=\{overviewCompany\}/)
   assert.doesNotMatch(page, /overview-target-alumni|<datalist id="overview-target-alumni"/)
   assert.match(page, /Top alumni for outreach/)
   assert.match(page, /a\.name\.localeCompare\(b\.name\)/)

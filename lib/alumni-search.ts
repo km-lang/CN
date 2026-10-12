@@ -1,4 +1,4 @@
-import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
+import { matchesLinkedinProfileFilter, normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { DEFAULT_DISCOVERY_PROGRAMMES, type AlumniStatus, type AlumniStatusFilter, type ProgrammeStatus } from "@/lib/discovery-qualification";
 
 export const FIXED_ALUMNI_SCHOOL = "Indian Institute of Management Lucknow";
@@ -10,6 +10,7 @@ export type DirectoryFilters = {
   function: string;
   seniority: string;
   location: string;
+  linkedinUrl: string;
   programme: string;
   batch: string;
   previousCompany: string;
@@ -38,6 +39,7 @@ export type SearchableAlumnus = {
   function: string;
   seniority: string;
   location: string;
+  linkedinUrl?: string;
   programme: string;
   batch: number;
   graduationYear?: number;
@@ -164,6 +166,7 @@ export function matchesInternalFilters(
     && exactOrAll(normalizeFunction(person.function, person.title), filters.function, "All functions")
     && matchesSeniority(person.seniority, filters.seniority)
     && contains(person.location, filters.location)
+    && matchesLinkedinProfileFilter(person.linkedinUrl, filters.linkedinUrl)
     && exactOrAll(person.programme, filters.programme, "All programmes")
     && (!filters.batch || (person.batch || person.graduationYear) === Number(filters.batch))
     && contains(person.previous, filters.previousCompany)
@@ -330,6 +333,7 @@ export function defaultDirectoryFilters(): DirectoryFilters {
     function: "All functions",
     seniority: "All levels",
     location: "",
+    linkedinUrl: "",
     programme: "All programmes",
     batch: "",
     previousCompany: "",

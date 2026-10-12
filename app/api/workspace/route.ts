@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns, programmeOptions } from "@/db/schema";
 import type { ApplicationRole } from "@/lib/access-types";
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
+import { validateManualAlumnusInput } from "@/lib/manual-alumnus";
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
 
 const allowedStatuses = new Set(["Not contacted", "Contacted", "Responded", "Meeting set"]);
@@ -50,10 +51,8 @@ function normaliseManualRecord(record: ImportedRecord, actor: string, continueAs
   const batch = number(record.batch ?? record.graduationYear ?? record.graduation_year);
   const email = text(record.email).toLowerCase();
   const linkedinUrl = normalizeProfessionalProfileUrl(record.linkedinUrl ?? record.linkedin_url);
-  if (!name) throw new Error("Name is required.");
-  if (!email && !linkedinUrl && !(company !== "Not recorded" && batch >= 1980 && batch <= 2100)) {
-    throw new Error("Add an email, professional-profile URL, or both company and graduation year to reduce duplicates.");
-  }
+  const validation = validateManualAlumnusInput(record);
+  if (!validation.valid) throw new Error(Object.values(validation.errors)[0] ?? "Enter the required alumnus identity fields.");
   const now = new Date().toISOString();
   const baseKey = email ? `manual-email:${normalized(email)}` : linkedinUrl ? `manual-profile:${normalized(linkedinUrl)}` : `manual:${normalized(name)}|${batch}|${normalized(company)}`;
   return {

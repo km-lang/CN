@@ -22,6 +22,36 @@ export function normalizeProfessionalProfileUrl(value: unknown) {
   }
 }
 
+export function linkedinProfileIdentifier(value: unknown) {
+  const raw = String(value ?? "").trim()
+  if (!raw) return ""
+  const looksStructured = /(?:linkedin\.com|\/in\/|^https?:)/i.test(raw)
+  if (!looksStructured) return /^[a-z0-9._-]+$/i.test(raw) ? raw.toLowerCase() : ""
+  const normalized = normalizeProfessionalProfileUrl(raw.startsWith("/in/") ? `https://www.linkedin.com${raw}` : raw)
+  if (!normalized) return ""
+  try {
+    const url = new URL(normalized)
+    const hostname = url.hostname.toLowerCase().replace(/^www\./, "")
+    const segments = url.pathname.split("/").filter(Boolean)
+    return hostname === "linkedin.com" && segments.length === 2 && segments[0]?.toLowerCase() === "in" && segments[1]
+      ? decodeURIComponent(segments[1]).toLowerCase()
+      : ""
+  } catch {
+    return ""
+  }
+}
+
+export function matchesLinkedinProfileFilter(storedValue: unknown, query: unknown) {
+  const rawQuery = String(query ?? "").trim()
+  if (!rawQuery) return true
+  const storedIdentifier = linkedinProfileIdentifier(storedValue)
+  const queryIdentifier = linkedinProfileIdentifier(rawQuery)
+  if (!storedIdentifier || !queryIdentifier) return false
+  return /(?:linkedin\.com|\/in\/|^https?:)/i.test(rawQuery)
+    ? storedIdentifier === queryIdentifier
+    : storedIdentifier.includes(queryIdentifier)
+}
+
 function recordedText(value: unknown) {
   const text = String(value ?? "").trim()
   return /^(?:not recorded|unknown|unavailable|n\/a|-)$/i.test(text) ? "" : text

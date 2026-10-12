@@ -49,7 +49,7 @@ test("filter and page-size changes reset to page one", () => {
   assert.match(component, /setPage\(1\)/)
   assert.match(component, /function setPageSize[\s\S]*?setPageSizeState\(next\)[\s\S]*?setPage\(1\)/)
   assert.match(page, /usePagination\(filtered, JSON\.stringify\(filters\)\)/)
-  assert.match(page, /usePagination\(visibleEngagements, JSON\.stringify/)
+  assert.match(page, /usePagination\(visibleEngagementGroups, JSON\.stringify/)
   assert.match(page, /usePagination\(visibleOutreach, JSON\.stringify/)
   assert.match(admin, /usePagination\(visibleLifecycle, JSON\.stringify/)
   assert.match(admin, /usePagination\(visibleAudit, JSON\.stringify/)

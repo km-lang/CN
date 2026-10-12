@@ -3,6 +3,7 @@ export type EngagementFilterInput = {
   eventDate: string
   status: string
   assignedTo: string
+  owner?: { displayName: string } | null
   alumnus?: { company?: string; email?: string } | null
 }
 
@@ -19,9 +20,10 @@ export type EngagementFilterState = {
 const terminal = new Set(["Action Taken", "Response Received", "Closed", "Completed", "Skipped"])
 
 export function engagementMatches(event: EngagementFilterInput, filters: EngagementFilterState) {
+  const assignee = event.owner?.displayName ?? event.assignedTo
   if (filters.queue === "Professional Signals" && event.eventType !== "Professional Signal") return false
   if (filters.queue === "Birthdays" && event.eventType !== "Birthday") return false
-  if (filters.queue === "Assigned to Me" && event.assignedTo !== filters.currentUser) return false
+  if (filters.queue === "Assigned to Me" && assignee !== filters.currentUser) return false
   if (filters.queue === "Follow-ups" && event.status !== "Follow-up Due") return false
   if (filters.queue === "Completed" && !terminal.has(event.status)) return false
   if (filters.queue === "Skipped" && event.status !== "Skipped") return false
@@ -37,9 +39,9 @@ export function engagementMatches(event: EngagementFilterInput, filters: Engagem
   if (filters.period === "All upcoming" && event.eventDate < filters.today) return false
   if (filters.company !== "All companies" && event.alumnus?.company !== filters.company) return false
   if (filters.queue !== "Assigned to Me") {
-    if (filters.assignee === "Unassigned" && event.assignedTo) return false
-    if (filters.assignee === "Assigned to me" && event.assignedTo !== filters.currentUser) return false
-    if (!['All assignees', 'Unassigned', 'Assigned to me'].includes(filters.assignee) && event.assignedTo !== filters.assignee) return false
+    if (filters.assignee === "Unassigned" && assignee) return false
+    if (filters.assignee === "Assigned to me" && assignee !== filters.currentUser) return false
+    if (!['All assignees', 'Unassigned', 'Assigned to me'].includes(filters.assignee) && assignee !== filters.assignee) return false
   }
   if (filters.actionState === "Email available" && !event.alumnus?.email) return false
   if (filters.actionState === "Email unavailable" && event.alumnus?.email) return false

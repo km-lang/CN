@@ -20,6 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { AlumnusCombobox } from "@/components/alumnus-combobox"
+import { CompanyCombobox, normalizeCompanyOptions } from "@/components/company-combobox"
 import { PaginationFooter, usePagination } from "@/components/pagination"
 import { IntelligenceWorkspace } from "@/components/intelligence/intelligence-workspace"
 import { ProfileIntelligencePanel } from "@/components/intelligence/profile-intelligence-panel"
@@ -47,6 +48,8 @@ import { contactReadiness, isActiveOutreach } from "@/lib/alumni-metrics"
 import { parseCsv, parseXlsx, validateImport, type ImportReviewRow } from "@/lib/alumni-import"
 import { contactEnrichmentPlan, eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment"
 import { engagementMatches } from "@/lib/engagement-filters"
+import { groupEngagementsByAlumnus } from "@/lib/engagement-presentation"
+import { MANUAL_ALUMNUS_REQUIRED_COPY, validateManualAlumnusInput } from "@/lib/manual-alumnus"
 import { mailPresentation, signalsPresentation } from "@/lib/runtime-readiness"
 import { alumniEducationLabel } from "@/lib/alumni-education"
 import {
@@ -274,6 +277,7 @@ type EngagementEvent = {
   sourceStatus?: string
   status: EngagementStatus
   assignedTo: string
+  owner?: { userId: number | null; displayName: string; storedIdentity: string; available: boolean } | null
   assignedAt: string
   actionTakenAt: string
   actionTakenBy: string
@@ -505,6 +509,7 @@ export default function Home() {
   const [discoveryFilters, setDiscoveryFilters] = useState<DiscoveryFilters>(defaultDiscoveryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [targetCompany, setTargetCompany] = useState("")
+  const [overviewCompany, setOverviewCompany] = useState("All companies")
   const [routeSearch, setRouteSearch] = useState("")
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -809,7 +814,7 @@ export default function Home() {
     }
   }
 
-  const companies = useMemo(() => [...new Set(alumni.map(person => person.company))].sort(), [alumni])
+  const companies = useMemo(() => normalizeCompanyOptions(alumni.filter(person => (person.lifecycle ?? "Active") === "Active").map(person => person.company)), [alumni])
   const programmeChoices = useMemo(() => programmeFilterOptions(configuredProgrammes, alumni.map(person => person.programme)), [alumni, configuredProgrammes])
   const activeProgrammeChoices = useMemo(() => programmeChoices.filter(option => option.active), [programmeChoices])
   useEffect(() => {
@@ -822,6 +827,7 @@ export default function Home() {
     return () => window.clearTimeout(timer)
   }, [activeProgrammeChoices, configuredProgrammes.length])
   const activeTargetCompany = companies.includes(targetCompany) ? targetCompany : companies[0] ?? ""
+  const routeEligibleAlumni = useMemo(() => alumni.filter(person => (person.lifecycle ?? "Active") === "Active").sort((a, b) => a.name.localeCompare(b.name)), [alumni])
   const filtered = useMemo(() => alumni.filter(person => {
     const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
     return matchesInternalFilters(person, filters, relevance, operationalStatus(person))
@@ -844,7 +850,7 @@ export default function Home() {
   const mailUi = mailPresentation({ development: localDevelopment, mode: mailMode, configured: mailConfigured })
   const birthdaysToday = birthdayEvents.filter(event => event.eventDate === today)
   const birthdaysNextWeek = birthdayEvents.filter(event => event.eventDate >= today && event.eventDate <= nextWeek)
-  const assignedToMe = engagements.filter(event => event.assignedTo === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
+  const assignedToMe = engagements.filter(event => (event.owner?.displayName ?? event.assignedTo) === currentDemoUser && !["Closed", "Skipped"].includes(event.status))
   const followUpsDue = engagements.filter(event => event.status === "Follow-up Due")
   const professionalSelectionReady = selectedForEnrichment.length > 0 && (providerModes.coresignal === "mock" || selectedForEnrichment.length === 1) && providerUsage.coresignal.remaining >= selectedForEnrichment.length && (providerModes.coresignal === "mock" || providerUsage.coresignal.configured)
   const selectedContactPeople = alumni.filter(person => selectedForEnrichment.includes(person.id))
@@ -882,6 +888,8 @@ export default function Home() {
 
   function selectTargetAlumnus(id: number | null) {
     setTargetAlumnusId(id)
+    const person = id ? routeEligibleAlumni.find(item => item.id === id) : null
+    if (person) setOverviewCompany(person.company)
     setRouteRecommendation(null)
     setRouteMessage("")
   }
@@ -1666,7 +1674,7 @@ export default function Home() {
   }
 
   function discoveryCountControl(actionLabel: string, variant: "default" | "outline" = "default") {
-    return <div className="discovery-count-control"><label><span>Results to retrieve</span><Select value={discoveryCountPreset} onValueChange={changeDiscoveryCountPreset}><SelectTrigger aria-label="Results to retrieve"><SelectValue /></SelectTrigger><SelectContent>{[1, 5, 10, 20].map(value => <SelectItem key={value} value={String(value)} disabled={value > discoveryMaximum}>{value}</SelectItem>)}<SelectItem value="custom">Custom</SelectItem></SelectContent></Select></label>{discoveryCountPreset === "custom" && <label><span>Custom result count</span><Input type="number" inputMode="numeric" min="1" max={discoveryMaximum} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="Custom result count" /></label>}<small>{!discoveryFilters.discoveryProgrammes.length ? "Select at least one programme for external discovery." : discoveryCountValidation.ok ? `Maximum currently ${discoveryMaximum}.` : discoveryCountValidation.message}</small><Button title={!discoveryFilters.discoveryProgrammes.length ? "Select at least one configured programme." : !discoveryCountValidation.ok ? `Enter a valid count within the ${discoveryMaximum} available Coresignal application units.` : undefined} variant={variant} onClick={() => discoverMoreAlumni()} disabled={discovering || !discoveryFilters.discoveryProgrammes.length || !discoveryCountValidation.ok}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {actionLabel}</Button></div>
+    return <div className="discovery-count-control"><label className="discovery-count-field"><span>Results to retrieve</span><Select value={discoveryCountPreset} onValueChange={changeDiscoveryCountPreset}><SelectTrigger aria-label="Results to retrieve"><SelectValue /></SelectTrigger><SelectContent>{[1, 5, 10, 20].map(value => <SelectItem key={value} value={String(value)} disabled={value > discoveryMaximum}>{value}</SelectItem>)}<SelectItem value="custom">Custom</SelectItem></SelectContent></Select></label>{discoveryCountPreset === "custom" && <label><span>Custom result count</span><Input type="number" inputMode="numeric" min="1" max={discoveryMaximum} step="1" value={discoveryLimit} onChange={event => setDiscoveryLimit(event.target.value)} aria-label="Custom result count" /></label>}<small><strong>Maximum results requested from this discovery operation.</strong> {!discoveryFilters.discoveryProgrammes.length ? "Select at least one programme for external discovery." : discoveryCountValidation.ok ? `Current application limit allows up to ${discoveryMaximum}.` : discoveryCountValidation.message}</small><Button className="discovery-action-button" title={!discoveryFilters.discoveryProgrammes.length ? "Select at least one configured programme." : !discoveryCountValidation.ok ? `Enter a valid count within the ${discoveryMaximum} available Coresignal application units.` : undefined} variant={variant} onClick={() => discoverMoreAlumni()} disabled={discovering || !discoveryFilters.discoveryProgrammes.length || !discoveryCountValidation.ok}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {actionLabel}</Button></div>
   }
 
   function discoverMoreAlumni(searchFilters: DiscoveryFilters = discoveryFilters) {
@@ -1915,6 +1923,8 @@ export default function Home() {
   }
 
   async function saveManualAlumnus(continueAsNew: boolean) {
+    const validation = validateManualAlumnusInput(manualForm)
+    if (!validation.valid) { setManualMessage(Object.values(validation.errors)[0] ?? MANUAL_ALUMNUS_REQUIRED_COPY); return }
     setManualLoading(true)
     try {
       const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "manual_add", record: manualForm, continueAsNew }) })
@@ -1935,6 +1945,8 @@ export default function Home() {
   }
 
   async function checkManualAlumnus() {
+    const validation = validateManualAlumnusInput(manualForm)
+    if (!validation.valid) { setManualMessage(Object.values(validation.errors)[0] ?? MANUAL_ALUMNUS_REQUIRED_COPY); return }
     setManualLoading(true)
     setManualMessage("")
     try {
@@ -1999,6 +2011,7 @@ export default function Home() {
   const selectedEngagementHistory = selected ? engagements.filter(event => event.alumnusId === selected.id) : []
   const selectedUpcomingEngagements = selectedEngagementHistory.filter(event => !isCompletedEngagement(event.status))
   const selectedCompletedEngagements = selectedEngagementHistory.filter(event => isCompletedEngagement(event.status))
+  const manualValidation = validateManualAlumnusInput(manualForm)
   const companyEngagements = engagements.filter(event => event.alumnus && event.alumnus.company === activeTargetCompany)
   const visibleOutreach = alumni.filter(person => {
     const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
@@ -2015,7 +2028,8 @@ export default function Home() {
   const directoryPagination = usePagination(filtered, JSON.stringify(filters))
   const companyContactsPagination = usePagination(targetAlumni, activeTargetCompany)
   const companyHistoryPagination = usePagination(companyEngagements, activeTargetCompany)
-  const engagementPagination = usePagination(visibleEngagements, JSON.stringify([engagementFilter, engagementPeriod, engagementCompany, engagementAssignee, engagementActionState]))
+  const visibleEngagementGroups = groupEngagementsByAlumnus(visibleEngagements)
+  const engagementPagination = usePagination(visibleEngagementGroups, JSON.stringify([engagementFilter, engagementPeriod, engagementCompany, engagementAssignee, engagementActionState]))
   const outreachPagination = usePagination(visibleOutreach, JSON.stringify([outreachSearch, outreachCompany, outreachStatus, outreachRelevance]))
   const importPagination = usePagination(importReviewRows, importReviewRows.map(row => row.key).join("|"))
   const enrichmentPagination = usePagination(alumni)
@@ -2093,7 +2107,7 @@ export default function Home() {
 
             {session.canOperate && <section className="panel route-panel route-planner">
               <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div></div>
-              <div className="route-controls route-controls-overview"><label><span>Target company</span><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger><SelectValue placeholder="No mapped companies" /></SelectTrigger><SelectContent>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select></label><AlumnusCombobox options={targetAlumni} value={targetAlumnusId} onValueChange={selectTargetAlumnus} /><Button title={!targetAlumnusId ? "Select a target alumnus from the suggestions first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
+              <div className="route-controls route-controls-overview"><CompanyCombobox options={companies} value={overviewCompany} onValueChange={company => { setOverviewCompany(company); setTargetAlumnusId(null); setRouteRecommendation(null); setRouteMessage("") }} /><AlumnusCombobox options={routeEligibleAlumni} preferredCompany={overviewCompany} value={targetAlumnusId} onValueChange={selectTargetAlumnus} /><Button title={!targetAlumnusId ? "Select a target alumnus from the suggestions first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
               {routeMessage && <p className="route-message">{routeMessage}</p>}
             </section>}
           </TabsContent>
@@ -2110,6 +2124,7 @@ export default function Home() {
                 <Select value={filters.function} onValueChange={value => updateDirectoryFilter("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Select value={filters.seniority} onValueChange={value => updateDirectoryFilter("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All seniority</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
                 <Input value={filters.location} onChange={event => updateDirectoryFilter("location", event.target.value)} placeholder="Location" aria-label="Filter by location" />
+                <Input value={filters.linkedinUrl} onChange={event => updateDirectoryFilter("linkedinUrl", event.target.value)} placeholder="LinkedIn URL or profile ID" aria-label="Filter by LinkedIn profile URL" />
                 <Button variant="outline" onClick={() => setShowAdvancedFilters(value => !value)}><Filter /> {showAdvancedFilters ? "Hide advanced filters" : "More filters"}</Button>
                 <Button variant="ghost" onClick={clearDirectoryFilters}>Clear</Button>
               </div>
@@ -2239,26 +2254,33 @@ export default function Home() {
 
               {engagementMessage && <div className="engagement-message"><Activity /><span>{engagementMessage}</span><button aria-label="Dismiss message" onClick={() => setEngagementMessage("")}><XCircle /></button></div>}
 
-              <div className="engagement-list">{engagementPagination.items.map(event => {
-                const person = alumni.find(item => item.id === event.alumnusId)
+              <div className="engagement-list">{engagementPagination.items.map(group => {
+                const representative = group.events[0]
+                const person = alumni.find(item => item.id === group.alumnusId)
                 const relevance = person ? relevanceBreakdown(person, companyPriorities, engagements).score : 50
-                const completed = isCompletedEngagement(event.status)
-                const emailMissing = !event.alumnus?.email
-                const canEmail = event.eventType === "Professional Signal" ? Boolean(event.alumnus?.email) && !completed : birthdayReady(event)
-                const eventBusy = pendingEngagementKeys.has(`event:${event.id}`)
-                return <article key={event.id} className={`engagement-card ${completed ? "completed" : ""}`}>
-                  <div className="event-identity"><span className={`event-icon event-${event.eventType.toLowerCase().replaceAll(" ", "-")}`}>{event.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</span><span><small>Alumnus</small><strong>{event.alumnus?.name ?? "Unknown alumnus"}</strong><em>{event.alumnus?.title} · {event.alumnus?.company}</em></span>{event.eventType === "Birthday" && <input type="checkbox" aria-label={`Select ${event.alumnus?.name} birthday`} disabled={!birthdayReady(event)} checked={selectedBirthdayIds.includes(event.id)} onChange={() => toggleBirthdaySelection(event.id)} />}</div>
-                  <div className="event-copy"><small>Engagement</small><h3>{event.eventTitle}</h3><p>{event.eventDescription}</p>{event.eventType === "Birthday" && <span className={`birthday-eligibility ${birthdayReady(event) ? "eligible" : "ineligible"}`}>{birthdayReady(event) ? "Eligible" : emailMissing ? "Cannot email — no stored email" : `Cannot email — ${event.preference === "Unknown" ? "birthday permission unknown" : "permission or birthday verification required"}`}</span>}</div>
-                  <div className="event-context"><small>Context</small><EngagementStatusBadge status={event.status} /><span>{displayEventDate(event.eventDate)}</span><span>Source: {event.source}</span>{event.assignedTo && <em>Assigned to {event.assignedTo}</em>}{event.skipReason && <em>{event.skipReason}</em>}</div>
-                  <div className="event-state"><small>Placement relevance</small><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></div>
-                  <div className="event-actions">
-                    {!completed && !event.assignedTo && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id)}>Take Ownership</Button>}
-                    {!completed && event.assignedTo && event.assignedTo !== currentDemoUser && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id, { force: true })}>Reassign to Me</Button>}
-                    {!completed && event.eventType === "Birthday" && emailMissing && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void getBirthdayEmail(event)}>Get Email via Lusha</Button>}
-                    {canEmail && <Button size="sm" disabled={eventBusy} onClick={() => void previewEngagement(event)}>{event.eventType === "Birthday" ? <Cake /> : <Mail />} {event.eventType === "Birthday" ? "Preview Wish" : "Send Congratulations"}</Button>}
-                    <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void openEngagement(event)}>{completed ? "View Engagement" : "Review"}</Button>
-                  </div>
-                </article>
+                return <section className="engagement-alumnus-group" key={group.alumnusId}>
+                  <header><span className="avatar small">{representative?.alumnus?.initials ?? "?"}</span><span><strong>{representative?.alumnus?.name ?? "Unknown alumnus"}</strong><small>{representative?.alumnus?.title} · {representative?.alumnus?.company}</small></span><em>{group.events.length} distinct engagement{group.events.length === 1 ? "" : "s"}</em></header>
+                  {group.events.map(event => {
+                    const completed = isCompletedEngagement(event.status)
+                    const emailMissing = !event.alumnus?.email
+                    const canEmail = event.eventType === "Professional Signal" ? Boolean(event.alumnus?.email) && !completed : birthdayReady(event)
+                    const eventBusy = pendingEngagementKeys.has(`event:${event.id}`)
+                    const ownerName = event.owner?.displayName ?? event.assignedTo
+                    return <article key={event.id} className={`engagement-card engagement-card-grouped ${completed ? "completed" : ""}`}>
+                      <div className="event-identity"><span className={`event-icon event-${event.eventType.toLowerCase().replaceAll(" ", "-")}`}>{event.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</span><span><small>Action</small><strong>{event.eventType}</strong><em>{event.eventSubtype || "Recorded engagement"}</em></span>{event.eventType === "Birthday" && <input type="checkbox" aria-label={`Select ${event.alumnus?.name} birthday`} disabled={!birthdayReady(event)} checked={selectedBirthdayIds.includes(event.id)} onChange={() => toggleBirthdaySelection(event.id)} />}</div>
+                      <div className="event-copy"><small>Engagement</small><h3>{event.eventTitle}</h3><p>{event.eventDescription}</p>{event.eventType === "Birthday" && <span className={`birthday-eligibility ${birthdayReady(event) ? "eligible" : "ineligible"}`}>{birthdayReady(event) ? "Eligible" : emailMissing ? "Cannot email — no stored email" : `Cannot email — ${event.preference === "Unknown" ? "birthday permission unknown" : "permission or birthday verification required"}`}</span>}</div>
+                      <div className="event-context"><small>Context</small><EngagementStatusBadge status={event.status} /><span>{displayEventDate(event.eventDate)}</span><span>Source: {event.source}</span>{ownerName && <em title={event.owner?.userId ? `Internal user ID ${event.owner.userId}` : event.owner?.storedIdentity ? `Stored audit identity ${event.owner.storedIdentity}` : undefined}>Assigned to {ownerName}</em>}{event.skipReason && <em>{event.skipReason}</em>}</div>
+                      <div className="event-state"><small>Placement relevance</small><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></div>
+                      <div className="event-actions">
+                        {!completed && !event.assignedTo && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id)}>Take Ownership</Button>}
+                        {!completed && event.assignedTo && ownerName !== currentDemoUser && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void postEngagement("assign", event.id, { force: true })}>Reassign to Me</Button>}
+                        {!completed && event.eventType === "Birthday" && emailMissing && <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void getBirthdayEmail(event)}>Get Email via Lusha</Button>}
+                        {canEmail && <Button size="sm" disabled={eventBusy} onClick={() => void previewEngagement(event)}>{event.eventType === "Birthday" ? <Cake /> : <Mail />} {event.eventType === "Birthday" ? "Preview Wish" : "Send Congratulations"}</Button>}
+                        <Button variant="outline" size="sm" disabled={eventBusy} onClick={() => void openEngagement(event)}>{completed ? "View Engagement" : "Review"}</Button>
+                      </div>
+                    </article>
+                  })}
+                </section>
               })}</div>
               {!visibleEngagements.length && (() => { const [title, copy] = engagementEmptyState(engagementFilter); return <div className="empty-state"><CheckCircle2 /><h3>{title}</h3><p>{copy}</p></div> })()}
               <PaginationFooter model={engagementPagination} label="Engagement queue pagination" />
@@ -2425,12 +2447,12 @@ export default function Home() {
             <div className="engagement-dialog-scroll">
               <section className="event-detail-summary"><div className={`event-icon event-${selectedEngagement.eventType.toLowerCase().replaceAll(" ", "-")}`}>{selectedEngagement.eventType === "Birthday" ? <Cake /> : <ArrowUpRight />}</div><div><p>{selectedEngagement.eventDescription}</p><span>{displayEventDate(selectedEngagement.eventDate)} · Source: {selectedEngagement.source}</span>{selectedEngagement.eventType === "Professional Signal" && <small>{selectedEngagement.previousRole || selectedEngagement.previousCompany ? `${selectedEngagement.previousRole || "Role unavailable"} at ${selectedEngagement.previousCompany || "company unavailable"}` : "Previous role/company unavailable"} → {selectedEngagement.newRole || selectedEngagement.newCompany ? `${selectedEngagement.newRole || "Role unavailable"} at ${selectedEngagement.newCompany || "company unavailable"}` : "New role/company unavailable"} · Provider event: {selectedEngagement.providerEventAt || "not reported"} · Confidence: {selectedEngagement.sourceConfidence || "unknown"}</small>}</div><EngagementStatusBadge status={selectedEngagement.status} /></section>
               {selectedEngagement.actionTakenBy && <div className="already-engaged"><CheckCircle2 /><div><strong>Action already taken</strong><span>{selectedEngagement.actionType} by {selectedEngagement.actionTakenBy} on {new Date(selectedEngagement.actionTakenAt).toLocaleString()} · {selectedEngagement.deliveryStatus}</span></div></div>}
-              {selectedEngagement.assignedTo && <div className="assignment-note"><UserRoundCheck /><span>Assigned to <strong>{selectedEngagement.assignedTo}</strong>{selectedEngagement.assignedAt ? ` since ${new Date(selectedEngagement.assignedAt).toLocaleString()}` : ""}</span></div>}
+              {selectedEngagement.assignedTo && <div className="assignment-note"><UserRoundCheck /><span>Assigned to <strong>{selectedEngagement.owner?.displayName ?? selectedEngagement.assignedTo}</strong>{selectedEngagement.assignedAt ? ` since ${new Date(selectedEngagement.assignedAt).toLocaleString()}` : ""}{selectedEngagement.owner?.userId ? <small>Internal user ID {selectedEngagement.owner.userId}</small> : null}</span></div>}
 
               {!['Action Taken', 'Response Received', 'Closed', 'Skipped'].includes(selectedEngagement.status) && <section className="dialog-action-section"><h3>Review and action</h3><div className="dialog-actions">
                 <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("acknowledge", selectedEngagement.id)}>Acknowledge</Button>
-                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("assign", selectedEngagement.id, { force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>{selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser ? "Reassign to Me" : "Take Ownership"}</Button>
-                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("plan", selectedEngagement.id, { notes: "Follow-up action planned by the assigned committee member.", force: Boolean(selectedEngagement.assignedTo && selectedEngagement.assignedTo !== currentDemoUser) })}>Plan Action</Button>
+                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("assign", selectedEngagement.id, { force: Boolean(selectedEngagement.assignedTo && (selectedEngagement.owner?.displayName ?? selectedEngagement.assignedTo) !== currentDemoUser) })}>{selectedEngagement.assignedTo && (selectedEngagement.owner?.displayName ?? selectedEngagement.assignedTo) !== currentDemoUser ? "Reassign to Me" : "Take Ownership"}</Button>
+                <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("plan", selectedEngagement.id, { notes: "Follow-up action planned by the assigned committee member.", force: Boolean(selectedEngagement.assignedTo && (selectedEngagement.owner?.displayName ?? selectedEngagement.assignedTo) !== currentDemoUser) })}>Plan Action</Button>
                 {selectedEngagement.alumnus?.email ? <Button disabled={selectedEngagementBusy} onClick={() => void previewEngagement(selectedEngagement)}><Mail /> {selectedEngagement.eventType === "Birthday" ? "Preview Birthday Wish" : "Preview Congratulations"}</Button> : <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void getBirthdayEmail(selectedEngagement)}>Get Email via Lusha</Button>}
                 <Button variant="outline" disabled={selectedEngagementBusy} onClick={() => void postEngagement("manual_action", selectedEngagement.id, { notes: "Engagement completed outside the platform." })}>Mark Action Taken</Button>
               </div></section>}
@@ -2489,15 +2511,16 @@ export default function Home() {
       </Dialog>
 
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
-        <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? `The record is now in ${appConfig.name}. Provider actions remain optional.` : "Enter what is known. Name plus an email, profile URL, or company and graduation year is required."}</DialogDescription></DialogHeader>
+        <DialogContent className="manual-dialog"><DialogHeader><DialogTitle>{manualSaved ? "Alumnus added" : "Add alumnus manually"}</DialogTitle><DialogDescription>{manualSaved ? `The record is now in ${appConfig.name}. Provider actions remain optional.` : MANUAL_ALUMNUS_REQUIRED_COPY}</DialogDescription></DialogHeader>
           {manualSaved ? <div className="manual-success"><CheckCircle2 /><div><h3>{manualSaved.name}</h3><p>{manualSaved.title} · {manualSaved.company}</p><span>Source: Manual entry · Contact details are manually supplied and not provider verified.</span></div><div className="manual-success-actions"><Button variant="outline" onClick={() => { setSelectedForEnrichment([manualSaved.id]); setManualOpen(false); setRefreshConfirmOpen(true) }}>Refresh Profile via Coresignal</Button>{providerModes.lusha === "live" ? <><Button variant="outline" onClick={() => { setManualOpen(false); prepareLushaReveal(manualSaved, "email") }}>Prepare Email Reveal</Button><Button variant="outline" onClick={() => { setManualOpen(false); prepareLushaReveal(manualSaved, "phone") }}>Prepare Phone Reveal</Button></> : <><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" onClick={() => void runEnrichment([manualSaved.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button></>}</div></div> : <div className="manual-form">
-            <h3>Identity</h3><div className="manual-grid"><label><span>Name *</span><Input value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} /></label><label><span>Programme</span><Select value={manualForm.programme} onValueChange={value => updateManualField("programme", value)}><SelectTrigger><SelectValue placeholder="Select programme" /></SelectTrigger><SelectContent>{activeProgrammeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label><label><span>Graduation year / batch</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
-            <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} /></label></div>
-            <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} /></label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML relationship <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" className="inline-help" aria-label="About IIML relationship"><Info /></button></TooltipTrigger><TooltipContent>Captures Placement Committee and alumni relationship context.</TooltipContent></Tooltip></TooltipProvider></span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
+            <h3>Identity</h3><div className="manual-grid"><label><span>Name <b aria-hidden="true">*</b></span><Input required aria-required="true" aria-invalid={Boolean(manualValidation.errors.name)} aria-describedby={manualValidation.errors.name ? "manual-name-error" : undefined} value={manualForm.name} onChange={event => updateManualField("name", event.target.value)} />{manualValidation.errors.name && <small id="manual-name-error" className="field-error">{manualValidation.errors.name}</small>}</label><label><span>Programme</span><Select value={manualForm.programme} onValueChange={value => updateManualField("programme", value)}><SelectTrigger><SelectValue placeholder="Select programme" /></SelectTrigger><SelectContent>{activeProgrammeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label><label><span>Graduation year / batch</span><Input type="number" min="1980" max="2100" value={manualForm.batch} onChange={event => updateManualField("batch", event.target.value)} /></label></div>
+            <h3>Professional</h3><div className="manual-grid"><label><span>Current company</span><Input aria-describedby="manual-identity-requirement" value={manualForm.company} onChange={event => updateManualField("company", event.target.value)} /></label><label><span>Role / designation</span><Input value={manualForm.title} onChange={event => updateManualField("title", event.target.value)} /></label><label><span>Function</span><Select value={manualForm.function} onValueChange={value => updateManualField("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Seniority</span><Select value={manualForm.seniority} onValueChange={value => updateManualField("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Not assessed">Not assessed</SelectItem>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Location</span><Input value={manualForm.location} onChange={event => updateManualField("location", event.target.value)} /></label><label><span>Professional profile URL</span><Input aria-invalid={Boolean(manualValidation.errors.linkedinUrl)} aria-describedby="manual-identity-requirement" value={manualForm.linkedinUrl} onChange={event => updateManualField("linkedinUrl", event.target.value)} />{manualValidation.errors.linkedinUrl && <small className="field-error">{manualValidation.errors.linkedinUrl}</small>}</label></div>
+            <div className="manual-identity-requirement" id="manual-identity-requirement" role="note"><strong>Required identity evidence *</strong><span>Provide an email, a professional-profile URL, or both current company and graduation year.</span>{manualValidation.errors.identity && <small className="field-error">{manualValidation.errors.identity}</small>}</div>
+            <h3>Contact and relationship</h3><div className="manual-grid"><label><span>Email</span><Input type="email" aria-invalid={Boolean(manualValidation.errors.email)} aria-describedby="manual-identity-requirement" value={manualForm.email} onChange={event => updateManualField("email", event.target.value)} />{manualValidation.errors.email && <small className="field-error">{manualValidation.errors.email}</small>}</label><label><span>Phone</span><Input value={manualForm.phone} onChange={event => updateManualField("phone", event.target.value)} /></label><label><span>IIML relationship <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" className="inline-help" aria-label="About IIML relationship"><Info /></button></TooltipTrigger><TooltipContent>Captures Placement Committee and alumni relationship context.</TooltipContent></Tooltip></TooltipProvider></span><Select value={manualForm.relationship} onValueChange={value => updateManualField("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label><label><span>Outreach status</span><Select value={manualForm.status} onValueChange={value => updateManualField("status", value as OutreachStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><label><span>Notes</span><Textarea value={manualForm.note} onChange={event => updateManualField("note", event.target.value)} /></label>
             {manualMessage && <div className="manual-message">{manualMessage}</div>}
             {manualMatches.length > 0 && <div className="manual-matches"><strong>{manualMatches.some(match => match.exact) ? "Existing alumnus found" : "Possible existing alumnus"}</strong>{manualMatches.map(match => <div key={match.id}><span className="avatar small">{match.name.split(/\s+/).slice(0, 2).map(part => part[0]).join("")}</span><p><strong>{match.name}</strong><small>{match.programme} {match.batch || ""} · {match.company} · {match.title}</small><em>Matched by {match.reasons.join(" and ")}</em></p><Button variant="outline" size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Compare</Button><Button size="sm" onClick={() => { setManualOpen(false); openAlumnusProfile(alumni.find(item => item.id === match.id)!) }}>Use Existing</Button></div>)}</div>}
           </div>}
-          <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); openAlumnusProfile(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && !manualMatches.some(match => match.exact) && <Button variant="outline" onClick={() => void saveManualAlumnus(true)}>Different person · Continue</Button>}<TooltipProvider><Tooltip><TooltipTrigger asChild><Button disabled={manualLoading} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add Alumnus</Button></TooltipTrigger><TooltipContent>Checks the internal alumni database for possible duplicates before adding this record. No Coresignal or Lusha call is made.</TooltipContent></Tooltip></TooltipProvider></>}</DialogFooter>
+          <DialogFooter>{manualSaved ? <><Button variant="outline" onClick={() => setManualOpen(false)}>Close</Button><Button onClick={() => { setManualOpen(false); openAlumnusProfile(manualSaved) }}>Open Profile</Button></> : <><Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>{manualMatches.length > 0 && !manualMatches.some(match => match.exact) && <Button variant="outline" disabled={!manualValidation.valid || manualLoading} onClick={() => void saveManualAlumnus(true)}>Different person · Continue</Button>}<TooltipProvider><Tooltip><TooltipTrigger asChild><Button disabled={manualLoading || !manualValidation.valid} onClick={() => void checkManualAlumnus()}>{manualLoading ? <LoaderCircle className="spin" /> : <Search />} Check & Add Alumnus</Button></TooltipTrigger><TooltipContent>{manualValidation.valid ? "Checks the internal alumni database for possible duplicates before adding this record. No Coresignal or Lusha call is made." : MANUAL_ALUMNUS_REQUIRED_COPY}</TooltipContent></Tooltip></TooltipProvider></>}</DialogFooter>
         </DialogContent>
       </Dialog>
 
