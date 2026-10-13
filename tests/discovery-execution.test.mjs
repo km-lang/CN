@@ -108,6 +108,29 @@ test("Preview company and seniority mismatches are rejected before Collect", asy
   assert.equal(result.metrics.seniorityMismatches, 1)
 })
 
+test("Search #6 multi-programme evidence is not described as provider-constrained", async () => {
+  const { result, calls } = await run([
+    preview("289351894", { name: "Shruti Chaturvedi", role: "Director", rawTitle: "Director", seniority: "Director" }),
+  ], { filters: filters({ discoveryProgrammes: ["PGP", "ABM", "SM"], seniorities: ["VP"], seniority: "VP" }) })
+  assert.equal(calls, 0)
+  const item = result.candidates[0]
+  assert.equal(item.qualification.company.result, "MATCH")
+  assert.equal(item.qualification.seniority.result, "MISMATCH")
+  assert.equal(item.qualification.graduationYear.result, "NEEDS_COLLECT")
+  assert.equal(item.qualification.programme.result, "NOT_PROVIDER_VERIFIED")
+  assert.match(item.qualification.programme.rationale, /programme was not used to constrain the provider search/i)
+  assert.doesNotMatch(item.qualification.programme.rationale, /search was constrained to/i)
+  assert.equal(item.collectionState, "SKIPPED_FILTER_MISMATCH")
+  assert.equal(item.finalStatus, "FILTER_MISMATCH")
+})
+
+test("single-programme Preview rationale retains the established provider-constraint semantics", () => {
+  const qualification = execution.qualifyPreviewCandidate(preview("single-programme"), filters({ discoveryProgrammes: ["PGP"] }))
+  assert.equal(qualification.programme.result, "SEARCH_CONSTRAINED_NOT_VERIFIED")
+  assert.match(qualification.programme.rationale, /Search was constrained to PGP/)
+  assert.equal(qualification.graduationYear.result, "NEEDS_COLLECT")
+})
+
 test("assistant-to-VP wording is not classified as VP", async () => {
   assert.deepEqual(execution.titleSeniority("Assistant to the Vice President"), { bucket: "", ambiguous: true })
   const { result, calls } = await run([preview("assistant", { role: "Assistant to the Vice President", rawTitle: "Assistant to the Vice President" })])

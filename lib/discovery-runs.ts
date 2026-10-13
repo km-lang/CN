@@ -19,6 +19,7 @@ export type DiscoveryRunResult = {
   provider: string
   matchStatus: string
   reviewStatus: string
+  reviewNote?: string | null
 }
 
 export type DiscoveryRunHistory = {
@@ -46,6 +47,11 @@ export function resultProviderIntegrity(searchProvider: string, resultProvider: 
     : "provider_mismatch" as const
 }
 
+export function isActionableDiscoveryReview(result: DiscoveryRunResult) {
+  return result.reviewStatus === "Pending review"
+    && !String(result.reviewNote ?? "").startsWith("SKIPPED_FILTER_MISMATCH:")
+}
+
 export function discoveryRunSummary(
   search: DiscoveryRunSearch,
   results: readonly DiscoveryRunResult[],
@@ -63,7 +69,7 @@ export function discoveryRunSummary(
     requestedCount: recordedRequestedCount(search.requestedCount),
     providerResultCount: search.resultCount,
     storedResultCount: scopedResults.length,
-    pendingCount: scopedResults.filter(result => result.reviewStatus === "Pending review").length,
+    pendingCount: scopedResults.filter(isActionableDiscoveryReview).length,
     counts: discoveryClassificationCounts(scopedResults),
     creditsUsed: search.creditsUsed,
     applicationUnits: scopedHistory.length
@@ -82,7 +88,7 @@ export function selectActiveDiscoveryRun(
 ) {
   const sorted = [...searches].sort((left, right) => right.id - left.id)
   if (requestedSearchId != null) return sorted.find(search => search.id === requestedSearchId) ?? null
-  const pendingSearchIds = new Set(results.filter(result => result.reviewStatus === "Pending review").map(result => result.searchId))
+  const pendingSearchIds = new Set(results.filter(isActionableDiscoveryReview).map(result => result.searchId))
   return sorted.find(search => pendingSearchIds.has(search.id)) ?? sorted[0] ?? null
 }
 

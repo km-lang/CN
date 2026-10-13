@@ -12,7 +12,7 @@ import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
 import { discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
 import { discoveredAlumniYearValues } from "@/lib/alumni-education"
-import { discoveryClassificationCounts, discoveryRunSummary, previousDiscoveryRuns, resultProviderIntegrity, selectActiveDiscoveryRun } from "@/lib/discovery-runs"
+import { discoveryClassificationCounts, discoveryRunSummary, isActionableDiscoveryReview, previousDiscoveryRuns, resultProviderIntegrity, selectActiveDiscoveryRun } from "@/lib/discovery-runs"
 import { discoveryCoveragePlan } from "@/lib/discovery-coverage"
 import { CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES } from "@/lib/discovery-provider-capabilities"
 import { reconcileDiscoveryCandidate, reconcileDiscoveryCandidates, selectiveCollectSummary, type ReconciliationCandidate, type RejectedCandidateEvidence } from "@/lib/discovery-reconciliation"
@@ -68,6 +68,7 @@ function presentResult(result: typeof externalDiscoveryResults.$inferSelect, fil
     searchProvider: search?.provider ?? "",
     searchMode: search?.mode ?? "",
     retrievedAt: result.createdAt,
+    actionableReview: isActionableDiscoveryReview(result),
     providerIntegrity: search ? resultProviderIntegrity(search.provider, result.provider) : "search_missing",
   }
 }
@@ -203,7 +204,8 @@ export async function GET(request: Request) {
     if (requestedSearchIdValue !== null && (!Number.isInteger(requestedSearchId) || requestedSearchId! <= 0)) return Response.json({ error: "A valid discovery search ID is required." }, { status: 400 })
     const recentSearches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10)
     const pendingResults = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.reviewStatus, DISCOVERY_REVIEW_STATUS.pending)).orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id)
-    const candidateSearchId = requestedSearchId ?? pendingResults[0]?.searchId ?? recentSearches[0]?.id ?? null
+    const actionablePendingResults = pendingResults.filter(isActionableDiscoveryReview)
+    const candidateSearchId = requestedSearchId ?? actionablePendingResults[0]?.searchId ?? recentSearches[0]?.id ?? null
     const candidateOutsideRecent = candidateSearchId !== null && !recentSearches.some(search => search.id === candidateSearchId)
       ? await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, candidateSearchId)).limit(1)
       : []
@@ -216,7 +218,7 @@ export async function GET(request: Request) {
     const activeProviderHistory = activeSearch ? await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.searchId, activeSearch.id)).orderBy(providerResponseHistory.id) : []
     const activeSearchSummary = activeSearch ? discoveryRunSummary(activeSearch, activeResults, activeProviderHistory) : null
     const previousSearches = previousDiscoveryRuns(recentSearches, historyResults, activeSearch?.id ?? null)
-    const common = { pendingCount: pendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES }
+    const common = { pendingCount: actionablePendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES }
     if (view === "summary") return Response.json(common)
     if (!activeSearch) return Response.json({ ...common, activeSearch: null, results: [], counts: discoveryClassificationCounts([]), filters: defaultDiscoveryFilters(), providerHistory: [], retrieval: "stored", source: null })
     const filters = storedDiscoveryFilters(activeSearch.filtersJson)

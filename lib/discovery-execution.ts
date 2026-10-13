@@ -25,6 +25,7 @@ export type CriterionResult =
   | "VERIFIED_MISMATCH"
   | "NOT_RETURNED_IN_PREVIEW"
   | "INSUFFICIENT_EVIDENCE"
+  | "NOT_PROVIDER_VERIFIED"
   | "SEARCH_CONSTRAINED_NOT_VERIFIED"
 
 export type QualificationCriterion = {
@@ -153,6 +154,14 @@ function graduationCriterion(profile: DiscoveryProfile, filters: DiscoveryFilter
 
 function programmeCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters, collected: boolean) {
   if (!filters.discoveryProgrammes.length) return criterion("NOT_REQUESTED", "NOT_REQUESTED", "", "No programme filter was requested.")
+  if (filters.discoveryProgrammes.length > 1 && (!collected || !profile.educationProgramme)) {
+    return criterion(
+      "NOT_PROVIDER_VERIFIED",
+      collected ? "BASE_COLLECT" : "SEARCH_PREVIEW",
+      filters.discoveryProgrammes.join(", "),
+      "Multiple programmes were selected, so programme was not used to constrain the provider search. Programme requires richer education evidence before it can be verified.",
+    )
+  }
   if (!collected || !profile.educationProgramme) return criterion("SEARCH_CONSTRAINED_NOT_VERIFIED", "SEARCH_CONSTRAINT", filters.discoveryProgrammes.join(", "), `Search was constrained to ${filters.discoveryProgrammes.join(", ")}; programme was not independently returned in the candidate profile.`)
   if (!profile.normalizedProgramme) return criterion("VERIFIED_MISMATCH", "BASE_COLLECT", profile.educationProgramme, "Collected programme evidence is not one of the selected regular IIM Lucknow programmes.")
   return filters.discoveryProgrammes.includes(profile.normalizedProgramme)

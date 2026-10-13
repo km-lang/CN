@@ -4,6 +4,7 @@ import test from "node:test"
 
 const {
   discoveryRunSummary,
+  isActionableDiscoveryReview,
   previousDiscoveryRuns,
   recordedRequestedCount,
   resultProviderIntegrity,
@@ -75,6 +76,18 @@ test("run summaries scope results, counts, pending state, and usage to one searc
   assert.equal(summary.providerReportedCredits, null)
 })
 
+test("filter mismatches remain stored history without becoming actionable review work", () => {
+  const filterMismatch = result({ reviewNote: "SKIPPED_FILTER_MISMATCH: Derived seniority does not match selected VP." })
+  assert.equal(isActionableDiscoveryReview(filterMismatch), false)
+  assert.equal(discoveryRunSummary(search(), [filterMismatch]).storedResultCount, 1)
+  assert.equal(discoveryRunSummary(search(), [filterMismatch]).pendingCount, 0)
+  assert.equal(selectActiveDiscoveryRun([search({ id: 42 }), search({ id: 43 })], [filterMismatch])?.id, 43)
+})
+
+test("ordinary pending results remain actionable", () => {
+  assert.equal(isActionableDiscoveryReview(result({ reviewNote: "REVIEW_BEFORE_COLLECT: Identity evidence requires review." })), true)
+})
+
 test("historical requested count is unavailable when it was not recorded", () => {
   assert.equal(recordedRequestedCount(0), null)
   assert.equal(recordedRequestedCount(-1), null)
@@ -125,6 +138,15 @@ test("Run again is explicitly a new search and does not replace historical prove
   assert.match(page, /<strong>Run again<\/strong><small>These controls create a separate discovery run\.<\/small>/)
   assert.match(page, /discoveryCountControl\("Run new search", "outline"\)/)
   assert.match(discoveryRoute, /previousDiscoveryRuns\(recentSearches, recentResults, search\.id\)/)
+})
+
+test("discovery labels distinguish identity-new, qualified-new, stored history, and actionable review", () => {
+  assert.match(page, /qualified new/)
+  assert.match(page, /new identity candidates/)
+  assert.match(page, /Discovery results stored/)
+  assert.match(page, /actionable review candidate/)
+  assert.match(page, /Stored history — filter mismatch/)
+  assert.match(page, /status === "Needs review" \? "Filter mismatch"/)
 })
 
 test("review operations resolve the owning search before changing a result", () => {
