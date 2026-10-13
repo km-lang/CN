@@ -1,4 +1,4 @@
-import { FIXED_ALUMNI_SCHOOL, defaultDiscoveryFilters, normalized, type DiscoveryFilters } from "@/lib/alumni-search"
+import { FIXED_ALUMNI_SCHOOL, defaultDiscoveryFilters, normalizeDiscoverySeniorities, normalized, type DiscoveryFilters } from "@/lib/alumni-search"
 
 export type DiscoveryCoverageState = "NEVER_SEARCHED" | "RECENTLY_SEARCHED" | "STALE_SEARCH"
 export type DiscoveryCoverageOverallState = DiscoveryCoverageState | "PARTIALLY_COVERED"
@@ -40,6 +40,7 @@ export function normalizeDiscoveryCoverageFilters(value: Partial<DiscoveryFilter
     : [...defaults.discoveryProgrammes].map(normalizedValue).sort()
   const rawYear = String(value.graduationYear ?? defaults.graduationYear).trim()
   const year = /^\d{4}$/.test(rawYear) ? Number(rawYear) : null
+  const seniorities = normalizeDiscoverySeniorities(value.seniorities, value.seniority)
   return {
     institution: normalizedValue(FIXED_ALUMNI_SCHOOL),
     alumniStatus: normalizedValue(value.alumniStatus ?? defaults.alumniStatus),
@@ -47,7 +48,7 @@ export function normalizeDiscoveryCoverageFilters(value: Partial<DiscoveryFilter
     company: normalizedValue(value.company === "All companies" ? "" : value.company ?? defaults.company),
     role: normalizedValue(value.role ?? defaults.role),
     function: normalizedValue(value.function ?? defaults.function),
-    seniority: normalizedValue(value.seniority ?? defaults.seniority),
+    seniorities: seniorities.map(normalizedValue),
     location: normalizedValue(value.location ?? defaults.location),
     graduationYear: year,
   }
@@ -68,7 +69,7 @@ function sameBaseFilters(left: ReturnType<typeof normalizeDiscoveryCoverageFilte
     && left.company === right.company
     && left.role === right.role
     && left.function === right.function
-    && left.seniority === right.seniority
+    && left.seniorities.join("|") === right.seniorities.join("|")
     && left.location === right.location
     && left.discoveryProgrammes.join("|") === right.discoveryProgrammes.join("|")
 }

@@ -27,6 +27,8 @@ export type DiscoveryFilters = {
   company: string;
   role: string;
   function: string;
+  seniorities: string[];
+  /** Legacy single-value representation retained for stored-search/API compatibility. */
   seniority: string;
   location: string;
   graduationYear: string;
@@ -127,7 +129,7 @@ export function normalizeFunction(raw: string, title = "") {
 export function normalizeSeniority(raw: string, title = "") {
   const titleValue = normalized(title);
   // A reporting relationship is not the office held by the person.
-  if (/\b(?:assistant|advisor|chief of staff) to (?:the )?(?:executive |senior )?vice president\b/.test(titleValue)) return "Analyst/Junior";
+  if (isReportingRelationshipTitle(titleValue)) return "Analyst/Junior";
   if (/chief|\bcxo\b|c suite|country head|managing partner|managing director/.test(titleValue)) return "CXO";
   if (/executive vice president|senior vice president|\bevp\b|\bsvp\b/.test(titleValue)) return "EVP/SVP";
   if (/assistant vice president|vice president|\bavp\b|\bvp\b|partner/.test(titleValue)) return "VP";
@@ -162,6 +164,52 @@ const seniorityRank: Record<string, number> = {
   CXO: 9,
 };
 
+export const DISCOVERY_SENIORITY_OPTIONS = [
+  "Analyst/Junior",
+  "Associate/Consultant",
+  "Manager",
+  "Senior Manager",
+  "GM",
+  "Director",
+  "Director+",
+  "VP",
+  "VP+",
+  "EVP/SVP",
+  "CXO",
+] as const;
+
+function discoverySeniorityKey(value: unknown) {
+  const text = String(value ?? "").trim();
+  return `${normalized(text.replace(/\+$/, ""))}${text.endsWith("+") ? "+" : ""}`;
+}
+
+const discoverySeniorityByNormalizedValue = new Map(
+  DISCOVERY_SENIORITY_OPTIONS.map(value => [discoverySeniorityKey(value), value]),
+);
+
+export function isReportingRelationshipTitle(title: string) {
+  return /\b(?:assistant|advisor|chief of staff) to (?:the )?(?:(?:executive|senior) )?(?:vice president|director|chief executive officer|chief financial officer|ceo|cfo|evp|svp)\b/.test(normalized(title));
+}
+
+export function normalizeDiscoverySeniorities(values: unknown, legacyValue: unknown = "All levels"): string[] {
+  const supplied = Array.isArray(values) && values.length ? values : [legacyValue];
+  const selected = new Set<string>();
+  for (const raw of supplied) {
+    const canonical = discoverySeniorityByNormalizedValue.get(discoverySeniorityKey(raw));
+    if (canonical) selected.add(canonical);
+  }
+  return DISCOVERY_SENIORITY_OPTIONS.filter(value => selected.has(value));
+}
+
+export function selectedDiscoverySeniorities(filters: Pick<DiscoveryFilters, "seniorities" | "seniority"> | Partial<Pick<DiscoveryFilters, "seniorities" | "seniority">>) {
+  return normalizeDiscoverySeniorities(filters.seniorities, filters.seniority);
+}
+
+export function discoverySenioritySummary(filters: Partial<Pick<DiscoveryFilters, "seniorities" | "seniority">>) {
+  const selected = selectedDiscoverySeniorities(filters);
+  return selected.length ? selected.join(", ") : "All levels";
+}
+
 export function matchesSeniority(actual: string, filter: string) {
   if (!filter || filter === "All levels") return true;
   const actualLevel = normalizeSeniority(actual, actual);
@@ -170,6 +218,34 @@ export function matchesSeniority(actual: string, filter: string) {
     return (seniorityRank[actualLevel] ?? 0) >= (seniorityRank[threshold] ?? 0);
   }
   return actualLevel === filter;
+}
+
+export function matchesDiscoverySeniorities(actual: string, filters: Partial<Pick<DiscoveryFilters, "seniorities" | "seniority">>) {
+  const selected = selectedDiscoverySeniorities(filters);
+  return !selected.length || selected.some(filter => matchesSeniority(actual, filter));
+}
+
+export function normalizeDiscoveryFiltersInput(value: unknown): DiscoveryFilters {
+  const defaults = defaultDiscoveryFilters();
+  const candidate = value && typeof value === "object"
+    ? value as Omit<Partial<DiscoveryFilters>, "seniorities"> & { batch?: string; seniorities?: unknown }
+    : {};
+  const seniorities = normalizeDiscoverySeniorities(candidate.seniorities, candidate.seniority);
+  return {
+    ...defaults,
+    ...candidate,
+    discoveryProgrammes: Array.isArray(candidate.discoveryProgrammes)
+      ? [...new Set(candidate.discoveryProgrammes.map(String).map(item => item.trim().toUpperCase()).filter(Boolean))]
+      : defaults.discoveryProgrammes,
+    alumniStatus: candidate.alumniStatus === "All graduation statuses" ? candidate.alumniStatus : defaults.alumniStatus,
+    company: candidate.company === "All companies" ? "" : String(candidate.company ?? defaults.company).trim(),
+    role: String(candidate.role ?? defaults.role).trim(),
+    function: String(candidate.function ?? defaults.function).trim() || defaults.function,
+    seniorities,
+    seniority: seniorities.length === 1 ? seniorities[0] : defaults.seniority,
+    location: String(candidate.location ?? defaults.location).trim(),
+    graduationYear: String(candidate.graduationYear ?? candidate.batch ?? defaults.graduationYear).trim(),
+  };
 }
 
 export function matchesInternalFilters(
@@ -259,7 +335,8 @@ export function criteriaSummary(filters: DiscoveryFilters) {
   if (filters.company) parts.push(`Company: ${filters.company}`);
   if (filters.role) parts.push(`Role: ${filters.role}`);
   if (filters.function !== "All functions") parts.push(`Function: ${filters.function}`);
-  if (filters.seniority !== "All levels") parts.push(`Seniority: ${filters.seniority}`);
+  const seniorities = selectedDiscoverySeniorities(filters);
+  if (seniorities.length) parts.push(`Seniority: ${seniorities.join(", ")}`);
   if (filters.location) parts.push(`Location: ${filters.location}`);
   if (filters.graduationYear) parts.push(`Graduation year: ${filters.graduationYear}`);
   return parts.join(" · ");
@@ -364,6 +441,7 @@ export function defaultDiscoveryFilters(): DiscoveryFilters {
     company: "",
     role: "",
     function: "All functions",
+    seniorities: [],
     seniority: "All levels",
     location: "",
     graduationYear: "",

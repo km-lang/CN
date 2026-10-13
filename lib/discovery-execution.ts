@@ -1,7 +1,9 @@
 import {
   matchesSeniority,
+  isReportingRelationshipTitle,
   normalizeSeniority,
   normalized,
+  selectedDiscoverySeniorities,
   type DiscoveryFilters,
   type DiscoveryProfile,
 } from "@/lib/alumni-search"
@@ -121,22 +123,23 @@ function companyCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters, 
 export function titleSeniority(title: string) {
   const value = normalized(title)
   if (!value || /unavailable/.test(value)) return { bucket: "", ambiguous: true }
-  if (/\b(?:assistant|advisor|chief of staff) to (?:the )?(?:executive |senior )?vice president\b/.test(value)) return { bucket: "", ambiguous: true }
+  if (isReportingRelationshipTitle(value)) return { bucket: "", ambiguous: true }
   return { bucket: normalizeSeniority("", title), ambiguous: false }
 }
 
 function seniorityCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters, source: "SEARCH_PREVIEW_TITLE" | "BASE_COLLECT") {
-  if (filters.seniority === "All levels") return criterion("NOT_REQUESTED", "NOT_REQUESTED", "", "No seniority filter was requested.")
+  const selected = selectedDiscoverySeniorities(filters)
+  if (!selected.length) return criterion("NOT_REQUESTED", "NOT_REQUESTED", "", "No seniority filter was requested.")
   const roles = source === "BASE_COLLECT" && profile.currentRoles?.length
     ? profile.currentRoles
     : [{ company: profile.currentCompany, title: profile.rawTitle || profile.role, seniority: profile.seniority, startDate: "" }]
   const classified = roles.map(role => ({ title: role.title, ...titleSeniority(role.title) })).filter(item => item.bucket)
   if (!classified.length) return criterion("INSUFFICIENT_EVIDENCE", source, roles.map(role => role.title).filter(Boolean).join("; "), "The returned title cannot be safely classified into the CN seniority vocabulary.")
-  const match = classified.find(item => matchesSeniority(item.bucket, filters.seniority))
+  const match = classified.map(item => ({ ...item, selected: selected.find(filter => matchesSeniority(item.bucket, filter)) })).find(item => item.selected)
   const evidence = classified.map(item => `${item.title} → ${item.bucket}`).join("; ")
   return match
-    ? criterion(source === "BASE_COLLECT" ? "VERIFIED_MATCH" : "MATCH", source, evidence, `Derived seniority satisfies ${filters.seniority}.`)
-    : criterion(source === "BASE_COLLECT" ? "VERIFIED_MISMATCH" : "MISMATCH", source, evidence, `Derived seniority does not satisfy ${filters.seniority}.`)
+    ? criterion(source === "BASE_COLLECT" ? "VERIFIED_MATCH" : "MATCH", source, evidence, `${match.title} → ${match.bucket}; matches selected ${match.selected}.`)
+    : criterion(source === "BASE_COLLECT" ? "VERIFIED_MISMATCH" : "MISMATCH", source, evidence, `Derived seniority does not match selected ${selected.join(", ")}.`)
 }
 
 function graduationCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters, collected: boolean) {

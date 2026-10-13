@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "@/db"
 import { alumni, externalDiscoveryResults, externalDiscoverySearches, fieldChangeHistory, providerResponseHistory, providerSettings } from "@/db/schema"
-import { FIXED_ALUMNI_SCHOOL, criteriaSummary, defaultDiscoveryFilters, matchesSeniority, normalized, type DiscoveryFilters, type DiscoveryProfile, type MatchStatus } from "@/lib/alumni-search"
+import { FIXED_ALUMNI_SCHOOL, criteriaSummary, defaultDiscoveryFilters, matchesDiscoverySeniorities, normalizeDiscoveryFiltersInput, normalized, type DiscoveryFilters, type DiscoveryProfile, type MatchStatus } from "@/lib/alumni-search"
 import { coresignalProvider } from "@/lib/coresignal-adapter"
 import { safeCoresignalError } from "@/lib/coresignal-client"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
@@ -25,21 +25,8 @@ function monthStart() { const date = new Date(); return new Date(Date.UTC(date.g
 function initials(name: string) { return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join("") || "AL" }
 function providerLabel(provider: string) { return provider === PROFESSIONAL_DATA_PROVIDER ? PROFESSIONAL_DATA_PROVIDER_LABEL : provider.toLowerCase() === "pdl" ? "PDL" : provider }
 
-function normalizedDiscoveryFilters(value: unknown): DiscoveryFilters {
-  const defaults = defaultDiscoveryFilters()
-  const candidate = value && typeof value === "object" ? value as Partial<DiscoveryFilters> & { batch?: string } : {}
-  return {
-    ...defaults,
-    ...candidate,
-    discoveryProgrammes: Array.isArray(candidate.discoveryProgrammes) ? [...new Set(candidate.discoveryProgrammes.map(String).map(item => item.trim().toUpperCase()).filter(Boolean))] : defaults.discoveryProgrammes,
-    alumniStatus: candidate.alumniStatus === "All graduation statuses" ? candidate.alumniStatus : defaults.alumniStatus,
-    company: candidate.company === "All companies" ? "" : String(candidate.company ?? defaults.company).trim(),
-    role: String(candidate.role ?? defaults.role).trim(),
-    function: String(candidate.function ?? defaults.function).trim() || defaults.function,
-    seniority: String(candidate.seniority ?? defaults.seniority).trim() || defaults.seniority,
-    location: String(candidate.location ?? defaults.location).trim(),
-    graduationYear: String(candidate.graduationYear ?? candidate.batch ?? defaults.graduationYear).trim(),
-  }
+export function normalizedDiscoveryFilters(value: unknown): DiscoveryFilters {
+  return normalizeDiscoveryFiltersInput(value)
 }
 
 function storedDiscoveryFilters(value: string) {
@@ -58,7 +45,7 @@ function qualificationForResult(result: typeof externalDiscoveryResults.$inferSe
   const returnedFiltersMatch = (!filters.company || normalized(result.currentCompany) === normalized(filters.company))
     && (!filters.role || normalized(result.role).includes(normalized(filters.role)))
     && (filters.function === "All functions" || result.function === filters.function)
-    && (filters.seniority === "All levels" || matchesSeniority(result.seniority, filters.seniority))
+    && matchesDiscoverySeniorities(result.seniority, filters)
     && (!filters.location || normalized(result.location).includes(normalized(filters.location)))
     && (!filters.graduationYear || result.graduationYear === Number(filters.graduationYear))
   return { ...qualification, eligibleForAddition: qualification.eligibleForAddition && returnedFiltersMatch && !result.currentRoleAmbiguous }
