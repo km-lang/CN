@@ -1,4 +1,6 @@
 import type { DiscoveryFilters, DiscoveryProfile } from "@/lib/alumni-search"
+import type { DiscoveryExecutionResult } from "@/lib/discovery-execution"
+import type { RejectedCandidateEvidence } from "@/lib/discovery-reconciliation"
 
 export const PROFESSIONAL_DATA_PROVIDER = "coresignal" as const
 export const PROFESSIONAL_DATA_PROVIDER_LABEL = "Coresignal" as const
@@ -15,6 +17,7 @@ export type ProfessionalSearchResult = {
   totalAvailable: number
   responseSummary: string
   usage: ProviderUsage
+  execution?: DiscoveryExecutionResult
 }
 
 export type ProfessionalRefreshResult = {
@@ -36,6 +39,14 @@ export type InternalProfessionalPerson = {
   location: string
   linkedinUrl?: string
   coresignalEmployeeId?: string
+  education?: string
+  programme?: string
+  graduationYear?: number
+}
+
+export type ProfessionalSearchOptions = {
+  rejectedCandidates?: readonly RejectedCandidateEvidence[]
+  maximumCollects?: number
 }
 
 export interface ProfessionalDataProvider {
@@ -43,7 +54,7 @@ export interface ProfessionalDataProvider {
   readonly label: typeof PROFESSIONAL_DATA_PROVIDER_LABEL
   mode(): ProfessionalDataMode
   configured(): boolean
-  searchCandidates(filters: DiscoveryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult>
+  searchCandidates(filters: DiscoveryFilters, internal: InternalProfessionalPerson[], limit: number, options?: ProfessionalSearchOptions): Promise<ProfessionalSearchResult>
   refreshProfile(person: InternalProfessionalPerson): Promise<ProfessionalRefreshResult>
 }
 

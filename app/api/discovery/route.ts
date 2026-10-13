@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "@/db"
 import { alumni, externalDiscoveryResults, externalDiscoverySearches, fieldChangeHistory, providerResponseHistory, providerSettings } from "@/db/schema"
-import { FIXED_ALUMNI_SCHOOL, criteriaSummary, defaultDiscoveryFilters, normalized, type DiscoveryFilters, type DiscoveryProfile, type MatchStatus } from "@/lib/alumni-search"
+import { FIXED_ALUMNI_SCHOOL, criteriaSummary, defaultDiscoveryFilters, matchesSeniority, normalized, type DiscoveryFilters, type DiscoveryProfile, type MatchStatus } from "@/lib/alumni-search"
 import { coresignalProvider } from "@/lib/coresignal-adapter"
 import { safeCoresignalError } from "@/lib/coresignal-client"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
@@ -16,6 +16,7 @@ import { discoveryClassificationCounts, discoveryRunSummary, previousDiscoveryRu
 import { discoveryCoveragePlan } from "@/lib/discovery-coverage"
 import { CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES } from "@/lib/discovery-provider-capabilities"
 import { reconcileDiscoveryCandidate, reconcileDiscoveryCandidates, selectiveCollectSummary, type ReconciliationCandidate, type RejectedCandidateEvidence } from "@/lib/discovery-reconciliation"
+import { qualifyCollectedCandidate, qualifyPreviewCandidate, type DiscoveryExecutionCandidate } from "@/lib/discovery-execution"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -53,7 +54,14 @@ function qualificationForResult(result: typeof externalDiscoveryResults.$inferSe
     programmeMatchesSelection: true,
     eligibleForAddition: result.affiliationStatus === "Confirmed degree alumnus",
   }
-  return discoveryQualification(result.educationProgramme, result.educationEndDate, filters.discoveryProgrammes, now)
+  const qualification = discoveryQualification(result.educationProgramme, result.educationEndDate, filters.discoveryProgrammes, now)
+  const returnedFiltersMatch = (!filters.company || normalized(result.currentCompany) === normalized(filters.company))
+    && (!filters.role || normalized(result.role).includes(normalized(filters.role)))
+    && (filters.function === "All functions" || result.function === filters.function)
+    && (filters.seniority === "All levels" || matchesSeniority(result.seniority, filters.seniority))
+    && (!filters.location || normalized(result.location).includes(normalized(filters.location)))
+    && (!filters.graduationYear || result.graduationYear === Number(filters.graduationYear))
+  return { ...qualification, eligibleForAddition: qualification.eligibleForAddition && returnedFiltersMatch && !result.currentRoleAmbiguous }
 }
 
 function reconciliationPresentation(reconciliation?: ReturnType<typeof reconcileDiscoveryCandidate>) {
@@ -109,12 +117,12 @@ function rejectedEvidence(results: readonly (typeof externalDiscoveryResults.$in
   return results.filter(result => result.reviewStatus === "Ignored").map(result => ({ ...storedCandidate(result), reviewStatus: result.reviewStatus, resultId: result.id }))
 }
 
-function classify(profile: DiscoveryProfile, people: (typeof alumni.$inferSelect)[], rejected: readonly RejectedCandidateEvidence[]) {
-  const reconciliation = reconcileDiscoveryCandidate(profileCandidate(profile), people, rejected, CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
+function classify(profile: DiscoveryProfile, people: (typeof alumni.$inferSelect)[], rejected: readonly RejectedCandidateEvidence[], execution?: DiscoveryExecutionCandidate) {
+  const reconciliation = execution?.reconciliation ?? reconcileDiscoveryCandidate(profileCandidate(profile), people, rejected, CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
   if (["KNOWN_PROVIDER_ID", "KNOWN_PROFILE_URL", "KNOWN_STRONG_IDENTITY"].includes(reconciliation.classification)) {
     return { matchStatus: "Already in database" as MatchStatus, linkedInternalAlumnusId: reconciliation.linkedAlumnusId, matchConfidence: Math.max(95, profile.matchConfidence), reconciliation }
   }
-  if (reconciliation.classification === "NEW_CANDIDATE" && profile.affiliationStatus === "Confirmed degree alumnus" && !profile.currentRoleAmbiguous && profile.eligibleForAddition) {
+  if (reconciliation.classification === "NEW_CANDIDATE" && (!execution || execution.finalStatus === "QUALIFIED_FOR_REVIEW") && profile.affiliationStatus === "Confirmed degree alumnus" && !profile.currentRoleAmbiguous && profile.eligibleForAddition) {
     return { matchStatus: "New" as MatchStatus, linkedInternalAlumnusId: null, matchConfidence: profile.matchConfidence, reconciliation }
   }
   const possibleDuplicate = reconciliation.classification === "AMBIGUOUS" && reconciliation.reasonCode.includes("MATCH")
@@ -132,7 +140,7 @@ async function remainingApplicationUnits() {
   return Math.max(0, (settings[0]?.monthlyCreditLimit ?? DEFAULT_APPLICATION_LIMIT) - Number(usage[0]?.used ?? 0))
 }
 
-function resultValues(searchId: number, profile: DiscoveryProfile, match: ReturnType<typeof classify>) {
+function resultValues(searchId: number, profile: DiscoveryProfile, match: ReturnType<typeof classify>, execution?: DiscoveryExecutionCandidate) {
   return {
     searchId, provider: PROFESSIONAL_DATA_PROVIDER, providerResultId: profile.providerResultId, providerPersonId: profile.providerPersonId,
     name: profile.name, education: profile.education, currentCompany: profile.currentCompany, role: profile.role, rawTitle: profile.rawTitle,
@@ -143,7 +151,37 @@ function resultValues(searchId: number, profile: DiscoveryProfile, match: Return
     institutionId: profile.institutionId, institutionUrl: profile.institutionUrl, currentCompanyId: profile.currentCompanyId,
     currentCompanyUrl: profile.currentCompanyUrl, currentRoleStartDate: profile.currentRoleStartDate, currentIndustry: profile.currentIndustry,
     currentRoleAmbiguous: profile.currentRoleAmbiguous, providerFreshnessAt: profile.providerFreshnessAt,
+    reviewNote: execution ? `${execution.collectionState}: ${execution.collectionRationale}` : "",
   }
+}
+
+function executionPresentation(execution?: DiscoveryExecutionCandidate) {
+  return execution ? {
+    qualification: execution.qualification,
+    collectionState: execution.collectionState,
+    collectionRationale: execution.collectionRationale,
+    finalDiscoveryStatus: execution.finalStatus,
+  } : {}
+}
+
+const collectionStates = new Set(["COLLECT_PERFORMED", "SKIPPED_ALREADY_KNOWN", "SKIPPED_FILTER_MISMATCH", "SKIPPED_PREVIOUSLY_REJECTED", "REVIEW_BEFORE_COLLECT", "SKIPPED_COLLECT_LIMIT"])
+
+function storedQualificationPresentation(result: typeof externalDiscoveryResults.$inferSelect, filters: DiscoveryFilters) {
+  const collectionState = result.reviewNote.split(":", 1)[0]
+  if (!collectionStates.has(collectionState)) return {}
+  const profile: DiscoveryProfile = {
+    providerResultId: result.providerResultId, providerPersonId: result.providerPersonId, name: result.name, education: result.education,
+    currentCompany: result.currentCompany, role: result.role, rawTitle: result.rawTitle, function: result.function, seniority: result.seniority,
+    location: result.location, graduationYear: result.graduationYear, linkedinUrl: result.linkedinUrl, matchConfidence: result.matchConfidence,
+    affiliationStatus: result.affiliationStatus as DiscoveryProfile["affiliationStatus"], educationProgramme: result.educationProgramme,
+    normalizedProgramme: normalizeCoresignalProgramme(result.educationProgramme).code ?? "", programmeStatus: normalizeCoresignalProgramme(result.educationProgramme).status,
+    alumniStatus: qualificationForResult(result, filters, new Date()).alumniStatus as DiscoveryProfile["alumniStatus"], eligibleForAddition: false,
+    educationStartDate: result.educationStartDate, educationEndDate: result.educationEndDate, institutionId: result.institutionId, institutionUrl: result.institutionUrl,
+    currentCompanyId: result.currentCompanyId, currentCompanyUrl: result.currentCompanyUrl, currentRoleStartDate: result.currentRoleStartDate,
+    currentIndustry: result.currentIndustry, currentRoleAmbiguous: result.currentRoleAmbiguous, providerFreshnessAt: result.providerFreshnessAt,
+  }
+  const qualification = collectionState === "COLLECT_PERFORMED" ? qualifyCollectedCandidate(profile, filters) : qualifyPreviewCandidate(profile, filters)
+  return { qualification, collectionState, collectionRationale: result.reviewNote.slice(collectionState.length + 1).trim() }
 }
 
 function alumnusValues(result: typeof externalDiscoveryResults.$inferSelect, actor: string, now: string, suffix = "") {
@@ -203,7 +241,7 @@ export async function GET(request: Request) {
       ? reconcileDiscoveryCandidates(activeResults.map(storedCandidate), people, rejectedEvidence(ignoredResults), CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
       : []
     const reconciliationByKey = new Map(reconciliations.map(item => [item.candidateKey, item]))
-    const presentedResults = activeResults.map(result => ({ ...presentResult(result, filters, new Date(), activeSearch), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)) }))
+    const presentedResults = activeResults.map(result => ({ ...presentResult(result, filters, new Date(), activeSearch), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)), ...storedQualificationPresentation(result, filters) }))
     const counts = discoveryClassificationCounts(activeResults)
     return Response.json({ ...common, activeSearch: activeSearchSummary, results: presentedResults, counts, reconciliationSummary: reconciliations.length ? selectiveCollectSummary(reconciliations) : null, filters, providerHistory: activeProviderHistory, creditsUsed: activeSearch.creditsUsed, retrieval: "stored", source: { provider: activeSearch.provider, mode: activeSearch.mode, searchId: activeSearch.id, createdAt: activeSearch.createdAt } })
   } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return Response.json({ error: error instanceof Error ? error.message : "Unable to load discovery history." }, { status: 500 }) }
@@ -236,27 +274,35 @@ export async function POST(request: Request) {
       ])
       const rejected = rejectedEvidence(ignoredResults)
       let response
-      try { response = await coresignalProvider.searchCandidates(filters, people, validation.requested) }
+      try { response = await coresignalProvider.searchCandidates(filters, people, validation.requested, { rejectedCandidates: rejected, maximumCollects: validation.requested }) }
       catch (error) {
         const failure = safeCoresignalError(error)
         await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", operation: "Education affiliation search", mode: coresignalProvider.mode(), status: "error", applicationUnits: failure.successfulOperationCredits, providerReportedCredits: null, usageState: failure.successfulOperationCredits ? "reconciliation_required" : "not_applicable", requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: failure.message, errorMessage: failure.message, requestedBy: actor })
         return Response.json({ error: failure.message, failureType: failure.kind, blocked: true, reason: "provider_error", filters, effectiveLimit: validation.requested }, { status: failure.status === 429 ? 429 : 502 })
       }
-      const [search] = await db.insert(externalDiscoverySearches).values({ provider: PROFESSIONAL_DATA_PROVIDER, filtersJson: JSON.stringify(filters), criteriaSummary: criteriaSummary(filters), requestedCount: validation.requested, resultCount: response.profiles.length, creditsUsed: 0, mode: coresignalProvider.mode(), initiatedBy: actor }).returning()
-      const reconciled = response.profiles.map(profile => ({ profile, ...classify(profile, people, rejected) }))
-      for (const item of reconciled) await db.insert(externalDiscoveryResults).values(resultValues(search.id, item.profile, item))
+      const [search] = await db.insert(externalDiscoverySearches).values({ provider: PROFESSIONAL_DATA_PROVIDER, filtersJson: JSON.stringify(filters), criteriaSummary: criteriaSummary(filters), requestedCount: validation.requested, resultCount: response.totalAvailable, creditsUsed: 0, mode: coresignalProvider.mode(), initiatedBy: actor }).returning()
+      const executionByKey = new Map((response.execution?.candidates ?? []).map(item => [item.profile.providerResultId || item.profile.providerPersonId, item]))
+      const reconciled = response.profiles.map(profile => {
+        const execution = executionByKey.get(profile.providerResultId || profile.providerPersonId)
+        return { profile, execution, ...classify(profile, people, rejected, execution) }
+      })
+      for (const item of reconciled) await db.insert(externalDiscoveryResults).values(resultValues(search.id, item.profile, item, item.execution))
       const counts = { existing: reconciled.filter(i => i.matchStatus === "Already in database").length, new: reconciled.filter(i => i.matchStatus === "New").length, possibleDuplicate: reconciled.filter(i => i.matchStatus === "Possible duplicate").length, needsReview: reconciled.filter(i => i.matchStatus === "Needs review").length }
       await db.update(externalDiscoverySearches).set({ existingCount: counts.existing, newCount: counts.new, duplicateCount: counts.possibleDuplicate }).where(eq(externalDiscoverySearches.id, search.id))
-      const [history] = await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: "Education affiliation search", mode: coresignalProvider.mode(), status: "success", creditsUsed: response.usage.providerReportedUsage ?? 0, applicationUnits: response.usage.applicationUnits, providerReportedCredits: response.usage.providerReportedUsage, usageState: response.usage.usageState, resultCount: response.profiles.length, requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: response.responseSummary, requestedBy: actor }).returning()
+      const executionAudit = response.execution?.metrics ? ` · Selective execution ${JSON.stringify(response.execution.metrics)}` : ""
+      const [history] = await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: "Education affiliation search", mode: coresignalProvider.mode(), status: "success", creditsUsed: response.usage.providerReportedUsage ?? 0, applicationUnits: response.usage.applicationUnits, providerReportedCredits: response.usage.providerReportedUsage, usageState: response.usage.usageState, resultCount: response.totalAvailable, requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: `${response.responseSummary}${executionAudit}`, requestedBy: actor }).returning()
       const storedRows = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id)
       const reconciliationByKey = new Map(reconciled.map(item => [item.reconciliation.candidateKey, item.reconciliation]))
-      const storedResults = storedRows.map(result => ({ ...presentResult(result, filters, nowDate, search), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)) }))
+      const storedResults = storedRows.map(result => {
+        const execution = executionByKey.get(storedCandidate(result).candidateKey)
+        return ({ ...presentResult(result, filters, nowDate, search), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)), ...executionPresentation(execution) })
+      })
       const recentSearches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10)
       const recentSearchIds = recentSearches.map(item => item.id)
       const recentResults = recentSearchIds.length ? await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, recentSearchIds)) : []
       const previousSearches = previousDiscoveryRuns(recentSearches, recentResults, search.id)
-      await writeSecurityAudit(context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, mode: coresignalProvider.mode() } })
-      return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [history]), previousSearches, providerHistory: [history], results: storedResults, counts, reconciliationSummary: selectiveCollectSummary(reconciled.map(item => item.reconciliation)), previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: validation.requested, returnedCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
+      await writeSecurityAudit(context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.totalAvailable, storedResultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, mode: coresignalProvider.mode(), selectiveExecution: response.execution?.metrics ?? null } })
+      return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [history]), previousSearches, providerHistory: [history], results: storedResults, counts, reconciliationSummary: selectiveCollectSummary(reconciled.map(item => item.reconciliation)), executionSummary: response.execution?.metrics ?? null, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: validation.requested, returnedCount: response.totalAvailable, storedResultCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
     }
 
     if (payload.action === "qualify" && Number.isInteger(payload.resultId) && affiliationStatuses.has(String(payload.affiliationStatus))) {

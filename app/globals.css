@@ -546,6 +546,9 @@ button { cursor: pointer; }
 .planner-rationale strong { color: #405663; font-size: .62rem; letter-spacing: .03em; }
 .planner-rationale small { color: #71818e; font-size: .64rem; line-height: 1.35; }
 .planner-rationale em { color: #8c1d2c; font-size: .61rem; font-style: normal; font-weight: 800; }
+.qualification-evidence { display: grid; gap: .12rem; margin-top: .4rem; padding-top: .35rem; border-top: 1px solid #e4e9ec; }
+.qualification-evidence em { color: #405663; font-size: .61rem; font-style: normal; font-weight: 800; letter-spacing: .02em; }
+.qualification-evidence small { color: #71818e; font-size: .62rem; line-height: 1.35; }
 .row-actions { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; min-width: 190px; }
 .row-actions button { min-height: 30px; }
 .row-actions svg { width: 13px; }

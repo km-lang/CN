@@ -130,17 +130,13 @@ test("I: unknown or yes preview capability never treats a missing profile URL as
   assert.equal(knownUnavailable.classification, "NEW_CANDIDATE")
 })
 
-test("unknown institutional preview evidence does not overstate new-candidate confidence", () => {
+test("a stable new profile URL identifies a new candidate without pretending education was returned", () => {
   const withoutEducation = candidate({ educationInstitution: "", programme: "", graduationYear: 0 })
-  const uncertain = reconciliation.reconcileDiscoveryCandidate(withoutEducation, [], [], capabilities.CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
-  assert.deepEqual([uncertain.classification, uncertain.collectDecision, uncertain.reasonCode], ["AMBIGUOUS", "REVIEW_BEFORE_COLLECT", "IDENTITY_EVIDENCE_INSUFFICIENT"])
+  const identified = reconciliation.reconcileDiscoveryCandidate(withoutEducation, [], [], capabilities.CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
+  assert.deepEqual([identified.classification, identified.collectDecision, identified.reasonCode], ["NEW_CANDIDATE", "COLLECT_RECOMMENDED", "NO_SAFE_EXISTING_IDENTITY"])
 
-  const knownUnavailable = reconciliation.reconcileDiscoveryCandidate(withoutEducation, [], [], {
-    ...capabilities.CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES,
-    searchPreviewProvidesProfileUrl: "YES",
-    searchPreviewProvidesEducation: "NO",
-  })
-  assert.equal(knownUnavailable.classification, "NEW_CANDIDATE")
+  const missingStableIdentity = reconciliation.reconcileDiscoveryCandidate({ ...withoutEducation, profileUrl: "" }, [], [], capabilities.CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
+  assert.deepEqual([missingStableIdentity.classification, missingStableIdentity.collectDecision], ["AMBIGUOUS", "REVIEW_BEFORE_COLLECT"])
 })
 
 test("search criteria are not reconstructed as returned education evidence", () => {

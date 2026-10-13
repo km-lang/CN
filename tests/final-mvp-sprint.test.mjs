@@ -47,11 +47,12 @@ test("final sprint Coresignal server independently validates bypass attempts", (
 test("final sprint persists requested separately from returned and provider usage", () => {
   assert.match(schema, /requestedCount: integer\("requested_count"\)/)
   assert.match(discoveryRoute, /requestedCount: validation\.requested/)
-  assert.match(discoveryRoute, /returnedCount: response\.profiles\.length/)
+  assert.match(discoveryRoute, /returnedCount: response\.totalAvailable/)
+  assert.match(discoveryRoute, /storedResultCount: response\.profiles\.length/)
   const searchInsert = discoveryRoute.match(/db\.insert\(externalDiscoverySearches\)\.values\(\{([\s\S]*?)\}\)\.returning\(\)/)?.[1] ?? ""
   const providerHistoryInsert = discoveryRoute.match(/db\.insert\(providerResponseHistory\)\.values\(\{\s*provider: PROFESSIONAL_DATA_PROVIDER,\s*alumnusName: "External alumni discovery",\s*searchId: search\.id,([\s\S]*?)\}\)/)?.[1] ?? ""
   assert.match(searchInsert, /requestedCount: validation\.requested/)
-  assert.match(searchInsert, /resultCount: response\.profiles\.length/)
+  assert.match(searchInsert, /resultCount: response\.totalAvailable/)
   assert.doesNotMatch(searchInsert, /providerReportedCredits|usageState/)
   assert.match(providerHistoryInsert, /providerReportedCredits: response\.usage\.providerReportedUsage/)
   assert.match(providerHistoryInsert, /usageState: response\.usage\.usageState/)

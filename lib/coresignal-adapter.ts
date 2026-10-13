@@ -11,6 +11,8 @@ import {
 import { collectCoresignalEmployee, CORESIGNAL_IIML_INSTITUTION_URL, CoresignalProviderError, searchCoresignalIiml } from "@/lib/coresignal-client"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { DEFAULT_DISCOVERY_PROGRAMMES, discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
+import { CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES } from "@/lib/discovery-provider-capabilities"
+import { executeSelectiveDiscovery } from "@/lib/discovery-execution"
 import { coresignalLiveSearchMaximum, providerConfigured, providerMode } from "@/lib/provider-runtime"
 import {
   mockProviderUsage,
@@ -20,6 +22,7 @@ import {
   type ProfessionalDataProvider,
   type ProfessionalRefreshResult,
   type ProfessionalSearchResult,
+  type ProfessionalSearchOptions,
   unknownProviderUsage,
 } from "@/lib/professional-data"
 
@@ -77,32 +80,63 @@ function dateValue(value: unknown) {
   return month ? `${year}-${month.padStart(2, "0")}` : year
 }
 
+export function normalizedCurrentRoleEvidence(profile: Row) {
+  const byIdentity = new Map<string, { company: string; title: string; seniority: string; startDate: string; source: Row }>()
+  for (const experience of validCurrentEmployment(profile)) {
+    const companyRecord = row(experience.company)
+    const company = first(experience, ["company_name", "organization_name"]) || first(companyRecord, ["name"])
+    const title = first(experience, ["title", "position", "role"])
+    const startDate = dateValue(experience.date_from ?? experience.start_date)
+    const key = `${normalized(company)}|${normalized(title)}`
+    if (!key.replace("|", "")) continue
+    const current = byIdentity.get(key)
+    if (!current || (!current.startDate && startDate)) byIdentity.set(key, { company, title, seniority: normalizeSeniority(first(experience, ["seniority"]), title), startDate, source: experience })
+  }
+  return [...byIdentity.values()]
+}
+
+export function normalizedIimlEducationEvidence(profile: Row) {
+  const byProgramme = new Map<string, { institution: string; programme: string; normalizedProgramme: string; startDate: string; endDate: string; graduationYear: number; source: Row }>()
+  for (const education of iimlEducationRecords(profile)) {
+    const programme = first(education, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"])
+    const normalizedProgramme = normalizeCoresignalProgramme(programme).code ?? ""
+    const startDate = dateValue(education.date_from) || dateValue(education.start_date) || dateValue(education.date_from_year) || dateValue(education.start_year)
+    const endDate = dateValue(education.date_to) || dateValue(education.end_date) || dateValue(education.date_to_year) || dateValue(education.end_year)
+    const graduationYear = Number(endDate.match(/\d{4}/)?.[0] ?? 0)
+    const programmeKey = normalizedProgramme || normalized(programme) || "programme-not-returned"
+    const evidence = { institution: institutionName(education) || FIXED_ALUMNI_SCHOOL, programme, normalizedProgramme, startDate, endDate, graduationYear, source: education }
+    const current = byProgramme.get(programmeKey)
+    const evidenceScore = Number(Boolean(graduationYear)) * 4 + Number(Boolean(endDate)) * 2 + Number(Boolean(startDate)) + Number(Boolean(programme))
+    const currentScore = current ? Number(Boolean(current.graduationYear)) * 4 + Number(Boolean(current.endDate)) * 2 + Number(Boolean(current.startDate)) + Number(Boolean(current.programme)) : -1
+    if (!current || evidenceScore > currentScore) byProgramme.set(programmeKey, evidence)
+  }
+  return [...byProgramme.values()]
+}
+
 function mapProfile(record: Row, index: number, options: { now?: Date; selectedProgrammes?: readonly string[] } = {}): DiscoveryProfile | null {
   if (!notDeleted(record)) return null
   const employeeId = first(record, ["id", "employee_id", "employee_base_id"])
   const selectedProgrammes = options.selectedProgrammes ?? DEFAULT_DISCOVERY_PROGRAMMES
-  const educationRecords = iimlEducationRecords(record)
-  const education = educationRecords.find(candidate => {
-    const programme = first(candidate, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"])
-    const normalizedProgramme = normalizeCoresignalProgramme(programme).code
-    return Boolean(normalizedProgramme && selectedProgrammes.includes(normalizedProgramme))
-  }) ?? educationRecords[0]
-  const current = validCurrentEmployment(record)
-  const currentRoleAmbiguous = current.length > 1
-  const employment = currentRoleAmbiguous ? {} : current[0] ?? {}
+  const educationEvidence = normalizedIimlEducationEvidence(record)
+  const selectedEducation = educationEvidence.find(candidate => candidate.normalizedProgramme && selectedProgrammes.includes(candidate.normalizedProgramme)) ?? educationEvidence[0]
+  const education = selectedEducation?.source
+  const currentRoles = normalizedCurrentRoleEvidence(record)
+  const currentRoleAmbiguous = currentRoles.length > 1
+  const currentRole = currentRoleAmbiguous ? undefined : currentRoles[0]
+  const employment = currentRole?.source ?? {}
   const company = row(employment.company)
   const rawTitle = first(employment, ["title", "position", "role"]) || first(record, ["active_experience_title", "current_title", "headline"])
   const currentCompany = first(employment, ["company_name", "organization_name"]) || first(company, ["name"]) || first(record, ["active_experience_company_name", "current_company_name"])
-  const programme = education ? first(education, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"]) : ""
-  const endDate = education ? dateValue(education.date_to) || dateValue(education.end_date) || dateValue(education.date_to_year) || dateValue(education.end_year) : ""
-  const graduationYear = Number(endDate.match(/\d{4}/)?.[0] ?? 0)
+  const programme = selectedEducation?.programme ?? ""
+  const endDate = selectedEducation?.endDate ?? ""
+  const graduationYear = selectedEducation?.graduationYear ?? 0
   const linkedinUrl = normalizeProfessionalProfileUrl(first(record, ["profile_url", "professional_network_url", "linkedin_url", "url"]))
   const qualification = discoveryQualification(programme, endDate, selectedProgrammes, options.now)
   return {
     providerResultId: employeeId || `coresignal-${index + 1}`,
     providerPersonId: employeeId,
     name: first(record, ["full_name", "name"]) || "Name unavailable",
-    education: education ? institutionName(education) || FIXED_ALUMNI_SCHOOL : FIXED_ALUMNI_SCHOOL,
+    education: selectedEducation?.institution ?? FIXED_ALUMNI_SCHOOL,
     currentCompany: currentRoleAmbiguous ? "Multiple current roles — review required" : currentCompany || "Company unavailable",
     role: currentRoleAmbiguous ? "Multiple current roles — review required" : rawTitle || "Role unavailable",
     rawTitle: currentRoleAmbiguous ? "" : rawTitle,
@@ -118,7 +152,7 @@ function mapProfile(record: Row, index: number, options: { now?: Date; selectedP
     programmeStatus: qualification.programmeStatus,
     alumniStatus: qualification.alumniStatus,
     eligibleForAddition: qualification.eligibleForAddition,
-    educationStartDate: education ? dateValue(education.date_from) || dateValue(education.start_date) || dateValue(education.date_from_year) || dateValue(education.start_year) : "",
+    educationStartDate: selectedEducation?.startDate ?? "",
     educationEndDate: endDate,
     institutionId: education ? first(education, ["institution_id", "school_id"]) : "",
     institutionUrl: education ? institutionUrl(education) : CORESIGNAL_IIML_INSTITUTION_URL,
@@ -128,20 +162,54 @@ function mapProfile(record: Row, index: number, options: { now?: Date; selectedP
     currentIndustry: currentRoleAmbiguous ? "" : first(employment, ["industry"]) || first(company, ["industry"]),
     currentRoleAmbiguous,
     providerFreshnessAt: first(record, ["last_updated", "updated_at", "last_refresh_at"]),
+    currentRoles: currentRoles.map(({ company: roleCompany, title, seniority, startDate }) => ({ company: roleCompany, title, seniority, startDate })),
+    iimlEducationEvidence: educationEvidence.map(({ institution, programme: evidenceProgramme, normalizedProgramme, startDate, endDate: evidenceEndDate, graduationYear: evidenceYear }) => ({ institution, programme: evidenceProgramme, normalizedProgramme, startDate, endDate: evidenceEndDate, graduationYear: evidenceYear })),
   }
 }
 
-function filterProfiles(profiles: DiscoveryProfile[], filters: DiscoveryFilters) {
-  return profiles.filter(profile => {
-    return (!filters.company || normalized(profile.currentCompany) === normalized(filters.company))
-      && (!filters.role || normalized(profile.role).includes(normalized(filters.role)))
-      && (filters.function === "All functions" || profile.function === filters.function)
-      && (!filters.location || normalized(profile.location).includes(normalized(filters.location)))
-      && (!filters.graduationYear || profile.graduationYear === Number(filters.graduationYear))
-      && (filters.seniority === "All levels" || profile.seniority === filters.seniority.replace(/\+$/, ""))
-      && (filters.alumniStatus !== "Past alumni only" || profile.alumniStatus === "Past alumnus")
-      && (!(filters.discoveryProgrammes ?? []).length || (filters.discoveryProgrammes ?? []).includes(profile.normalizedProgramme))
-  })
+export function mapCoresignalPreview(record: Row, index: number): DiscoveryProfile | null {
+  if (!notDeleted(record)) return null
+  const employeeId = first(record, ["id", "employee_id", "employee_base_id"])
+  const rawTitle = first(record, ["title", "current_title", "headline"])
+  const company = first(record, ["company_name", "current_company_name"])
+  const linkedinUrl = normalizeProfessionalProfileUrl(first(record, ["profile_url", "professional_network_url", "linkedin_url", "url"]))
+  return {
+    providerResultId: employeeId || `coresignal-preview-${index + 1}`,
+    providerPersonId: employeeId,
+    name: first(record, ["full_name", "name"]) || "Name unavailable",
+    education: "Education not returned",
+    currentCompany: company || "Company unavailable",
+    role: rawTitle || "Role unavailable",
+    rawTitle,
+    function: normalizeFunction("", rawTitle),
+    seniority: rawTitle ? normalizeSeniority("", rawTitle) : "Analyst/Junior",
+    location: first(record, ["experience_location", "location", "country"]),
+    graduationYear: 0,
+    linkedinUrl,
+    matchConfidence: [employeeId, linkedinUrl, company, rawTitle].filter(Boolean).length >= 3 ? 70 : 55,
+    affiliationStatus: "Potential alumnus — review required",
+    educationProgramme: "",
+    normalizedProgramme: "",
+    programmeStatus: "Programme requires review",
+    alumniStatus: "Graduation status unknown — review required",
+    eligibleForAddition: false,
+    educationStartDate: "",
+    educationEndDate: "",
+    institutionId: "",
+    institutionUrl: "",
+    currentCompanyId: first(record, ["company_id"]),
+    currentCompanyUrl: first(record, ["company_url", "company_professional_network_url"]),
+    currentRoleStartDate: "",
+    currentIndustry: first(record, ["company_industry"]),
+    currentRoleAmbiguous: false,
+    providerFreshnessAt: "",
+  }
+}
+
+function previewMatchesExistingReturnedFilters(profile: DiscoveryProfile, filters: DiscoveryFilters) {
+  return (!filters.role || normalized(profile.role).includes(normalized(filters.role)))
+    && (filters.function === "All functions" || profile.function === filters.function)
+    && (!filters.location || normalized(profile.location).includes(normalized(filters.location)))
 }
 
 function mockRows(filters: DiscoveryFilters, internal: InternalProfessionalPerson[]) {
@@ -174,26 +242,50 @@ export function successfulCoresignalOperationCredits(searchSucceeded: boolean, s
   return (searchSucceeded ? 1 : 0) + Math.max(0, Math.trunc(successfulCollects))
 }
 
-async function searchCandidates(filters: DiscoveryFilters, internal: InternalProfessionalPerson[], limit: number): Promise<ProfessionalSearchResult> {
+async function searchCandidates(filters: DiscoveryFilters, internal: InternalProfessionalPerson[], limit: number, options: ProfessionalSearchOptions = {}): Promise<ProfessionalSearchResult> {
   const now = new Date()
   const selectedProgrammes = filters.discoveryProgrammes ?? DEFAULT_DISCOVERY_PROGRAMMES
+  const safeLimit = Math.min(Math.max(0, Math.trunc(limit)), coresignalLiveSearchMaximum())
   if (providerMode("coresignal") === "mock") {
-    const profiles = filterProfiles(mockRows(filters, internal).map((record, index) => mapProfile(record, index, { now, selectedProgrammes })).filter(Boolean) as DiscoveryProfile[], filters).slice(0, limit)
-    return { profiles, totalAvailable: profiles.length, responseSummary: `${profiles.length} demonstration Coresignal profiles returned for qualification and review.`, usage: mockProviderUsage(profiles.length) }
+    const source = mockRows(filters, internal)
+    const fullById = new Map(source.map((record, index) => [first(record, ["id"]), mapProfile(record, index, { now, selectedProgrammes })] as const))
+    const previewProfiles = source.map((record, index) => {
+      const full = fullById.get(first(record, ["id"]))
+      return full ? mapCoresignalPreview({ id: full.providerPersonId, full_name: full.name, profile_url: full.linkedinUrl, company_name: full.currentRoleAmbiguous ? "" : full.currentCompany, title: full.currentRoleAmbiguous ? "" : full.rawTitle, location: full.location }, index) : null
+    }).filter(Boolean) as DiscoveryProfile[]
+    const eligiblePreviewProfiles = previewProfiles.filter(profile => previewMatchesExistingReturnedFilters(profile, filters))
+    const execution = await executeSelectiveDiscovery({ previewProfiles: eligiblePreviewProfiles, filters, alumni: internal, rejectedCandidates: options.rejectedCandidates ?? [], capabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: safeLimit, maximumCollects: Math.min(options.maximumCollects ?? safeLimit, safeLimit), collect: async employeeId => fullById.get(employeeId) ?? null })
+    execution.metrics.previewCountReturned = previewProfiles.length
+    return { profiles: execution.candidates.map(item => item.profile), totalAvailable: previewProfiles.length, responseSummary: `${execution.metrics.previewCountConsidered} demonstration Preview candidates considered; ${execution.metrics.collectExecuted} mock Collect operations selected.`, usage: mockProviderUsage(execution.metrics.collectExecuted), execution }
   }
   const previewRows = responseRows(await searchCoresignalIiml({ filters, now }))
-  const candidateIds = previewRows.map(item => first(item, ["id", "employee_id", "employee_base_id"])).filter(Boolean)
-  const collected: Row[] = []
-  for (const employeeId of candidateIds.slice(0, Math.min(limit, coresignalLiveSearchMaximum()))) {
-    try { collected.push(responseRow(await collectCoresignalEmployee(employeeId))) }
-    catch (error) {
-      if (error instanceof CoresignalProviderError) throw new CoresignalProviderError(error.message, error.kind, error.status, successfulCoresignalOperationCredits(true, collected.length))
-      throw error
-    }
+  const previewProfiles = previewRows.map((record, index) => mapCoresignalPreview(record, index)).filter(Boolean) as DiscoveryProfile[]
+  const eligiblePreviewProfiles = previewProfiles.filter(profile => previewMatchesExistingReturnedFilters(profile, filters))
+  let successfulCollects = 0
+  let execution
+  try {
+    execution = await executeSelectiveDiscovery({
+      previewProfiles: eligiblePreviewProfiles,
+      filters,
+      alumni: internal,
+      rejectedCandidates: options.rejectedCandidates ?? [],
+      capabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES,
+      requestedCount: safeLimit,
+      maximumCollects: Math.min(options.maximumCollects ?? safeLimit, safeLimit),
+      collect: async (employeeId, index) => {
+        const record = responseRow(await collectCoresignalEmployee(employeeId))
+        successfulCollects += 1
+        return mapProfile(record, index, { now, selectedProgrammes })
+      },
+    })
+  } catch (error) {
+    if (error instanceof CoresignalProviderError) throw new CoresignalProviderError(error.message, error.kind, error.status, successfulCoresignalOperationCredits(true, successfulCollects))
+    throw error
   }
-  const all = filterProfiles(collected.map((record, index) => mapProfile(record, index, { now, selectedProgrammes })).filter(Boolean) as DiscoveryProfile[], filters)
-  const profiles = all.slice(0, Math.min(limit, coresignalLiveSearchMaximum()))
-  return { profiles, totalAvailable: candidateIds.length, responseSummary: profiles.length ? `${profiles.length} Coresignal affiliation candidates returned for qualification and review.` : "No additional external affiliation candidates were found.", usage: unknownProviderUsage(successfulCoresignalOperationCredits(true, collected.length)) }
+  const profiles = execution.candidates.map(item => item.profile)
+  execution.metrics.previewCountReturned = previewProfiles.length
+  const metrics = execution.metrics
+  return { profiles, totalAvailable: previewProfiles.length, responseSummary: profiles.length ? `${metrics.previewCountReturned} Preview candidates returned; ${metrics.previewCountConsidered} considered; ${metrics.collectExecuted} collected; ${metrics.potentialCollectionsAvoided} potential collections avoided.` : "No additional external affiliation candidates were found.", usage: unknownProviderUsage(successfulCoresignalOperationCredits(true, successfulCollects)), execution }
 }
 
 async function refreshProfile(person: InternalProfessionalPerson): Promise<ProfessionalRefreshResult> {

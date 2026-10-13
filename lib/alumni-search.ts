@@ -79,6 +79,24 @@ export type DiscoveryProfile = {
   currentIndustry: string;
   currentRoleAmbiguous: boolean;
   providerFreshnessAt: string;
+  currentRoles?: DiscoveryCurrentRoleEvidence[];
+  iimlEducationEvidence?: DiscoveryEducationEvidence[];
+};
+
+export type DiscoveryCurrentRoleEvidence = {
+  company: string;
+  title: string;
+  seniority: string;
+  startDate: string;
+};
+
+export type DiscoveryEducationEvidence = {
+  institution: string;
+  programme: string;
+  normalizedProgramme: string;
+  startDate: string;
+  endDate: string;
+  graduationYear: number;
 };
 
 export type MatchStatus = "New" | "Already in database" | "Possible duplicate" | "Needs review";
@@ -108,6 +126,8 @@ export function normalizeFunction(raw: string, title = "") {
 
 export function normalizeSeniority(raw: string, title = "") {
   const titleValue = normalized(title);
+  // A reporting relationship is not the office held by the person.
+  if (/\b(?:assistant|advisor|chief of staff) to (?:the )?(?:executive |senior )?vice president\b/.test(titleValue)) return "Analyst/Junior";
   if (/chief|\bcxo\b|c suite|country head|managing partner|managing director/.test(titleValue)) return "CXO";
   if (/executive vice president|senior vice president|\bevp\b|\bsvp\b/.test(titleValue)) return "EVP/SVP";
   if (/assistant vice president|vice president|\bavp\b|\bvp\b|partner/.test(titleValue)) return "VP";

@@ -93,7 +93,8 @@ test("multiple mock search results are bounded by the application result limit",
   const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: [], alumniStatus: "All graduation statuses" }
   const result = await adapter.coresignalProvider.searchCandidates(filters, [{ id: 15, name: "Sahil Bansal", batch: 2015, company: "Google", title: "Product Leader", function: "Product", seniority: "Director", location: "Bengaluru", linkedinUrl: "https://linkedin.com/in/sahilb" }], 3)
   assert.equal(result.profiles.length, 3)
-  assert.equal(result.usage.applicationUnits, 3)
+  assert.equal(result.usage.applicationUnits, 2)
+  assert.equal(result.execution.metrics.collectSkippedKnown, 1)
   assert.equal(result.usage.providerReportedUsage, null)
   assert.equal(limits.validateDiscoveryCount(4, 3, 20).ok, false)
 })
@@ -160,7 +161,7 @@ test("programme multi-select reaches the provider query and is re-enforced after
   globalThis.fetch = async (url, init) => {
     if (String(url).includes("/search/")) {
       bodies.push(JSON.parse(init.body))
-      return new Response(JSON.stringify([{ id: "pgp" }, { id: "abm" }, { id: "executive" }]), { status: 200 })
+      return new Response(JSON.stringify(["pgp", "abm", "executive"].map(id => ({ id, full_name: id, profile_url: `https://linkedin.com/in/${id}`, company_name: "Example", title: "Director" }))), { status: 200 })
     }
     const id = String(url).split("/").at(-1)
     return new Response(JSON.stringify(collected[id]), { status: 200 })
@@ -170,9 +171,11 @@ test("programme multi-select reaches the provider query and is re-enforced after
     const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["ABM"], alumniStatus: "Past alumni only" }
     const result = await adapter.coresignalProvider.searchCandidates(filters, [], 3)
     assert.match(bodies[0].education_program_name, /ABM/)
-    assert.equal(result.profiles.length, 1)
-    assert.equal(result.profiles[0].normalizedProgramme, "ABM")
-    assert.equal(result.profiles[0].eligibleForAddition, true)
+    assert.equal(result.profiles.length, 3)
+    const abm = result.profiles.find(profile => profile.providerPersonId === "abm")
+    assert.equal(abm.normalizedProgramme, "ABM")
+    assert.equal(abm.eligibleForAddition, true)
+    assert.equal(result.execution.candidates.find(item => item.profile.providerPersonId === "executive").finalStatus, "FILTER_MISMATCH")
     assert.equal(result.usage.applicationUnits, 4)
   } finally {
     globalThis.fetch = previousFetch

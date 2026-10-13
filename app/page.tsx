@@ -240,6 +240,10 @@ type DiscoveryResult = {
   plannerReasonCode?: string
   plannerRationale?: string
   reconciledAlumnusId?: number | null
+  qualification?: Record<"company" | "seniority" | "graduationYear" | "programme", { result: string; source: string; evidence: string; rationale: string }>
+  collectionState?: "COLLECT_PERFORMED" | "SKIPPED_ALREADY_KNOWN" | "SKIPPED_FILTER_MISMATCH" | "SKIPPED_PREVIOUSLY_REJECTED" | "REVIEW_BEFORE_COLLECT" | "SKIPPED_COLLECT_LIMIT"
+  collectionRationale?: string
+  finalDiscoveryStatus?: "QUALIFIED_FOR_REVIEW" | "FILTER_MISMATCH" | "IDENTITY_REVIEW_REQUIRED" | "INSUFFICIENT_EVIDENCE" | "ALREADY_KNOWN" | "PREVIOUSLY_REJECTED" | "COLLECT_LIMIT_REACHED"
 }
 
 type DiscoveryCounts = { existing: number; new: number; possibleDuplicate: number; needsReview: number }
@@ -262,6 +266,22 @@ type ReconciliationSummary = {
   collectRecommended: number
   collectReviewRequired: number
   collectAvoided: number
+}
+type DiscoveryExecutionSummary = {
+  previewCountReturned: number
+  previewCountConsidered: number
+  knownProviderIds: number
+  knownProfileUrls: number
+  companyMismatches: number
+  seniorityMismatches: number
+  previouslyRejected: number
+  ambiguousCandidates: number
+  collectRecommended: number
+  collectExecuted: number
+  collectSkippedKnown: number
+  collectSkippedFilter: number
+  collectSkippedLimit: number
+  potentialCollectionsAvoided: number
 }
 type DiscoveryRunSummary = {
   searchId: number
@@ -572,6 +592,7 @@ export default function Home() {
   const [discoveryCoverageLoading, setDiscoveryCoverageLoading] = useState(false)
   const [discoveryCoverageError, setDiscoveryCoverageError] = useState("")
   const [discoveryReconciliation, setDiscoveryReconciliation] = useState<ReconciliationSummary | null>(null)
+  const [discoveryExecution, setDiscoveryExecution] = useState<DiscoveryExecutionSummary | null>(null)
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
@@ -1709,6 +1730,7 @@ export default function Home() {
     setDiscoveryState("idle")
     setLastDiscoveryFilters(null)
     setDiscoveryReconciliation(null)
+    setDiscoveryExecution(null)
   }
 
   function toggleDiscoveryProgramme(code: string) {
@@ -1779,6 +1801,7 @@ export default function Home() {
       setPreviousDiscoveryRuns(data.previousSearches ?? [])
       setActiveDiscoveryHistory(data.providerHistory ?? [])
       setDiscoveryReconciliation(data.reconciliationSummary ?? null)
+      setDiscoveryExecution(null)
       setDiscoveryState(data.results.length ? "results" : "empty")
       const provenance = data.activeSearch ? `${data.activeSearch.provider.toUpperCase()} ${data.activeSearch.mode.toUpperCase()} Search #${data.activeSearch.searchId}` : "external"
       setDiscoveryMessage(data.results.length
@@ -1801,7 +1824,7 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit) }),
       })
-      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; reconciliationSummary?: ReconciliationSummary | null; activeSearch?: DiscoveryRunSummary; previousSearches?: DiscoveryRunSummary[]; providerHistory?: ProviderHistory[]; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; error?: string; blocked?: boolean }
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; reconciliationSummary?: ReconciliationSummary | null; executionSummary?: DiscoveryExecutionSummary | null; activeSearch?: DiscoveryRunSummary; previousSearches?: DiscoveryRunSummary[]; providerHistory?: ProviderHistory[]; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; storedResultCount?: number; error?: string; blocked?: boolean }
       if (data.blocked) {
         setDiscoveryState("blocked")
         setDiscoveryMessage(data.error || "External search could not be run because the Coresignal application limit has been reached.")
@@ -1815,10 +1838,11 @@ export default function Home() {
       setDiscoveryResults(data.results)
       setDiscoveryCounts(data.counts)
       setDiscoveryReconciliation(data.reconciliationSummary ?? null)
+      setDiscoveryExecution(data.executionSummary ?? null)
       setSelectedDiscoveryIds([])
       setDiscoveryState(data.results.length ? "results" : "empty")
       setDiscoveryMessage(data.results.length
-        ? `${data.results.length} profiles returned from ${data.requestedCount ?? data.effectiveLimit ?? discoveryLimit} requested. Application usage: ${data.applicationUnits ?? data.results.length}; provider-account usage: ${data.creditsUsed == null ? "unknown" : data.creditsUsed}.`
+        ? `${data.returnedCount ?? data.results.length} Preview candidates returned; ${data.storedResultCount ?? data.results.length} considered profiles stored for review. Application usage: ${data.applicationUnits ?? data.results.length}; provider-account usage: ${data.creditsUsed == null ? "unknown" : data.creditsUsed}.`
         : "No additional external alumni were found for these criteria.")
       await Promise.all([loadEnrichment(), loadPendingDiscoverySummary()])
     } catch (error) {
@@ -2253,6 +2277,17 @@ export default function Home() {
                 <span><strong>{discoveryReconciliation.collectReviewRequired}</strong> review before collect</span>
                 <span><strong>{discoveryReconciliation.collectAvoided}</strong> potential profile collections avoided</span>
               </div>}
+              {discoveryExecution && <div className="selective-collect-plan discovery-execution-summary">
+                <div><span>Selective execution</span><strong>{discoveryExecution.collectExecuted} profile collects executed</strong><small>Preview qualification and CN identity reconciliation run before Collect.</small></div>
+                <span><strong>{discoveryExecution.previewCountReturned}</strong> Preview candidates returned</span>
+                <span><strong>{discoveryExecution.previewCountConsidered}</strong> candidates considered</span>
+                <span><strong>{discoveryExecution.companyMismatches}</strong> company mismatches</span>
+                <span><strong>{discoveryExecution.seniorityMismatches}</strong> seniority mismatches</span>
+                <span><strong>{discoveryExecution.collectSkippedKnown}</strong> known identities skipped</span>
+                <span><strong>{discoveryExecution.collectSkippedFilter}</strong> filter mismatches skipped</span>
+                <span><strong>{discoveryExecution.collectSkippedLimit}</strong> Collect-limit skips</span>
+                <span><strong>{discoveryExecution.potentialCollectionsAvoided}</strong> potential profile collections avoided</span>
+              </div>}
               {activeDiscoveryHistory.length > 0 && <div className="discovery-run-history"><strong>Search #{activeDiscoveryRun?.searchId} provider operations</strong>{activeDiscoveryHistory.map(item => <span key={item.id}>{item.operation} · {item.status} · {item.applicationUnits ?? 0} application unit{item.applicationUnits === 1 ? "" : "s"} · {item.createdAt}</span>)}</div>}
               <div className="credit-notice"><Activity /><span>External discovery consumes the configured application allowance separately from provider-account usage. If Coresignal does not report account usage, it remains unknown until reconciled. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
@@ -2266,10 +2301,10 @@ export default function Home() {
                   const professionalProfileUrl = normalizeProfessionalProfileUrl(result.linkedinUrl)
                   return <TableRow key={result.id}>
                     <TableCell><input type="checkbox" aria-label={`Select ${result.name}`} disabled={!canAdd} checked={selectedDiscoveryIds.includes(result.id)} onChange={() => toggleDiscoverySelection(result.id)} /></TableCell>
-                    <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>Search #{result.searchId} · {(result.provider || "Provider unavailable").toUpperCase()} · {(result.searchMode || "mode unavailable").toUpperCase()}</small><small>Provider person ID: {result.providerPersonId || "Not returned"} · Retrieved: {result.retrievedAt ? displayEventDate(result.retrievedAt) : "Not recorded"}</small>{!provenanceConsistent && <small className="provider-integrity-warning">Provider mismatch — review actions blocked</small>}<small>{result.education}</small><small>Raw programme: {result.educationProgramme || "Not returned"}</small><small>Corporate Network programme: {result.normalizedProgramme || result.programmeStatus || "Programme requires review"}</small><small>Graduation: {result.graduationYear || "Date not returned"} · {result.alumniStatus || "Graduation status unknown — review required"}</small><small>{result.affiliationStatus ?? "Potential alumnus — review required"}</small></span></TableCell>
-                    <TableCell><span className="stacked-cell"><strong>{result.currentRoleAmbiguous ? "Multiple current roles — review required" : result.currentCompany}</strong><small>{result.currentRoleAmbiguous ? "No current employer selected automatically" : result.role}</small></span></TableCell>
+                    <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>Search #{result.searchId} · {(result.provider || "Provider unavailable").toUpperCase()} · {(result.searchMode || "mode unavailable").toUpperCase()}</small><small>Provider person ID: {result.providerPersonId || "Not returned"} · Retrieved: {result.retrievedAt ? displayEventDate(result.retrievedAt) : "Not recorded"}</small>{!provenanceConsistent && <small className="provider-integrity-warning">Provider mismatch — review actions blocked</small>}<small>{result.education}</small><small>Raw programme: {result.educationProgramme || "Not returned"}</small><small>Corporate Network programme: {result.normalizedProgramme || result.programmeStatus || "Programme requires review"}</small><small>Graduation: {result.graduationYear || "Date not returned"} · {result.alumniStatus || "Graduation status unknown — review required"}</small><small>{result.affiliationStatus ?? "Potential alumnus — review required"}</small>{result.qualification && <span className="qualification-evidence"><em>Graduation year · {result.qualification.graduationYear.result.replaceAll("_", " ")}</em><small>{result.qualification.graduationYear.rationale}</small><em>Programme · {result.qualification.programme.result.replaceAll("_", " ")}</em><small>{result.qualification.programme.rationale}</small></span>}</span></TableCell>
+                    <TableCell><span className="stacked-cell"><strong>{result.currentRoleAmbiguous ? "Multiple current roles — review required" : result.currentCompany}</strong><small>{result.currentRoleAmbiguous ? "No current employer selected automatically" : result.role}</small>{result.qualification && <span className="qualification-evidence"><em>Company · {result.qualification.company.result.replaceAll("_", " ")}</em><small>{result.qualification.company.evidence || result.qualification.company.rationale}</small><em>Seniority · {result.qualification.seniority.result.replaceAll("_", " ")}</em><small>{result.qualification.seniority.evidence || result.qualification.seniority.rationale}</small></span>}</span></TableCell>
                     <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
-                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{discoveryReviewLabel(result.reviewStatus)}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small>{result.plannerClassification && <span className="planner-rationale"><strong>{result.plannerClassification.replaceAll("_", " ")}</strong><small>{result.plannerRationale}</small><em>{result.collectDecision?.replaceAll("_", " ")}</em></span>}</TableCell>
+                    <TableCell><DiscoveryBadge status={result.matchStatus} /><small className="review-status">{discoveryReviewLabel(result.reviewStatus)}{result.reviewNote ? ` · ${result.reviewNote}` : ""}</small>{result.plannerClassification && <span className="planner-rationale"><strong>{result.plannerClassification.replaceAll("_", " ")}</strong><small>{result.plannerRationale}</small><em>{result.collectionState?.replaceAll("_", " ") ?? result.collectDecision?.replaceAll("_", " ")}</em>{result.collectionRationale && <small>{result.collectionRationale}</small>}{result.finalDiscoveryStatus && <small>Final status: {result.finalDiscoveryStatus.replaceAll("_", " ")}</small>}</span>}</TableCell>
                     <TableCell><span className={`score-pill ${scoreTone(result.matchConfidence)}`}>{result.matchConfidence}%</span></TableCell>
                     <TableCell>{professionalProfileUrl ? <span className="stacked-cell"><a className="professional-link" href={professionalProfileUrl} target="_blank" rel="noopener noreferrer">View LinkedIn Profile <ArrowUpRight /></a><small>{result.provider?.toLowerCase() === "pdl" ? "Historical PDL" : "Coresignal"} sourced professional profile</small></span> : <span className="muted-cell">Not returned or invalid</span>}</TableCell>
                     <TableCell><div className="row-actions">

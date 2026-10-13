@@ -143,7 +143,10 @@ export function reconcileDiscoveryCandidate(
   if (!profileIdentifier && capabilities.searchPreviewProvidesProfileUrl !== "NO") {
     return result(candidate, "AMBIGUOUS", null, "IDENTITY_EVIDENCE_INSUFFICIENT", "Search Preview did not provide a professional-profile URL and provider capability is not confirmed; Collect may be required to resolve identity.")
   }
-  if (!strongEvidenceComplete && capabilities.searchPreviewProvidesEducation !== "NO") {
+  // A returned stable profile URL that does not exist in CN is enough to identify
+  // a distinct candidate. It is not proof of alumni qualification; Collect and
+  // human review still own education/programme/year verification.
+  if (!profileIdentifier && !strongEvidenceComplete && capabilities.searchPreviewProvidesEducation !== "NO") {
     return result(candidate, "AMBIGUOUS", null, "IDENTITY_EVIDENCE_INSUFFICIENT", "Search Preview lacks sufficient institutional evidence to safely determine whether this is a new alumnus.")
   }
 
