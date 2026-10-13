@@ -99,13 +99,19 @@ export function reconcileDiscoveryCandidate(
   capabilities: DiscoveryPreviewCapabilities,
 ): ReconciliationResult {
   const providerId = employeeId(candidate.providerEmployeeId)
+  const profileIdentifier = linkedinProfileIdentifier(candidate.profileUrl)
   if (providerId) {
     const matches = alumni.filter(person => employeeId(person.coresignalEmployeeId) === providerId)
-    if (matches.length === 1) return result(candidate, "KNOWN_PROVIDER_ID", matches[0].id, "EXACT_PROVIDER_ID", `Existing Coresignal employee ID is already mapped to CN alumnus ${matches[0].id}.`)
+    if (matches.length === 1) {
+      const conflictingProfile = profileIdentifier
+        ? alumni.find(person => person.id !== matches[0].id && linkedinProfileIdentifier(person.linkedinUrl) === profileIdentifier)
+        : undefined
+      if (conflictingProfile) return result(candidate, "AMBIGUOUS", null, "PROVIDER_ID_PROFILE_CONFLICT", `Coresignal employee ID maps to CN alumnus ${matches[0].id}, but the returned professional-profile URL maps to alumnus ${conflictingProfile.id}; identity review is required.`)
+      return result(candidate, "KNOWN_PROVIDER_ID", matches[0].id, "EXACT_PROVIDER_ID", `Existing Coresignal employee ID is already mapped to CN alumnus ${matches[0].id}.`)
+    }
     if (matches.length > 1) return result(candidate, "AMBIGUOUS", null, "DUPLICATE_PROVIDER_ID", "The same Coresignal employee ID is associated with multiple CN alumni; identity review is required.")
   }
 
-  const profileIdentifier = linkedinProfileIdentifier(candidate.profileUrl)
   if (profileIdentifier) {
     const matches = alumni.filter(person => linkedinProfileIdentifier(person.linkedinUrl) === profileIdentifier)
     if (matches.length === 1) return result(candidate, "KNOWN_PROFILE_URL", matches[0].id, "EXACT_PROFILE_URL", `Professional-profile URL already belongs to CN alumnus ${matches[0].id}; reconcile the provider identity instead of creating an alumnus.`)

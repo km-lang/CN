@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `idx_alumni_coresignal_employee_id_unique` ON `alumni` (`coresignal_employee_id`) WHERE "alumni"."coresignal_employee_id" != '';

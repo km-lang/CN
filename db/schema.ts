@@ -71,6 +71,7 @@ export const alumni = sqliteTable("alumni", {
   index("idx_alumni_company").on(table.company),
   index("idx_alumni_pdl_person_id").on(table.pdlPersonId),
   index("idx_alumni_coresignal_employee_id").on(table.coresignalEmployeeId),
+  uniqueIndex("idx_alumni_coresignal_employee_id_unique").on(table.coresignalEmployeeId).where(sql`${table.coresignalEmployeeId} != ''`),
 ]);
 
 export const companyPriorities = sqliteTable("company_priorities", {

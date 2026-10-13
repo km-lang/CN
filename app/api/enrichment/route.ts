@@ -10,6 +10,8 @@ import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL, type Prof
 import { providerUsageState } from "@/lib/provider-usage";
 import { contactEnrichmentPermission, eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment";
 import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
+import { attachCoresignalIdentity } from "@/lib/coresignal-identity";
+import { coresignalIdentityStore } from "@/lib/coresignal-identity-store";
 
 const providers: ProviderName[] = ["coresignal", "lusha"];
 const defaultLimits: Record<ProviderName, number> = { coresignal: 25, lusha: 100 };
@@ -252,8 +254,15 @@ export async function POST(request: Request) {
       const requested = new Set((payload.fields ?? []).filter(field => allowedFields.has(field)));
       const updates: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: new Date().toISOString() };
       const applied: string[] = [];
+      const identityChange = proposed.find(change => change.field === "coresignalEmployeeId" && requested.has(change.field) && change.newValue && change.oldValue !== change.newValue);
+      if (identityChange) {
+        const proposedProfile = proposed.find(change => change.field === "linkedinUrl")?.newValue || person.linkedinUrl;
+        const identity = await attachCoresignalIdentity({ coresignalEmployeeId: identityChange.newValue, profileUrl: proposedProfile, expectedAlumnusId: person.id, source: `profile_refresh_review:${review.id}`, actor }, coresignalIdentityStore(db, context));
+        if (["CONFLICT", "IDENTITY_REVIEW_REQUIRED", "NEW_CANDIDATE"].includes(identity.outcome)) return Response.json({ error: identity.rationale, identityOutcome: identity.outcome }, { status: 409 });
+        if (identity.wroteIdentity) applied.push("coresignalEmployeeId");
+      }
       for (const change of proposed) {
-        if (!requested.has(change.field) || !change.newValue || change.oldValue === change.newValue) continue;
+        if (change.field === "coresignalEmployeeId" || !requested.has(change.field) || !change.newValue || change.oldValue === change.newValue) continue;
         const typedValue = change.field === "currentRoleAmbiguous" ? change.newValue === "true" : change.field === "graduationYear" ? Number(change.newValue) : change.newValue;
         (updates as Record<string, unknown>)[change.field] = typedValue;
         applied.push(change.field);

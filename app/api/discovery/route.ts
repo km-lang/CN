@@ -17,6 +17,8 @@ import { discoveryCoveragePlan } from "@/lib/discovery-coverage"
 import { CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES } from "@/lib/discovery-provider-capabilities"
 import { reconcileDiscoveryCandidate, reconcileDiscoveryCandidates, selectiveCollectSummary, type ReconciliationCandidate, type RejectedCandidateEvidence } from "@/lib/discovery-reconciliation"
 import { qualifyCollectedCandidate, qualifyPreviewCandidate, type DiscoveryExecutionCandidate } from "@/lib/discovery-execution"
+import { attachCoresignalIdentity } from "@/lib/coresignal-identity"
+import { coresignalIdentityStore } from "@/lib/coresignal-identity-store"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -182,7 +184,7 @@ function alumnusValues(result: typeof externalDiscoveryResults.$inferSelect, act
     company: result.currentCompany, title: result.role, rawTitle: result.rawTitle, function: result.function, seniority: result.seniority,
     location: result.location, confidence: result.affiliationStatus === "Confirmed degree alumnus" ? 70 : 55,
     linkedinUrl: normalizeProfessionalProfileUrl(result.linkedinUrl),
-    ...(isCoresignal ? { coresignalEmployeeId: result.providerPersonId, lastProfessionalDataRefresh: now } : { pdlPersonId: result.providerPersonId, lastPdlRefresh: now }),
+    ...(isCoresignal ? { lastProfessionalDataRefresh: now } : { pdlPersonId: result.providerPersonId, lastPdlRefresh: now }),
     discoverySource: label, discoveryDate: now, professionalDataProvider: label, providerFreshnessAt: result.providerFreshnessAt,
     iimlAffiliationStatus: result.affiliationStatus, iimlEducationProgramme: result.educationProgramme,
     iimlEducationStartDate: result.educationStartDate, iimlEducationEndDate: result.educationEndDate,
@@ -320,7 +322,10 @@ export async function POST(request: Request) {
       const added = []
       for (const result of results) {
         const [created] = await db.insert(alumni).values(alumnusValues(result, actor, now)).returning()
-        added.push({ resultId: result.id, alumnusId: created.id })
+        const identity = result.provider === PROFESSIONAL_DATA_PROVIDER
+          ? await attachCoresignalIdentity({ coresignalEmployeeId: result.providerPersonId, profileUrl: result.linkedinUrl, expectedAlumnusId: created.id, source: `external_discovery:${result.searchId}`, actor, discoveryResultId: result.id }, coresignalIdentityStore(db, context))
+          : null
+        added.push({ resultId: result.id, alumnusId: created.id, identityOutcome: identity?.outcome ?? null })
         await db.update(externalDiscoveryResults).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.added, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id))
       }
       await writeSecurityAudit(context, { action: "coresignal_results_approved", entityType: "alumni_batch", metadata: { addedCount: added.length, resultIds } })
@@ -338,9 +343,16 @@ export async function POST(request: Request) {
       const isCoresignal = result.provider === PROFESSIONAL_DATA_PROVIDER
       const candidates: Record<string, string | number | boolean> = { company: result.currentCompany, title: result.role, rawTitle: result.rawTitle, function: result.function, seniority: result.seniority, location: result.location, linkedinUrl: normalizeProfessionalProfileUrl(result.linkedinUrl), graduationYear: result.graduationYear, [isCoresignal ? "coresignalEmployeeId" : "pdlPersonId"]: result.providerPersonId, ...(isCoresignal ? { iimlAffiliationStatus: result.affiliationStatus, iimlEducationProgramme: result.educationProgramme, iimlEducationStartDate: result.educationStartDate, iimlEducationEndDate: result.educationEndDate, iimlInstitutionId: result.institutionId, iimlInstitutionUrl: result.institutionUrl, currentCompanyId: result.currentCompanyId, currentCompanyUrl: result.currentCompanyUrl, currentRoleStartDate: result.currentRoleStartDate, currentIndustry: result.currentIndustry, currentRoleAmbiguous: result.currentRoleAmbiguous, providerFreshnessAt: result.providerFreshnessAt } : {}) }
       const requested = [...new Set(payload.fields ?? [])].filter(field => field in candidates && !["email", "phone"].includes(field))
+      let identityAttached = false
+      if (isCoresignal && requested.includes("coresignalEmployeeId")) {
+        const identity = await attachCoresignalIdentity({ coresignalEmployeeId: result.providerPersonId, profileUrl: result.linkedinUrl, expectedAlumnusId: person.id, source: `external_discovery:${result.searchId}`, actor, discoveryResultId: result.id }, coresignalIdentityStore(db, context))
+        if (["CONFLICT", "IDENTITY_REVIEW_REQUIRED", "NEW_CANDIDATE"].includes(identity.outcome)) return Response.json({ error: identity.rationale, identityOutcome: identity.outcome }, { status: 409 })
+        identityAttached = identity.wroteIdentity
+      }
+      const ordinaryRequested = requested.filter(field => field !== "coresignalEmployeeId")
       const updates: Partial<typeof alumni.$inferInsert> = { ...(isCoresignal ? { lastProfessionalDataRefresh: now } : { lastPdlRefresh: now }), professionalDataProvider: label, source: label, updatedBy: actor, updatedAt: now, verified: `Professional profile refreshed via ${label}` }
-      const changedFields: string[] = []
-      for (const field of requested) { const oldValue = String(person[field as keyof typeof person] ?? ""); const newValue = String(candidates[field] ?? ""); if (!newValue || oldValue === newValue) continue; (updates as Record<string, unknown>)[field] = candidates[field]; changedFields.push(field); await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field, oldValue, newValue, source: label, providerAction: "Compare & Refresh", initiatedBy: actor }) }
+      const changedFields: string[] = identityAttached ? ["coresignalEmployeeId"] : []
+      for (const field of ordinaryRequested) { const oldValue = String(person[field as keyof typeof person] ?? ""); const newValue = String(candidates[field] ?? ""); if (!newValue || oldValue === newValue) continue; (updates as Record<string, unknown>)[field] = candidates[field]; changedFields.push(field); await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field, oldValue, newValue, source: label, providerAction: "Compare & Refresh", initiatedBy: actor }) }
       await db.update(alumni).set(updates).where(eq(alumni.id, person.id))
       await db.update(externalDiscoveryResults).set({ reviewStatus: changedFields.length ? "Updates applied" : "Reviewed — kept existing", reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id))
       await writeSecurityAudit(context, { action: "professional_profile_update_approved", entityType: "alumnus", entityId: person.id, metadata: { provider: result.provider, changedFields } })
@@ -353,6 +365,7 @@ export async function POST(request: Request) {
       const filters = search ? storedDiscoveryFilters(search.filtersJson) : defaultDiscoveryFilters()
       if (!result || !search || resultProviderIntegrity(search.provider, result.provider) !== "consistent" || result.matchStatus !== "Possible duplicate" || result.affiliationStatus !== "Confirmed degree alumnus" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending || !qualificationForResult(result, filters, nowDate).eligibleForAddition) return Response.json({ error: "Only a provenance-consistent past alumnus with a confirmed selected programme and pending possible-duplicate review can be kept as a separate record." }, { status: 409 })
       const [created] = await db.insert(alumni).values(alumnusValues(result, actor, now, " after duplicate review")).returning()
+      if (result.provider === PROFESSIONAL_DATA_PROVIDER) await attachCoresignalIdentity({ coresignalEmployeeId: result.providerPersonId, profileUrl: result.linkedinUrl, expectedAlumnusId: created.id, source: `external_discovery:${result.searchId}`, actor, discoveryResultId: result.id }, coresignalIdentityStore(db, context))
       await db.update(externalDiscoveryResults).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(eq(externalDiscoveryResults.id, result.id))
       await writeSecurityAudit(context, { action: "possible_duplicate_kept_separate", entityType: "alumnus", entityId: created.id, metadata: { provider: PROFESSIONAL_DATA_PROVIDER, discoveryResultId: result.id } })
       return Response.json({ alumnusId: created.id }, { status: 201 })
