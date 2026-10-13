@@ -73,6 +73,11 @@ export function normalizeCoresignalProgramme(rawProgramme: unknown) {
 
 export function coresignalProgrammeQuery(programmes: readonly string[]) {
   const selected = new Set(programmes.map(value => value.trim().toUpperCase()).filter(Boolean))
+  // Coresignal Boolean syntax inside education_program_name has not been
+  // empirically validated. Keep the established single-programme behavior,
+  // but do not turn a multi-selection (including all active programmes) into
+  // an unverified OR expression that can unnecessarily reduce recall.
+  if (selected.size !== 1) return ""
   const terms = CORESIGNAL_PROGRAMME_RULES
     .filter(rule => selected.has(rule.code))
     .flatMap(rule => rule.providerTerms)

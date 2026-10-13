@@ -269,18 +269,10 @@ function queryGroup(values: string[]) {
   return values.map(value => `(${value})`).join(" OR ");
 }
 
-export function discoveryExperienceTitleQuery(filters: Pick<DiscoveryFilters, "role" | "function" | "seniority">) {
+export function discoveryExperienceTitleQuery(filters: Pick<DiscoveryFilters, "role" | "function">) {
   const clauses: string[] = [];
   if (filters.role.trim()) clauses.push(`(${filters.role.trim()})`);
   if (filters.function !== "All functions") clauses.push(`(${queryGroup(functionTerms[filters.function] ?? [filters.function])})`);
-  if (filters.seniority !== "All levels") {
-    const base = filters.seniority.endsWith("+") ? filters.seniority.slice(0, -1) : filters.seniority;
-    const threshold = seniorityRank[base] ?? 0;
-    const levels = filters.seniority.endsWith("+")
-      ? Object.keys(seniorityRank).filter(level => seniorityRank[level] >= threshold)
-      : [base];
-    clauses.push(`(${queryGroup(levels.flatMap(level => seniorityTerms[level] ?? [level]))})`);
-  }
   return clauses.join(" AND ");
 }
 

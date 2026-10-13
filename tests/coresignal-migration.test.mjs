@@ -130,26 +130,63 @@ test("documented Base Employee fields retain profile URL and scalar IIML educati
   assert.equal(mapped.eligibleForAddition, true)
 })
 
-test("live provider query applies selected programmes and a clock-derived past-alumni cutoff", () => {
+test("multi-programme selection omits the unverified provider OR expression and keeps the past-alumni cutoff", () => {
   const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["PGP", "ABM"], alumniStatus: "Past alumni only" }
   const contract = client.coresignalSearchContract(filters, new Date("2026-09-27T12:00:00Z"))
-  assert.match(contract.body.education_program_name, /PGP/)
-  assert.match(contract.body.education_program_name, /Agribusiness Management/)
+  assert.equal("education_program_name" in contract.body, false)
   assert.equal(contract.body.education_date_to, "September 2026")
   assert.doesNotMatch(JSON.stringify(contract.body), /2026-01-01|hard-coded/i)
 })
 
-test("live provider query applies documented external company, title and location filters", () => {
+test("live provider query applies explicit role/function, company, and location without adding seniority", () => {
   const filters = { ...search.defaultDiscoveryFilters(), company: "Innovaccer", role: "Growth Strategy", function: "Marketing", seniority: "Manager", location: "Bengaluru" }
   const body = client.coresignalSearchContract(filters).body
   assert.equal(body.experience_company_name, "Innovaccer")
   assert.match(body.experience_title, /Growth Strategy/)
   assert.match(body.experience_title, /growth/)
-  assert.match(body.experience_title, /manager/)
+  assert.doesNotMatch(body.experience_title, /manager/)
   assert.equal(body.location, "Bengaluru")
 })
 
-test("programme multi-select reaches the provider query and is re-enforced after Collect", async () => {
+test("seniority alone never becomes a provider experience-title query", () => {
+  for (const seniority of ["VP", "Director+"]) {
+    const body = client.coresignalSearchContract({ ...search.defaultDiscoveryFilters(), seniority }).body
+    assert.equal("experience_title" in body, false)
+  }
+})
+
+test("an explicit Role remains eligible for the existing provider title query", () => {
+  const body = client.coresignalSearchContract({ ...search.defaultDiscoveryFilters(), role: "Vice President", seniority: "VP" }).body
+  assert.equal(body.experience_title, "(Vice President)")
+})
+
+test("all active programmes omit provider programme restriction", () => {
+  const body = client.coresignalSearchContract({ ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["PGP", "ABM", "SM"] }).body
+  assert.equal("education_program_name" in body, false)
+})
+
+test("Lincoln International 2013 VP validation contract keeps company and year only", () => {
+  const body = client.coresignalSearchContract({
+    ...search.defaultDiscoveryFilters(),
+    company: "Lincoln International",
+    graduationYear: "2013",
+    seniority: "VP",
+    discoveryProgrammes: ["PGP", "ABM", "SM"],
+  }).body
+  assert.deepEqual(body, {
+    education_institution_professional_network_url: client.CORESIGNAL_IIML_INSTITUTION_URL,
+    active_experience: true,
+    education_date_to: "2013",
+    experience_company_name: "Lincoln International",
+  })
+})
+
+test("local seniority qualification remains authoritative and guards reporting relationships", () => {
+  assert.equal(search.normalizeSeniority("", "Vice President"), "VP")
+  assert.equal(search.normalizeSeniority("", "Assistant to the Vice President"), "Analyst/Junior")
+})
+
+test("single-programme selection reaches the provider query and is re-enforced after Collect", async () => {
   const previousFetch = globalThis.fetch
   const previousLive = process.env.CORESIGNAL_LIVE_ENABLED
   const bodies = []
