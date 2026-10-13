@@ -30,7 +30,7 @@ export type CriterionResult =
 
 export type QualificationCriterion = {
   result: CriterionResult
-  source: "NOT_REQUESTED" | "SEARCH_PREVIEW" | "SEARCH_PREVIEW_TITLE" | "SEARCH_CONSTRAINT" | "BASE_COLLECT"
+  source: "NOT_REQUESTED" | "SEARCH_PREVIEW" | "SEARCH_PREVIEW_TITLE" | "SEARCH_CONSTRAINT" | "PROVIDER_UPPER_BOUND" | "BASE_COLLECT"
   evidence: string
   rationale: string
 }
@@ -145,11 +145,21 @@ function seniorityCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters
 
 function graduationCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters, collected: boolean) {
   if (!filters.graduationYear) return criterion("NOT_REQUESTED", "NOT_REQUESTED", "", "No graduation-year filter was requested.")
-  if (!collected) return criterion("NEEDS_COLLECT", "SEARCH_CONSTRAINT", filters.graduationYear, "The provider search was constrained by year, but Preview did not return independent education evidence.")
+  const requested = filters.graduationYear
+  if (!collected) return criterion(
+    "NEEDS_COLLECT",
+    "PROVIDER_UPPER_BOUND",
+    `Requested ${requested} · Provider narrowing ${requested} or earlier · Exact year not yet verified`,
+    `Provider search used ${requested} as an education-end upper bound. Exact IIM Lucknow graduation year requires collected education evidence.`,
+  )
   if (!profile.graduationYear) return criterion("INSUFFICIENT_EVIDENCE", "BASE_COLLECT", "", "IIM Lucknow education was returned without a usable completion year.")
-  return profile.graduationYear === Number(filters.graduationYear)
-    ? criterion("VERIFIED_MATCH", "BASE_COLLECT", String(profile.graduationYear), `Collected IIM Lucknow education ends in ${filters.graduationYear}.`)
-    : criterion("VERIFIED_MISMATCH", "BASE_COLLECT", String(profile.graduationYear), `Collected IIM Lucknow education ends in ${profile.graduationYear}, not ${filters.graduationYear}.`)
+  const period = profile.educationStartDate && profile.educationEndDate
+    ? `${profile.educationStartDate}–${profile.educationEndDate}`
+    : profile.educationEndDate || String(profile.graduationYear)
+  const evidence = `IIM Lucknow · ${period}`
+  return profile.graduationYear === Number(requested)
+    ? criterion("VERIFIED_MATCH", "BASE_COLLECT", evidence, `Provider search narrowed education end date to ${requested} or earlier. Collected IIM Lucknow education ends in ${requested}, matching the requested graduation year.`)
+    : criterion("VERIFIED_MISMATCH", "BASE_COLLECT", evidence, `Provider search narrowed education end date to ${requested} or earlier. Collected IIM Lucknow education ends in ${profile.graduationYear}, so the profile does not match the requested graduation year ${requested}.`)
 }
 
 function programmeCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters, collected: boolean) {

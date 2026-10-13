@@ -147,6 +147,7 @@ test("discovery labels distinguish identity-new, qualified-new, stored history, 
   assert.match(page, /actionable review candidate/)
   assert.match(page, /Stored history — filter mismatch/)
   assert.match(page, /status === "Needs review" \? "Filter mismatch"/)
+  assert.match(page, /Evidence: \{result\.qualification\.graduationYear\.evidence\}/)
 })
 
 test("review operations resolve the owning search before changing a result", () => {

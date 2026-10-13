@@ -181,6 +181,23 @@ test("Lincoln International 2013 VP validation contract keeps company and year o
   })
 })
 
+test("education_date_to is explicitly an upper-bound provider narrowing, never exact-year proof", () => {
+  const explicitYear = { ...search.defaultDiscoveryFilters(), graduationYear: "2013" }
+  assert.deepEqual(client.coresignalEducationEndNarrowing(explicitYear), {
+    semantics: "PROVIDER_UPPER_BOUND",
+    value: "2013",
+    exactGraduationYearRequested: "2013",
+  })
+  assert.equal(client.coresignalSearchContract(explicitYear).body.education_date_to, "2013")
+
+  const pastAlumni = { ...search.defaultDiscoveryFilters(), graduationYear: "", alumniStatus: "Past alumni only" }
+  assert.deepEqual(client.coresignalEducationEndNarrowing(pastAlumni, new Date("2026-10-13T12:00:00Z")), {
+    semantics: "PROVIDER_UPPER_BOUND",
+    value: "October 2026",
+    exactGraduationYearRequested: null,
+  })
+})
+
 test("local seniority qualification remains authoritative and guards reporting relationships", () => {
   assert.equal(search.normalizeSeniority("", "Vice President"), "VP")
   assert.equal(search.normalizeSeniority("", "Assistant to the Vice President"), "Analyst/Junior")
@@ -328,6 +345,46 @@ test("current employment requires deleted=0 and is_current=1", () => {
   ] }), 0)
   assert.equal(mapped.currentCompany, "Amazon")
   assert.equal(mapped.role, "Head of Product")
+})
+
+test("Shruti evidence excludes deleted and historical rows without inventing current VP evidence", () => {
+  const mapped = adapter.mapCoresignalProfile(employee({
+    id: "289351894",
+    full_name: "Shruti Chaturvedi",
+    education: [
+      iiml({ degree_name: "PGDM, Finance & Marketing", date_from: "2009", date_from_year: 2009, date_to: "2011", date_to_year: 2011, deleted: 0 }),
+      iiml({ degree_name: "PGP", date_from: "2011", date_to: "2013", deleted: 1 }),
+      iiml({ degree_name: "PGP", date_from: "2011", date_to: "2013", deleted: 1 }),
+    ],
+    experience: [
+      { company_name: "Lincoln International", title: "Director", date_from: "April 2022", date_to: null, is_current: 1, deleted: 0 },
+      { company_name: "Lincoln International", title: "Vice President", date_from: "February 2016", date_to: "May 2022", is_current: 0, deleted: 0 },
+      { company_name: "Lincoln International", title: "Vice President", date_from: "May 2022", date_to: null, is_current: 0, deleted: 0 },
+      { company_name: "Lincoln International", title: "Vice President", date_to: null, is_current: 1, deleted: 1 },
+    ],
+  }), 0, { selectedProgrammes: ["PGP", "ABM", "SM"] })
+
+  assert.equal(mapped.graduationYear, 2011)
+  assert.equal(mapped.educationStartDate, "2009")
+  assert.equal(mapped.educationEndDate, "2011")
+  assert.equal(mapped.educationProgramme, "PGDM, Finance & Marketing")
+  assert.equal(mapped.normalizedProgramme, "")
+  assert.equal(mapped.programmeStatus, "Programme requires review")
+  assert.deepEqual(mapped.currentRoles.map(role => [role.company, role.title, role.seniority]), [["Lincoln International", "Director", "Director"]])
+  assert.equal(mapped.currentCompany, "Lincoln International")
+  assert.equal(mapped.role, "Director")
+  assert.equal(mapped.seniority, "Director")
+})
+
+test("deleted IIML evidence cannot establish year, programme, or affiliation", () => {
+  const mapped = adapter.mapCoresignalProfile(employee({ education: [
+    iiml({ degree_name: "PGP", date_from: "2011", date_to: "2013", deleted: 1 }),
+  ] }), 0, { selectedProgrammes: ["PGP"] })
+  assert.equal(mapped.graduationYear, 0)
+  assert.equal(mapped.educationProgramme, "")
+  assert.equal(mapped.normalizedProgramme, "")
+  assert.equal(mapped.affiliationStatus, "Potential alumnus — review required")
+  assert.equal(mapped.eligibleForAddition, false)
 })
 
 test("multiple surviving current roles are explicit and never guessed", () => {

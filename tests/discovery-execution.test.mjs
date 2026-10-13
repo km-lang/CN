@@ -117,11 +117,57 @@ test("Search #6 multi-programme evidence is not described as provider-constraine
   assert.equal(item.qualification.company.result, "MATCH")
   assert.equal(item.qualification.seniority.result, "MISMATCH")
   assert.equal(item.qualification.graduationYear.result, "NEEDS_COLLECT")
+  assert.equal(item.qualification.graduationYear.source, "PROVIDER_UPPER_BOUND")
+  assert.match(item.qualification.graduationYear.evidence, /Provider narrowing 2013 or earlier/)
+  assert.match(item.qualification.graduationYear.rationale, /education-end upper bound/i)
   assert.equal(item.qualification.programme.result, "NOT_PROVIDER_VERIFIED")
   assert.match(item.qualification.programme.rationale, /programme was not used to constrain the provider search/i)
   assert.doesNotMatch(item.qualification.programme.rationale, /search was constrained to/i)
   assert.equal(item.collectionState, "SKIPPED_FILTER_MISMATCH")
   assert.equal(item.finalStatus, "FILTER_MISMATCH")
+})
+
+test("Shruti exact-year verification rejects active 2011 evidence despite the 2013 provider upper bound", () => {
+  const shruti = adapter.mapCoresignalProfile({
+    id: "289351894",
+    full_name: "Shruti Chaturvedi",
+    deleted: 0,
+    education: [
+      { institution_name: "Indian Institute of Management, Lucknow", degree_name: "PGDM, Finance & Marketing", date_from: "2009", date_to: "2011", deleted: 0 },
+      { institution_name: "Indian Institute of Management Lucknow", degree_name: "PGP", date_from: "2011", date_to: "2013", deleted: 1 },
+    ],
+    experience: [
+      { company_name: "Lincoln International", title: "Director", date_from: "April 2022", is_current: 1, deleted: 0 },
+      { company_name: "Lincoln International", title: "Vice President", date_to: null, is_current: 0, deleted: 0 },
+      { company_name: "Lincoln International", title: "Vice President", is_current: 1, deleted: 1 },
+    ],
+  }, 0, { selectedProgrammes: ["PGP", "ABM", "SM"] })
+  const qualified = execution.qualifyCollectedCandidate(shruti, filters({ discoveryProgrammes: ["PGP", "ABM", "SM"], seniorities: ["VP"], seniority: "VP" }))
+  assert.equal(qualified.graduationYear.result, "VERIFIED_MISMATCH")
+  assert.equal(qualified.graduationYear.evidence, "IIM Lucknow · 2009–2011")
+  assert.match(qualified.graduationYear.rationale, /2013 or earlier/)
+  assert.match(qualified.graduationYear.rationale, /ends in 2011/)
+  assert.equal(qualified.seniority.result, "VERIFIED_MISMATCH")
+  assert.match(qualified.seniority.evidence, /Director → Director/)
+  assert.doesNotMatch(qualified.seniority.evidence, /Vice President/)
+})
+
+test("Bharani exact-year verification accepts non-deleted 2011–2013 IIML evidence", () => {
+  const bharani = adapter.mapCoresignalProfile({
+    id: "bharani",
+    full_name: "Bharani Kumar R",
+    deleted: 0,
+    education: [
+      { institution_name: "Indian Institute of Management Lucknow", degree_name: "PGDM", date_from: "2011", date_to: "2013", deleted: 0 },
+      { institution_name: "Indian Institute of Management Lucknow", degree_name: "PGDM", date_from: "2011", date_to: "2013", deleted: 0 },
+    ],
+    experience: [{ company_name: "Lincoln International", title: "Vice President", is_current: 1, deleted: 0 }],
+  }, 0, { selectedProgrammes: ["PGP"] })
+  const qualified = execution.qualifyCollectedCandidate(bharani, filters({ discoveryProgrammes: ["PGP"] }))
+  assert.equal(bharani.iimlEducationEvidence.length, 1)
+  assert.equal(qualified.graduationYear.result, "VERIFIED_MATCH")
+  assert.equal(qualified.graduationYear.evidence, "IIM Lucknow · 2011–2013")
+  assert.match(qualified.graduationYear.rationale, /matching the requested graduation year/)
 })
 
 test("single-programme Preview rationale retains the established provider-constraint semantics", () => {

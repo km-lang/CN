@@ -13,9 +13,22 @@ export class CoresignalProviderError extends Error {
   constructor(message: string, public readonly kind: CoresignalFailureKind, public readonly status: number, public readonly successfulOperationCredits = 0) { super(message) }
 }
 
+export type CoresignalEducationEndNarrowing = {
+  semantics: "PROVIDER_UPPER_BOUND"
+  value: string
+  exactGraduationYearRequested: string | null
+}
+
+export function coresignalEducationEndNarrowing(filters?: DiscoveryFilters, now: Date = new Date()): CoresignalEducationEndNarrowing | null {
+  if (filters?.graduationYear) return { semantics: "PROVIDER_UPPER_BOUND", value: filters.graduationYear, exactGraduationYearRequested: filters.graduationYear }
+  if (filters?.alumniStatus === "Past alumni only") return { semantics: "PROVIDER_UPPER_BOUND", value: providerEducationDateTo(now), exactGraduationYearRequested: null }
+  return null
+}
+
 export function coresignalSearchContract(filters?: DiscoveryFilters, now: Date = new Date()) {
   const programmeQuery = coresignalProgrammeQuery(filters?.discoveryProgrammes ?? [])
   const experienceTitle = filters ? discoveryExperienceTitleQuery(filters) : ""
+  const educationEndNarrowing = coresignalEducationEndNarrowing(filters, now)
   return {
     method: "POST" as const,
     path: CORESIGNAL_SEARCH_PATH,
@@ -23,7 +36,7 @@ export function coresignalSearchContract(filters?: DiscoveryFilters, now: Date =
       education_institution_professional_network_url: CORESIGNAL_IIML_INSTITUTION_URL,
       active_experience: true,
       ...(programmeQuery ? { education_program_name: programmeQuery } : {}),
-      ...(filters?.graduationYear ? { education_date_to: filters.graduationYear } : filters?.alumniStatus === "Past alumni only" ? { education_date_to: providerEducationDateTo(now) } : {}),
+      ...(educationEndNarrowing ? { education_date_to: educationEndNarrowing.value } : {}),
       ...(filters?.company ? { experience_company_name: filters.company } : {}),
       ...(experienceTitle ? { experience_title: experienceTitle } : {}),
       ...(filters?.location ? { location: filters.location } : {}),
