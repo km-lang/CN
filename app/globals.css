@@ -1050,3 +1050,23 @@ button { cursor: pointer; }
 .intelligence-message { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--muted); }
 .directory-intelligence-actions { justify-content: flex-end; }
 .profile-intelligence-panel .detail-grid { margin-top: 12px; }
+
+@media (max-width: 1000px) {
+  .intelligence-refresh-layout { grid-template-columns: minmax(0, 1fr); }
+  .intelligence-refresh-layout > .intelligence-history { grid-column: 1; }
+}
+
+@media (max-width: 768px) {
+  .intelligence-history-grid,
+  .intelligence-review-layout,
+  .intelligence-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .intelligence-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 650px) {
+  .intelligence-subtabs { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .intelligence-subtabs > button { width: 100%; }
+  .intelligence-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .intelligence-preview dl div { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .intelligence-preview dd { text-align: left; }
+}

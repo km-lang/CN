@@ -17,6 +17,7 @@ const refresh = await readFile(new URL("../components/intelligence/refresh-cente
 const reviews = await readFile(new URL("../components/intelligence/review-changes.tsx", import.meta.url), "utf8")
 const discovery = await readFile(new URL("../components/intelligence/alumni-discovery.tsx", import.meta.url), "utf8")
 const profile = await readFile(new URL("../components/intelligence/profile-intelligence-panel.tsx", import.meta.url), "utf8")
+const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
 
 test("Intelligence is query-authoritative and preserves existing navigation cleanup", () => {
   assert.equal(navigation.intelligenceView("?tab=intelligence&view=reviews"), "reviews")
@@ -82,4 +83,11 @@ test("Bright preview exposes identity eligibility without changing evidence-only
   assert.match(refresh, /Bright eligible/)
   assert.match(refresh, /Canonical mutations/)
   assert.match(refresh, /No provider call or canonical mutation occurs during preview/)
+})
+
+test("Intelligence layouts collapse before tablet and mobile content becomes squeezed", () => {
+  assert.match(styles, /@media \(max-width: 1000px\)[\s\S]*?\.intelligence-refresh-layout \{ grid-template-columns: minmax\(0, 1fr\); \}/)
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.intelligence-review-layout,[\s\S]*?\.intelligence-card-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/)
+  assert.match(styles, /@media \(max-width: 650px\)[\s\S]*?\.intelligence-subtabs \{ display: grid; grid-template-columns: minmax\(0, 1fr\); \}/)
+  assert.match(styles, /@media \(max-width: 650px\)[\s\S]*?\.intelligence-form-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/)
 })

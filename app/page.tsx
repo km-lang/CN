@@ -2163,6 +2163,10 @@ export default function Home() {
     { field: "seniority", label: "Seniority", internal: comparisonAlumnus.seniority, external: comparisonResult.seniority },
     { field: "location", label: "Location", internal: comparisonAlumnus.location, external: comparisonResult.location },
     { field: "graduationYear", label: "Graduation year", internal: String(comparisonAlumnus.graduationYear || comparisonAlumnus.batch || "Not recorded"), external: String(comparisonResult.graduationYear || "Not returned") },
+    { field: "linkedinUrl", label: "Professional profile URL", internal: normalizeProfessionalProfileUrl(comparisonAlumnus.linkedinUrl) || "Not recorded", external: normalizeProfessionalProfileUrl(comparisonResult.linkedinUrl) || "Not returned" },
+    comparisonResult.provider === "pdl"
+      ? { field: "pdlPersonId", label: "PDL person ID", internal: comparisonAlumnus.pdlPersonId || "Not recorded", external: comparisonResult.providerPersonId || "Not returned" }
+      : { field: "coresignalEmployeeId", label: "Coresignal employee ID", internal: comparisonAlumnus.coresignalEmployeeId || "Not recorded", external: comparisonResult.providerPersonId || "Not returned" },
   ] : []
 
   return (

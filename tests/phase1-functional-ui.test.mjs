@@ -96,6 +96,13 @@ test("manual-entry UI and server share the actual required-field contract", () =
   assert.match(page, /disabled=\{manualLoading \|\| !manualValidation\.valid\}/)
 })
 
+test("discovery comparison renders every identity field that can be preselected", () => {
+  assert.match(page, /field: "linkedinUrl", label: "Professional profile URL"/)
+  assert.match(page, /field: "pdlPersonId", label: "PDL person ID"/)
+  assert.match(page, /field: "coresignalEmployeeId", label: "Coresignal employee ID"/)
+  assert.match(page, /selectedComparisonFields\.includes\(row\.field\)/)
+})
+
 test("Phase 1 interactions remain provider-free until existing explicit confirmations", () => {
   for (const block of [
     page.match(/const filtered = useMemo[\s\S]*?\[alumni, companyPriorities, engagements, filters\]\)/)?.[0] ?? "",
