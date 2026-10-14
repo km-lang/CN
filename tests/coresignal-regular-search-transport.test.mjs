@@ -215,10 +215,23 @@ test("runtime and UI integration preserve canonical immutability and explicit op
   assert.doesNotMatch(route, /exact_year_required/)
   assert.match(page, /Confirm One Search Request/)
   assert.match(page, /All years — not constrained/)
+  assert.match(page, /<span>Search mode<\/span><strong>\{pendingRegularSearchFilters\?\.graduationYear \? "Exact graduation year" : "Institution only"\}<\/strong>/)
+  assert.match(page, /<span>Company<\/span><strong>Not constrained<\/strong>/)
+  assert.match(page, /<span>Programme<\/span><strong>Not constrained<\/strong>/)
+  assert.match(page, /<span>Seniority<\/span><strong>Not constrained by provider Search<\/strong>/)
   assert.match(page, /IIM Lucknow institution only/)
   assert.match(page, /IIM Lucknow \+ exact education end year/)
+  assert.match(page, /<span>Page size<\/span><strong>\{discoveryLimit\}<\/strong>/)
+  assert.match(page, /No downstream provider action is automatic/)
   assert.match(page, /graduationYear: searchFilters\.graduationYear \|\| undefined/)
   assert.match(page, /Filter Preview requests[\s\S]*>0</)
   assert.match(page, /Collect requests[\s\S]*>0</)
   assert.doesNotMatch(page, /CORESIGNAL_API_KEY|apikey/)
+})
+
+test("Cancel closes the Search confirmation without transport or accounting work", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+  const cancel = page.match(/<Button variant="outline" onClick=\{\(\) => setPendingRegularSearchFilters\(null\)\}>Cancel — No Provider Call<\/Button>/)?.[0] ?? ""
+  assert.match(cancel, /setPendingRegularSearchFilters\(null\)/)
+  assert.doesNotMatch(cancel, /runRegularSearch|fetch\(|providerResponseHistory|applicationUnits/)
 })
