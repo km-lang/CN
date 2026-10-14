@@ -89,8 +89,9 @@ npm run db:generate
 | Intelligence local integration | Active / validated | Loopback authenticated service and review UI verified. |
 | Coresignal Base Employee Filter Preview and selective Collect | Implemented / provider-gated | Explicit live gate, bounded application limits, review before apply. |
 | Coresignal Employee ID persistence and Search-ID deduplication | Active domain capability | Durable identity and bulk indexed lookup. |
-| Regular Search response parser and routing planner | Implemented but dormant | Transport/runtime activation is not wired. |
-| Exact-year ES-DSL request builder | Implemented but dormant | Not used by normal runtime discovery. |
+| Coresignal Base Employee ES-DSL Search transport | Implemented / disabled by default | Independent `CORESIGNAL_SEARCH_ENABLED` server gate, explicit confirmation, one request, zero retry/pagination, no automatic Preview/Collect. Exact-year live semantics remain unconfirmed. |
+| Regular Search response parser and routing planner | Implemented behind disabled Search gate | Parses one page, deduplicates IDs, and routes identity without canonical mutation. |
+| Exact-year ES-DSL request builder | Implemented behind disabled Search gate | Provider-free structure is validated; live exact-year semantics remain unconfirmed. |
 | Coresignal Real-Time Employee API | Frozen | Previous attempt was unauthorized; later guidance said the API is unavailable. |
 | Coresignal webhooks | Future / support-dependent | No implementation or confirmed entitlement. |
 | Bright execution architecture | Implemented / provider-gated | Secondary, fallback, or corroborating evidence; not primary freshness authority. |
@@ -107,7 +108,7 @@ npm run local:setup
 npm run dev:local
 ```
 
-`npm run dev:local` is the provider-free loopback path. It enables development-only local authentication and forces Coresignal, Lusha Contacts, Professional Signals, and live mail off.
+`npm run dev:local` is the provider-free loopback path. It enables development-only local authentication and forces Coresignal, Base Employee ES-DSL Search, Lusha Contacts, Professional Signals, and live mail off.
 
 An explicitly authorized, one-result Coresignal demonstration can use `npm run dev:local:coresignal-live`. That command is intentionally live-provider enabled and must not be used without approval, a server-only key, and confirmation that consuming a provider operation is acceptable.
 

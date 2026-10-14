@@ -60,6 +60,7 @@ export default defineConfig(async ({ command, mode }) => {
         LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: localCoresignalDemo ? "true" : "false",
         LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
         CORESIGNAL_LIVE_ENABLED: localCoresignalDemo ? "true" : "false",
+        CORESIGNAL_SEARCH_ENABLED: localCoresignalDemo && localEnvironment.CORESIGNAL_SEARCH_ENABLED === "true" ? "true" : "false",
         CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "1",
         CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
         ...(localCoresignalDemo

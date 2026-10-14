@@ -129,11 +129,10 @@ test("unknown identity is unresolved with provider action undecided, never a new
   assert.doesNotMatch(JSON.stringify(route), /NEW_CANDIDATE|CREATE_ALUMNUS|COLLECT_REQUIRED|PREVIEW_REQUIRED/)
 })
 
-test("routing is read-only, provider-free, and absent from runtime discovery", async () => {
+test("routing is read-only, provider-free, and used only through the gated regular Search runtime", async () => {
   const responseParser = await readFile(new URL("../lib/coresignal-regular-search-response.ts", import.meta.url), "utf8")
   const planner = await readFile(new URL("../lib/coresignal-search-routing.ts", import.meta.url), "utf8")
-  const route = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
-  const client = await readFile(new URL("../lib/coresignal-client.ts", import.meta.url), "utf8")
+  const runtime = await readFile(new URL("../lib/coresignal-regular-search.ts", import.meta.url), "utf8")
   const alumnus = { employeeId: "1696198", alumnusId: 11, linkedinUrl: "https://linkedin.com/in/a", name: "A", company: "Existing", title: "Director", pdlPersonId: "pdl", lushaPersonId: "lusha" }
   const before = structuredClone(alumnus)
   await routing.planCoresignalRegularSearchRouting([1696198], headers({ "x-total-results": "1" }), fakeStore([alumnus]))
@@ -142,6 +141,6 @@ test("routing is read-only, provider-free, and absent from runtime discovery", a
     assert.doesNotMatch(source, /\.insert\(|\.update\(|\.delete\(|fetch\(|attachCoresignalIdentity|providerResponseHistory|fieldChangeHistory|writeSecurityAudit/)
     assert.doesNotMatch(source, /\b(?:Bright|PDL|Lusha|Socai|Signals|Gmail|webhook)\b/i)
   }
-  assert.doesNotMatch(route, /coresignal-regular-search-response|coresignal-search-routing/)
-  assert.doesNotMatch(client, /coresignal-regular-search-response|coresignal-search-routing/)
+  assert.match(runtime, /planCoresignalRegularSearchRouting/)
+  assert.doesNotMatch(runtime, /\.insert\(|\.update\(|\.delete\(|attachCoresignalIdentity|fieldChangeHistory|writeSecurityAudit/)
 })

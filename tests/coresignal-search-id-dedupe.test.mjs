@@ -140,7 +140,7 @@ test("chunked lookup uses deterministic bounded bulk queries rather than one que
   assert.equal(rows.length, 5)
 })
 
-test("dedupe implementation is read-only and isolated from providers and runtime routing", async () => {
+test("dedupe implementation stays read-only when used by the gated runtime routing path", async () => {
   const service = await readFile(new URL("../lib/coresignal-search-id-dedupe.ts", import.meta.url), "utf8")
   const store = await readFile(new URL("../lib/coresignal-search-id-store.ts", import.meta.url), "utf8")
   const route = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
@@ -150,6 +150,6 @@ test("dedupe implementation is read-only and isolated from providers and runtime
     assert.doesNotMatch(source, /Bright|PDL|Lusha|collectCoresignal|fetch\(|webhook/i)
   }
   assert.match(store, /inArray\(alumni\.coresignalEmployeeId/)
-  assert.doesNotMatch(route, /coresignal-search-id-dedupe|coresignal-search-id-store/)
+  assert.match(route, /coresignalSearchIdLookupStore/)
   assert.doesNotMatch(route, new RegExp(dormantBuilder))
 })

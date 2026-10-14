@@ -118,7 +118,7 @@ test("exact-year builder does not replace or alter the upper-bound Filter Previe
   assert.equal("experience_title" in client.coresignalSearchContract(filters).body, false)
 })
 
-test("building the dormant contract performs no fetch and runtime entry points do not reference it", async () => {
+test("building the contract is provider-free and only the separately gated runtime references it", async () => {
   const previousFetch = globalThis.fetch
   let fetchCalls = 0
   globalThis.fetch = async () => {
@@ -132,16 +132,23 @@ test("building the dormant contract performs no fetch and runtime entry points d
     globalThis.fetch = previousFetch
   }
 
-  const runtimeFiles = [
-    "app/api/discovery/route.ts",
-    "app/page.tsx",
+  const unchangedPreviewCollectFiles = [
     "lib/coresignal-adapter.ts",
     "lib/discovery-execution.ts",
-    "lib/provider-runtime.ts",
-    "package.json",
   ]
-  for (const file of runtimeFiles) {
+  for (const file of unchangedPreviewCollectFiles) {
     const source = await readFile(new URL(`../${file}`, import.meta.url), "utf8")
     assert.doesNotMatch(source, /coresignalExactYearEsDslSearchContract|CORESIGNAL_ES_DSL_SEARCH_PATH|employee_base\/search\/es_dsl/, file)
   }
+  const runtime = await readFile(new URL("../lib/coresignal-regular-search.ts", import.meta.url), "utf8")
+  assert.match(runtime, /coresignalRegularSearchEnabled/)
+  assert.match(runtime, /searchCoresignalEmployeeIds/)
+})
+
+test("exact-year live behavior is explicitly not inferred from the zero-result entitlement request", async () => {
+  const clientSource = await readFile(new URL("../lib/coresignal-client.ts", import.meta.url), "utf8")
+  const providerDocs = await readFile(new URL("../docs/providers.md", import.meta.url), "utf8")
+  assert.match(clientSource, /not yet empirically proven/)
+  assert.match(providerDocs, /date_to_year=2013[^\n]*zero matches/)
+  assert.match(providerDocs, /exact-year live data semantics are \*\*not\*\* yet empirically confirmed/)
 })

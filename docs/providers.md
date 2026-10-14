@@ -54,11 +54,15 @@ regular Search response
 
 `IDENTITY_RESOLVED` means only that the provider identity maps uniquely. It does not mean `PROFILE_FRESH` or `NO_REFRESH_NEEDED`; freshness remains `NOT_EVALUATED`. An unknown Employee ID also does not automatically mean a new alumnus.
 
-The regular Search response parser and routing planner are implemented, deterministic, and provider-free. Regular Search transport/runtime activation is not wired.
+The regular Search response parser, routing planner, and one-request transport boundary are implemented. Runtime Search remains disabled by default behind the independent server-only `CORESIGNAL_SEARCH_ENABLED=false` gate, in addition to the normal Coresignal live gate and server-only API key. Opening External Discovery or its confirmation does not call the provider.
+
+The controlled path performs exactly one `POST /cdapi/v2/employee_base/search/es_dsl` request, parses the documented ID body and pagination headers, deduplicates IDs, and routes them against durable Corporate Network identity. It has zero automatic retries and never follows `x-next-page-after`. It does not automatically call Filter Preview or Collect, create alumni, attach unknown IDs, or mutate canonical professional/contact fields. Explicit UI confirmation shows the provider, operation, `items_per_page`, one-request cap, provider constraints, and zero Preview/Collect operations.
 
 ### Exact-year ES-DSL
 
-`coresignalExactYearEsDslSearchContract` implements an exact nested education-year request strategy. The builder is dormant and absent from normal discovery entry points. Current runtime still treats post-Collect education validation as authoritative where exact-year proof is required.
+`coresignalExactYearEsDslSearchContract` implements an exact nested education-year request strategy. A separately authorized manual entitlement check returned HTTP 200 from Base Employee ES-DSL Search, but the IIM Lucknow + `education.date_to_year=2013` query returned zero matches. Entitlement is confirmed; exact-year live data semantics are **not** yet empirically confirmed. Provider-free tests therefore validate request structure only. Current Filter Preview/Collect discovery remains unchanged, and post-Collect education validation stays authoritative where exact-year proof is required.
+
+For the ES-DSL path, only `is_parent=1`, the stable IIM Lucknow institution URL, and the exact education end year are sent. Programme, seniority, company, role/function, location, deleted-record interpretation, and qualification remain conservative local concerns unless a provider constraint is separately validated.
 
 ### RTAPI and webhooks
 

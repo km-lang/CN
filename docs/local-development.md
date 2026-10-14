@@ -59,6 +59,7 @@ Only names and purposes are documented here. Never place real values in Markdown
 ### Provider gates and limits
 
 - `CORESIGNAL_LIVE_ENABLED`, `CORESIGNAL_API_KEY`
+- `CORESIGNAL_SEARCH_ENABLED` (independent Base Employee ES-DSL Search gate; default `false`)
 - `CORESIGNAL_LIVE_SEARCH_MAX_RESULTS`, `CORESIGNAL_LIVE_REFRESH_MAX_PROFILES`
 - `LUSHA_LIVE_ENABLED`, `LUSHA_API_KEY`
 - `LUSHA_SIGNALS_LIVE_ENABLED`, `LUSHA_SIGNALS_ENTITLEMENT`

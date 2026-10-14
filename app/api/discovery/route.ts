@@ -7,7 +7,7 @@ import { safeCoresignalError } from "@/lib/coresignal-client"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { validateDiscoveryCount } from "@/lib/discovery-limit"
 import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL } from "@/lib/professional-data"
-import { coresignalLiveSearchMaximum } from "@/lib/provider-runtime"
+import { coresignalLiveSearchMaximum, coresignalRegularSearchEnabled, providerConfigured } from "@/lib/provider-runtime"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
 import { discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
@@ -19,6 +19,8 @@ import { reconcileDiscoveryCandidate, reconcileDiscoveryCandidates, selectiveCol
 import { qualifyCollectedCandidate, qualifyPreviewCandidate, type DiscoveryExecutionCandidate } from "@/lib/discovery-execution"
 import { attachCoresignalIdentity } from "@/lib/coresignal-identity"
 import { coresignalIdentityStore } from "@/lib/coresignal-identity-store"
+import { executeCoresignalRegularSearch, CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS } from "@/lib/coresignal-regular-search"
+import { coresignalSearchIdLookupStore } from "@/lib/coresignal-search-id-store"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -220,7 +222,7 @@ export async function GET(request: Request) {
     const activeProviderHistory = activeSearch ? await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.searchId, activeSearch.id)).orderBy(providerResponseHistory.id) : []
     const activeSearchSummary = activeSearch ? discoveryRunSummary(activeSearch, activeResults, activeProviderHistory) : null
     const previousSearches = previousDiscoveryRuns(recentSearches, historyResults, activeSearch?.id ?? null)
-    const common = { pendingCount: actionablePendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES }
+    const common = { pendingCount: actionablePendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, regularSearch: { enabled: coresignalRegularSearchEnabled(), configured: providerConfigured("coresignal"), maxRequests: CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS, automaticPagination: false } }
     if (view === "summary") return Response.json(common)
     if (!activeSearch) return Response.json({ ...common, activeSearch: null, results: [], counts: discoveryClassificationCounts([]), filters: defaultDiscoveryFilters(), providerHistory: [], retrieval: "stored", source: null })
     const filters = storedDiscoveryFilters(activeSearch.filtersJson)
@@ -240,7 +242,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const payload = await request.json() as { action?: string; filters?: Partial<DiscoveryFilters>; graduationYears?: number[]; limit?: number; resultIds?: number[]; resultId?: number; fields?: string[]; reason?: string; affiliationStatus?: string }
+    const payload = await request.json() as { action?: string; filters?: Partial<DiscoveryFilters>; graduationYears?: number[]; limit?: number; confirmed?: boolean; resultIds?: number[]; resultId?: number; fields?: string[]; reason?: string; affiliationStatus?: string }
     const context = await authorizeRequest(request, "OPERATE_PCOM"); const db = getDb(); const actor = context.displayName; const nowDate = new Date(); const now = nowDate.toISOString()
 
     if (payload.action === "plan") {
@@ -248,6 +250,58 @@ export async function POST(request: Request) {
       const history = await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.provider, PROFESSIONAL_DATA_PROVIDER)).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id))
       const coverage = discoveryCoveragePlan(filters, history, { now: nowDate, provider: PROFESSIONAL_DATA_PROVIDER, mode: coresignalProvider.mode(), graduationYears: payload.graduationYears })
       return Response.json({ provider: PROFESSIONAL_DATA_PROVIDER, mode: coresignalProvider.mode(), coverage, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, providerCallMade: false, applicationUnits: 0 })
+    }
+
+    if (payload.action === "regular_search") {
+      const filters = normalizedDiscoveryFilters(payload.filters)
+      if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before Coresignal Search.", blocked: true, reason: "confirmation_required" }, { status: 400 })
+      if (!coresignalRegularSearchEnabled()) return Response.json({ error: "Coresignal regular Search is disabled.", blocked: true, reason: "search_gate_disabled" }, { status: 403 })
+      if (!providerConfigured("coresignal")) return Response.json({ error: "Coresignal authentication is not configured.", blocked: true, reason: "provider_not_configured" }, { status: 409 })
+      if (!/^\d{4}$/.test(filters.graduationYear)) return Response.json({ error: "Choose an exact four-digit graduation year before Base Employee Search.", blocked: true, reason: "exact_year_required" }, { status: 400 })
+      const remaining = await remainingApplicationUnits()
+      if (remaining < 1) return Response.json({ error: "Coresignal Search was not run because the application operation limit has been reached.", blocked: true, reason: "application_limit" }, { status: 429 })
+      const validation = validateDiscoveryCount(payload.limit, remaining, coresignalLiveSearchMaximum(), 0)
+      if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, maximumAllowed: validation.maximumAllowed }, { status: 400 })
+      const operationContext = `External Discovery · IIM Lucknow · exact graduation year ${filters.graduationYear}`
+      const requestSummary = `${operationContext} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
+      try {
+        const execution = await executeCoresignalRegularSearch({ filters, itemsPerPage: validation.requested, operationContext, confirmed: true }, { store: coresignalSearchIdLookupStore(db) })
+        const remainingSummary = execution.providerCreditsRemaining === null ? "Provider remaining credits were not reported." : `Provider reported ${execution.providerCreditsRemaining} credits remaining.`
+        await db.insert(providerResponseHistory).values({
+          provider: PROFESSIONAL_DATA_PROVIDER,
+          alumnusName: "External alumni discovery",
+          operation: execution.operation,
+          mode: "live",
+          status: "success",
+          creditsUsed: 0,
+          applicationUnits: 1,
+          providerReportedCredits: null,
+          usageState: "not_applicable",
+          resultCount: execution.routing.providerSearch.totalResults,
+          requestSummary,
+          responseSummary: `One Search request succeeded. ${execution.routing.providerSearch.pageIdsReceived} IDs returned on this page; ${execution.routing.providerSearch.totalResults} total results reported. ${remainingSummary} No Preview or Collect request was made.`,
+          requestedBy: actor,
+        })
+        return Response.json({ ...execution, filters, itemsPerPage: validation.requested, providerCallMade: true, applicationUnits: 1 })
+      } catch (error) {
+        const failure = safeCoresignalError(error)
+        await db.insert(providerResponseHistory).values({
+          provider: PROFESSIONAL_DATA_PROVIDER,
+          alumnusName: "External alumni discovery",
+          operation: "Base Employee ES-DSL Search",
+          mode: "live",
+          status: "error",
+          creditsUsed: 0,
+          applicationUnits: 0,
+          providerReportedCredits: null,
+          usageState: "not_applicable",
+          requestSummary,
+          responseSummary: `One Search request failed. ${failure.message} No retry, Preview, or Collect request was made.`,
+          errorMessage: failure.message,
+          requestedBy: actor,
+        })
+        return Response.json({ error: failure.message, failureType: failure.kind, blocked: true, reason: "provider_error", providerCallMade: true, applicationUnits: 0 }, { status: failure.status === 429 ? 429 : 502 })
+      }
     }
 
     if (payload.action === "search") {

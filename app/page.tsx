@@ -590,6 +590,8 @@ export default function Home() {
   const [loadingPendingReview, setLoadingPendingReview] = useState(false)
   const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
   const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
+  const [pendingRegularSearchFilters, setPendingRegularSearchFilters] = useState<DiscoveryFilters | null>(null)
+  const [regularSearchStatus, setRegularSearchStatus] = useState({ enabled: false, configured: false, maxRequests: 1, automaticPagination: false })
   const [coresignalLiveMaximum, setCoresignalLiveMaximum] = useState(5)
   const [activeDiscoveryRun, setActiveDiscoveryRun] = useState<DiscoveryRunSummary | null>(null)
   const [previousDiscoveryRuns, setPreviousDiscoveryRuns] = useState<DiscoveryRunSummary[]>([])
@@ -774,10 +776,11 @@ export default function Home() {
     if (!session.canOperate) return
     try {
       const response = await fetch(`${API_ROUTES.discovery}?view=summary`, { cache: "no-store" })
-      const data = await response.json() as { pendingCount?: number; liveMaximum?: number; error?: string }
+      const data = await response.json() as { pendingCount?: number; liveMaximum?: number; regularSearch?: { enabled: boolean; configured: boolean; maxRequests: number; automaticPagination: boolean }; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load pending external-review status.")
       setPendingDiscoveryCount(data.pendingCount ?? 0)
       setCoresignalLiveMaximum(data.liveMaximum ?? 5)
+      setRegularSearchStatus(data.regularSearch ?? { enabled: false, configured: false, maxRequests: 1, automaticPagination: false })
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to load pending external-review status.")
     }
@@ -1879,6 +1882,34 @@ export default function Home() {
     }
   }
 
+  async function runRegularSearch(searchFilters: DiscoveryFilters) {
+    setDiscovering(true)
+    setDiscoveryMessage("")
+    try {
+      const response = await fetch(API_ROUTES.discovery, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "regular_search", filters: searchFilters, limit: Number(discoveryLimit), confirmed: true }),
+      })
+      const data = await response.json() as {
+        routing?: { providerSearch: { totalResults: number; pageIdsReceived: number; totalPages: number }; summary: { identityResolved: number; identityResolutionRequired: number; identityReviewRequired: number } }
+        previewRequests?: number
+        collectRequests?: number
+        providerCreditsRemaining?: number | null
+        error?: string
+      }
+      if (!response.ok || !data.routing) throw new Error(data.error || "Unable to run Coresignal Base Employee Search.")
+      const summary = data.routing.summary
+      setDiscoveryMessage(`Coresignal Search returned ${data.routing.providerSearch.pageIdsReceived} Employee ID${data.routing.providerSearch.pageIdsReceived === 1 ? "" : "s"} on this page (${data.routing.providerSearch.totalResults} total reported): ${summary.identityResolved} mapped, ${summary.identityResolutionRequired} require identity resolution, ${summary.identityReviewRequired} require identity review. Preview ${data.previewRequests ?? 0}; Collect ${data.collectRequests ?? 0}; provider remaining credits ${data.providerCreditsRemaining == null ? "not reported" : data.providerCreditsRemaining}. No alumnus or profile field was changed.`)
+      await Promise.all([loadEnrichment(), loadPendingDiscoverySummary()])
+    } catch (error) {
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to run Coresignal Base Employee Search.")
+    } finally {
+      setDiscovering(false)
+      setPendingRegularSearchFilters(null)
+    }
+  }
+
   function findMoreForCompany(companyName: string) {
     const next = { ...defaultDiscoveryFilters(), company: companyName }
     setDiscoveryFilters(next)
@@ -2282,6 +2313,7 @@ export default function Home() {
               </div>
               {discoveryCoverageError && <small className="discovery-coverage-error">{discoveryCoverageError}</small>}
               {discoveryCountControl("Discover More Alumni")}
+              <div className="discovery-count-control"><div><strong>Coresignal Employee ID Search</strong><small>Separate ID-only ES-DSL Search. Requires an exact graduation year; company, programme, role, function, seniority, and location remain local and are not sent by this Search path. It never automatically calls Preview or Collect.</small><small>Status: {regularSearchStatus.enabled ? "LIVE gate enabled" : "Unavailable — server gate disabled"} · maximum Search requests: {regularSearchStatus.maxRequests} · automatic pagination: {regularSearchStatus.automaticPagination ? "on" : "off"}.</small></div><Button variant="outline" title={!regularSearchStatus.enabled ? "CORESIGNAL_SEARCH_ENABLED is off." : !/^\d{4}$/.test(discoveryFilters.graduationYear) ? "Choose an exact four-digit graduation year." : undefined} disabled={discovering || !regularSearchStatus.enabled || !regularSearchStatus.configured || !/^\d{4}$/.test(discoveryFilters.graduationYear) || !discoveryCountValidation.ok} onClick={() => setPendingRegularSearchFilters(discoveryFilters)}><Search /> Prepare ID-only Search</Button></div>
             </section>}
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
@@ -2684,6 +2716,10 @@ export default function Home() {
 
       <Dialog open={Boolean(pendingDiscoveryFilters)} onOpenChange={open => { if (!open) setPendingDiscoveryFilters(null) }}>
         <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run live Coresignal employee search?</DialogTitle><DialogDescription>Confirm this controlled search before it reaches Coresignal. Provider filters reduce irrelevant Collect calls; Corporate Network independently validates the collected IIML education record before a candidate can be added.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>Coresignal — LIVE</strong></div><div><span>Education</span><strong>{FIXED_ALUMNI_SCHOOL}</strong></div><div><span>Alumni status</span><strong>{pendingDiscoveryFilters?.alumniStatus ?? "Past alumni only"}</strong></div><div><span>IIML programmes to discover</span><strong>{pendingDiscoveryFilters?.discoveryProgrammes.join(", ") || "None selected"}</strong></div><div><span>Company</span><strong>{pendingDiscoveryFilters?.company || "Any company"}</strong></div><div><span>Role</span><strong>{pendingDiscoveryFilters?.role || "Any role"}</strong></div><div><span>Function</span><strong>{pendingDiscoveryFilters?.function ?? "All functions"}</strong></div><div><span>Seniority</span><strong>{pendingDiscoveryFilters ? discoverySenioritySummary(pendingDiscoveryFilters) : "All levels"}</strong></div><div><span>Location</span><strong>{pendingDiscoveryFilters?.location || "Any location"}</strong></div><div><span>Graduation year</span><strong>{pendingDiscoveryFilters?.graduationYear || "Any year"}</strong></div><div><span>Profiles requested</span><strong>{discoveryLimit}</strong></div><div><span>Application units remaining</span><strong>{providerUsage.coresignal.remaining}</strong></div><div><span>Maximum application usage</span><strong>{discoveryMaximumApplicationUsage}</strong></div></div><div className="credit-notice"><Activity /><span>Maximum usage includes one Search operation plus up to one Collect operation per requested profile. Application usage and provider-account usage are recorded separately. Unknown provider usage is never presented as zero. Results remain review-only and are never added automatically.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel</Button><Button disabled={discovering || !pendingDiscoveryFilters || !pendingDiscoveryFilters.discoveryProgrammes.length || !discoveryCountValidation.ok} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm Live Search</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(pendingRegularSearchFilters)} onOpenChange={open => { if (!open) setPendingRegularSearchFilters(null) }}>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run one Coresignal Base Employee ES-DSL Search?</DialogTitle><DialogDescription>This is a separate, ID-only live Search. Opening this confirmation makes no provider request.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>Coresignal — LIVE</strong></div><div><span>Operation</span><strong>Base Employee ES-DSL Search</strong></div><div><span>Maximum Search requests</span><strong>1</strong></div><div><span>Items per page</span><strong>{discoveryLimit}</strong></div><div><span>Provider constraints</span><strong>IIM Lucknow institution URL · exact graduation year · parent records</strong></div><div><span>Graduation year</span><strong>{pendingRegularSearchFilters?.graduationYear || "Missing"}</strong></div><div><span>Filter Preview requests</span><strong>0</strong></div><div><span>Collect requests</span><strong>0</strong></div><div><span>Automatic pagination</span><strong>Off</strong></div></div><div className="credit-notice"><Activity /><span>This Search may consume provider usage. Returned Employee IDs are routed against stored identities only. Unknown IDs remain unresolved; no alumnus is created, no identity is attached, freshness is not evaluated, and no profile field is changed. Exact-year live semantics still require controlled validation.</span></div><DialogFooter><Button variant="outline" onClick={() => setPendingRegularSearchFilters(null)}>Cancel — No Provider Call</Button><Button disabled={discovering || !pendingRegularSearchFilters || !regularSearchStatus.enabled || !/^\d{4}$/.test(pendingRegularSearchFilters.graduationYear)} onClick={() => pendingRegularSearchFilters && void runRegularSearch(pendingRegularSearchFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} Confirm One Search Request</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>

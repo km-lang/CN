@@ -6,6 +6,7 @@ export type ProviderMode = "mock" | "live"
 type ProviderRuntimeEnvironment = {
   CORESIGNAL_API_KEY?: string
   CORESIGNAL_LIVE_ENABLED?: string
+  CORESIGNAL_SEARCH_ENABLED?: string
   CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?: string
   CORESIGNAL_LIVE_REFRESH_MAX_PROFILES?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED?: string
@@ -63,6 +64,11 @@ export function coresignalLiveSearchMaximum() {
 
 export function coresignalLiveRefreshMaximum() {
   return boundedInteger(runtimeEnvironment().CORESIGNAL_LIVE_REFRESH_MAX_PROFILES, 1, 1)
+}
+
+export function coresignalRegularSearchEnabled() {
+  const values = runtimeEnvironment()
+  return providerMode("coresignal") === "live" && enabled(values.CORESIGNAL_SEARCH_ENABLED)
 }
 
 export function signalsRuntimeStatus() {

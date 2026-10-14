@@ -10,6 +10,12 @@ export const CORESIGNAL_COLLECT_PATH = "/cdapi/v2/employee_base/collect"
 export const CORESIGNAL_ES_DSL_DEFAULT_ITEMS_PER_PAGE = 1
 export const CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE = 1_000
 
+export type CoresignalRegularSearchTransportResult = {
+  body: unknown
+  headers: Readonly<Record<"x-total-results" | "x-total-pages" | "x-next-page-after", string | null>>
+  providerCreditsRemaining: number | null
+}
+
 export type CoresignalFailureKind = "authentication" | "rate_limit" | "timeout" | "unavailable" | "invalid_request" | "invalid_response"
 
 export class CoresignalProviderError extends Error {
@@ -106,10 +112,15 @@ function failure(status: number) {
   return new CoresignalProviderError("Coresignal rejected the request.", "invalid_request", status)
 }
 
-async function request(path: string, init: RequestInit, options: { fetcher?: typeof fetch; timeoutMs?: number } = {}) {
+type RequestOptions = { fetcher?: typeof fetch; timeoutMs?: number; signal?: AbortSignal }
+
+async function response(path: string, init: RequestInit, options: RequestOptions = {}) {
   const key = providerSecret("coresignal")
   if (!key) throw new CoresignalProviderError("Coresignal authentication is not configured.", "authentication", 401)
   const controller = new AbortController()
+  const abortFromCaller = () => controller.abort()
+  if (options.signal?.aborted) controller.abort()
+  else options.signal?.addEventListener("abort", abortFromCaller, { once: true })
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000)
   let response: Response
   try {
@@ -121,9 +132,17 @@ async function request(path: string, init: RequestInit, options: { fetcher?: typ
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw new CoresignalProviderError("Coresignal request timed out.", "timeout", 504)
     throw new CoresignalProviderError("Coresignal is temporarily unavailable.", "unavailable", 503)
-  } finally { clearTimeout(timeout) }
+  } finally {
+    clearTimeout(timeout)
+    options.signal?.removeEventListener("abort", abortFromCaller)
+  }
   if (!response.ok) throw failure(response.status)
-  try { return await response.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable response.", "invalid_response", 502) }
+  return response
+}
+
+async function request(path: string, init: RequestInit, options: RequestOptions = {}) {
+  const providerResponse = await response(path, init, options)
+  try { return await providerResponse.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable response.", "invalid_response", 502) }
 }
 
 export function searchCoresignalIiml(options: { fetcher?: typeof fetch; timeoutMs?: number; filters?: DiscoveryFilters; now?: Date } = {}) {
@@ -135,6 +154,48 @@ export function collectCoresignalEmployee(employeeId: string, options: { fetcher
   if (!employeeId.trim()) throw new CoresignalProviderError("A stable Coresignal employee ID is required.", "invalid_request", 400)
   const contract = coresignalCollectContract(employeeId)
   return request(contract.path, { method: contract.method }, options)
+}
+
+function optionalNonNegativeIntegerHeader(headers: Headers, name: string) {
+  const raw = headers.get(name)
+  if (raw === null || !/^(0|[1-9][0-9]*)$/.test(raw)) return null
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : null
+}
+
+/**
+ * Performs exactly one Base Employee ES-DSL Search request. It never retries,
+ * follows continuation headers, calls Preview/Collect, or interprets returned
+ * Employee IDs. The exact-year request shape is structurally validated, but
+ * its behavior against live Base Employee data is not yet empirically proven.
+ */
+export async function searchCoresignalEmployeeIds(
+  esDslBody: unknown,
+  options: RequestOptions & { itemsPerPage?: number; operationContext: string },
+): Promise<CoresignalRegularSearchTransportResult> {
+  if (!options.operationContext.trim()) throw new CoresignalProviderError("A Coresignal Search operation context is required.", "invalid_request", 400)
+  if (!esDslBody || typeof esDslBody !== "object" || Array.isArray(esDslBody)) throw new CoresignalProviderError("A Coresignal ES-DSL request body is required.", "invalid_request", 400)
+  const itemsPerPage = options.itemsPerPage ?? CORESIGNAL_ES_DSL_DEFAULT_ITEMS_PER_PAGE
+  if (!Number.isInteger(itemsPerPage) || itemsPerPage < 1 || itemsPerPage > CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE) {
+    throw new CoresignalProviderError(`Coresignal ES-DSL items_per_page must be between 1 and ${CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE}.`, "invalid_request", 400)
+  }
+  const query = new URLSearchParams({ items_per_page: String(itemsPerPage) })
+  const providerResponse = await response(`${CORESIGNAL_ES_DSL_SEARCH_PATH}?${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(esDslBody),
+  }, options)
+  let body: unknown
+  try { body = await providerResponse.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable response.", "invalid_response", 502) }
+  return {
+    body,
+    headers: {
+      "x-total-results": providerResponse.headers.get("x-total-results"),
+      "x-total-pages": providerResponse.headers.get("x-total-pages"),
+      "x-next-page-after": providerResponse.headers.get("x-next-page-after"),
+    },
+    providerCreditsRemaining: optionalNonNegativeIntegerHeader(providerResponse.headers, "x-credits-remaining"),
+  }
 }
 
 export function safeCoresignalError(error: unknown) {
