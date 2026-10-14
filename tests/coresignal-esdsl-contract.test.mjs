@@ -19,6 +19,45 @@ const exactYearFilters = overrides => ({
 
 const exactContract = overrides => client.coresignalExactYearEsDslSearchContract(exactYearFilters(overrides))
 
+test("institution-only ES-DSL contract omits education year and keeps one nested institution query", () => {
+  const contract = client.coresignalEmployeeEsDslSearchContract()
+  assert.equal(contract.searchMode, "INSTITUTION_ONLY")
+  assert.deepEqual(contract.body, {
+    query: {
+      bool: {
+        filter: [
+          { term: { is_parent: 1 } },
+          {
+            nested: {
+              path: "education",
+              query: {
+                bool: {
+                  filter: [
+                    { term: { "education.institution_url": "https://www.linkedin.com/school/indian-institute-of-management-lucknow" } },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+    sort: ["id"],
+  })
+  assert.equal(JSON.stringify(contract.body).includes("education.date_to_year"), false)
+})
+
+test("general ES-DSL contract keeps institution and exact year in one nested education query", () => {
+  const contract = client.coresignalEmployeeEsDslSearchContract({ graduationYear: 2013 })
+  assert.equal(contract.searchMode, "EXACT_GRADUATION_YEAR")
+  const nestedClauses = contract.body.query.bool.filter.filter(clause => clause.nested)
+  assert.equal(nestedClauses.length, 1)
+  assert.deepEqual(nestedClauses[0].nested.query.bool.filter, [
+    { term: { "education.institution_url": client.CORESIGNAL_IIML_INSTITUTION_URL } },
+    { term: { "education.date_to_year": 2013 } },
+  ])
+})
+
 function educationMatchesGeneratedNestedQuery(education, contract = exactContract()) {
   const nested = contract.body.query.bool.filter.find(clause => clause.nested)?.nested
   assert.equal(nested.path, "education")
@@ -69,6 +108,9 @@ test("items_per_page is configurable only inside the documented bounded integer 
   }
   for (const graduationYear of ["", "13", "2013-01-01", "latest"]) {
     assert.throws(() => client.coresignalExactYearEsDslSearchContract(exactYearFilters({ graduationYear })), /four-digit graduation year/)
+  }
+  for (const graduationYear of ["", " ", "201", "20130", "NaN", "20x3", Number.NaN]) {
+    assert.throws(() => client.coresignalEmployeeEsDslSearchContract({ graduationYear }), /exact four-digit year/)
   }
 })
 

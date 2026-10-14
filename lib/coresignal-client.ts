@@ -53,25 +53,39 @@ export function coresignalSearchContract(filters?: DiscoveryFilters, now: Date =
   }
 }
 
+export type CoresignalEmployeeEsDslSearchMode = "INSTITUTION_ONLY" | "EXACT_GRADUATION_YEAR"
+
+export function coresignalEmployeeEsDslGraduationYear(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === "number" && Number.isInteger(value) && value >= 1_000 && value <= 9_999) return value
+  if (typeof value === "string" && /^\d{4}$/.test(value)) return Number(value)
+  throw new Error("When supplied, Coresignal ES-DSL graduation year must be an exact four-digit year.")
+}
+
 /**
- * Dormant provider-free contract for exact-year Base Employee ID discovery.
+ * Provider-free contract for Base Employee ID discovery by the stable IIML
+ * institution URL, with an optional exact education end year.
  *
  * This deliberately does not support company, role, function, seniority,
  * programme, location, or deleted-record clauses. Their Base Employee ES
  * semantics have not all been established well enough to add them safely.
  * Collect remains authoritative for final education and employment evidence.
  */
-export function coresignalExactYearEsDslSearchContract(
-  filters: DiscoveryFilters,
-  options: { itemsPerPage?: number } = {},
+export function coresignalEmployeeEsDslSearchContract(
+  options: { institutionUrl?: string; graduationYear?: unknown; itemsPerPage?: number } = {},
 ) {
-  const graduationYear = filters.graduationYear.trim()
-  if (!/^\d{4}$/.test(graduationYear)) throw new Error("An exact four-digit graduation year is required for Coresignal ES-DSL search.")
+  const graduationYear = coresignalEmployeeEsDslGraduationYear(options.graduationYear)
   const itemsPerPage = options.itemsPerPage ?? CORESIGNAL_ES_DSL_DEFAULT_ITEMS_PER_PAGE
   if (!Number.isInteger(itemsPerPage) || itemsPerPage < 1 || itemsPerPage > CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE) {
     throw new Error(`Coresignal ES-DSL items_per_page must be between 1 and ${CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE}.`)
   }
+  const institutionUrl = options.institutionUrl ?? CORESIGNAL_IIML_INSTITUTION_URL
+  const educationFilters = [
+    { term: { "education.institution_url": institutionUrl } },
+    ...(graduationYear === undefined ? [] : [{ term: { "education.date_to_year": graduationYear } }]),
+  ]
   return {
+    searchMode: (graduationYear === undefined ? "INSTITUTION_ONLY" : "EXACT_GRADUATION_YEAR") as CoresignalEmployeeEsDslSearchMode,
     method: "POST" as const,
     path: CORESIGNAL_ES_DSL_SEARCH_PATH,
     query: { items_per_page: itemsPerPage },
@@ -85,10 +99,7 @@ export function coresignalExactYearEsDslSearchContract(
                 path: "education",
                 query: {
                   bool: {
-                    filter: [
-                      { term: { "education.institution_url": CORESIGNAL_IIML_INSTITUTION_URL } },
-                      { term: { "education.date_to_year": Number(graduationYear) } },
-                    ],
+                    filter: educationFilters,
                   },
                 },
               },
@@ -99,6 +110,19 @@ export function coresignalExactYearEsDslSearchContract(
       sort: ["id"],
     },
   }
+}
+
+/** Compatibility wrapper for callers that require an exact graduation year. */
+export function coresignalExactYearEsDslSearchContract(
+  filters: DiscoveryFilters,
+  options: { itemsPerPage?: number } = {},
+) {
+  if (!/^\d{4}$/.test(filters.graduationYear)) throw new Error("An exact four-digit graduation year is required for Coresignal ES-DSL search.")
+  const contract = coresignalEmployeeEsDslSearchContract({
+    graduationYear: filters.graduationYear,
+    itemsPerPage: options.itemsPerPage,
+  })
+  return { method: contract.method, path: contract.path, query: contract.query, body: contract.body }
 }
 
 export function coresignalCollectContract(employeeId: string) {
@@ -166,8 +190,9 @@ function optionalNonNegativeIntegerHeader(headers: Headers, name: string) {
 /**
  * Performs exactly one Base Employee ES-DSL Search request. It never retries,
  * follows continuation headers, calls Preview/Collect, or interprets returned
- * Employee IDs. The exact-year request shape is structurally validated, but
- * its behavior against live Base Employee data is not yet empirically proven.
+ * Employee IDs. Institution-only and exact-year request shapes are
+ * structurally validated, but exact-year behavior against live Base Employee
+ * data is not yet empirically proven.
  */
 export async function searchCoresignalEmployeeIds(
   esDslBody: unknown,

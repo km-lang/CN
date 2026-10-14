@@ -3,7 +3,7 @@ import { getDb } from "@/db"
 import { alumni, externalDiscoveryResults, externalDiscoverySearches, fieldChangeHistory, providerResponseHistory, providerSettings } from "@/db/schema"
 import { FIXED_ALUMNI_SCHOOL, criteriaSummary, defaultDiscoveryFilters, matchesDiscoverySeniorities, normalizeDiscoveryFiltersInput, normalized, type DiscoveryFilters, type DiscoveryProfile, type MatchStatus } from "@/lib/alumni-search"
 import { coresignalProvider } from "@/lib/coresignal-adapter"
-import { safeCoresignalError } from "@/lib/coresignal-client"
+import { coresignalEmployeeEsDslGraduationYear, safeCoresignalError } from "@/lib/coresignal-client"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { validateDiscoveryCount } from "@/lib/discovery-limit"
 import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL } from "@/lib/professional-data"
@@ -253,16 +253,24 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "regular_search") {
+      const rawGraduationYear = payload.filters && Object.prototype.hasOwnProperty.call(payload.filters, "graduationYear")
+        ? payload.filters.graduationYear
+        : undefined
+      try { coresignalEmployeeEsDslGraduationYear(rawGraduationYear) } catch {
+        return Response.json({ error: "When supplied, graduation year must be an exact four-digit year.", blocked: true, reason: "invalid_graduation_year" }, { status: 400 })
+      }
       const filters = normalizedDiscoveryFilters(payload.filters)
       if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before Coresignal Search.", blocked: true, reason: "confirmation_required" }, { status: 400 })
       if (!coresignalRegularSearchEnabled()) return Response.json({ error: "Coresignal regular Search is disabled.", blocked: true, reason: "search_gate_disabled" }, { status: 403 })
       if (!providerConfigured("coresignal")) return Response.json({ error: "Coresignal authentication is not configured.", blocked: true, reason: "provider_not_configured" }, { status: 409 })
-      if (!/^\d{4}$/.test(filters.graduationYear)) return Response.json({ error: "Choose an exact four-digit graduation year before Base Employee Search.", blocked: true, reason: "exact_year_required" }, { status: 400 })
       const remaining = await remainingApplicationUnits()
       if (remaining < 1) return Response.json({ error: "Coresignal Search was not run because the application operation limit has been reached.", blocked: true, reason: "application_limit" }, { status: 429 })
       const validation = validateDiscoveryCount(payload.limit, remaining, coresignalLiveSearchMaximum(), 0)
       if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, maximumAllowed: validation.maximumAllowed }, { status: 400 })
-      const operationContext = `External Discovery · IIM Lucknow · exact graduation year ${filters.graduationYear}`
+      const queryMode = filters.graduationYear ? "exact-year" : "institution-only"
+      const operationContext = filters.graduationYear
+        ? `External Discovery · IIM Lucknow · exact graduation year ${filters.graduationYear}`
+        : "External Discovery · IIM Lucknow · institution only"
       const requestSummary = `${operationContext} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
       try {
         const execution = await executeCoresignalRegularSearch({ filters, itemsPerPage: validation.requested, operationContext, confirmed: true }, { store: coresignalSearchIdLookupStore(db) })
@@ -282,7 +290,7 @@ export async function POST(request: Request) {
           responseSummary: `One Search request succeeded. ${execution.routing.providerSearch.pageIdsReceived} IDs returned on this page; ${execution.routing.providerSearch.totalResults} total results reported. ${remainingSummary} No Preview or Collect request was made.`,
           requestedBy: actor,
         })
-        return Response.json({ ...execution, filters, itemsPerPage: validation.requested, providerCallMade: true, applicationUnits: 1 })
+        return Response.json({ ...execution, filters, queryMode, itemsPerPage: validation.requested, providerCallMade: true, applicationUnits: 1 })
       } catch (error) {
         const failure = safeCoresignalError(error)
         await db.insert(providerResponseHistory).values({

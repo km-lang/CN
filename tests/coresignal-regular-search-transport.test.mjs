@@ -93,6 +93,42 @@ test("transport, parser, dedupe, and routing handle known and unknown IDs end to
   assert.equal(result.automaticPagination, false)
 })
 
+test("institution-only runtime makes one mocked Search with no year predicate", async () => {
+  let calls = 0
+  let requestBody
+  const institutionOnly = { ...search.defaultDiscoveryFilters(), graduationYear: "" }
+  const result = await runtime.executeCoresignalRegularSearch({ filters: institutionOnly, itemsPerPage: 1, operationContext: "institution-only test", confirmed: true }, {
+    searchEnabled: () => true,
+    transport: async body => {
+      calls += 1
+      requestBody = body
+      return { body: [1696198], headers: { "x-total-results": "1", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: null }
+    },
+    store: mappingStore(),
+  })
+  assert.equal(calls, 1)
+  assert.equal(result.searchMode, "INSTITUTION_ONLY")
+  assert.doesNotMatch(JSON.stringify(requestBody), /education\.date_to_year/)
+  assert.match(JSON.stringify(requestBody), /education\.institution_url/)
+  assert.equal(result.previewRequests, 0)
+  assert.equal(result.collectRequests, 0)
+})
+
+test("exact-year runtime includes the year predicate in the mocked Search request", async () => {
+  let requestBody
+  const result = await runtime.executeCoresignalRegularSearch({ filters: filters(), itemsPerPage: 1, operationContext: "exact-year test", confirmed: true }, {
+    searchEnabled: () => true,
+    transport: async body => {
+      requestBody = body
+      return { body: [], headers: { "x-total-results": "0", "x-total-pages": "0", "x-next-page-after": null }, providerCreditsRemaining: null }
+    },
+    store: mappingStore(),
+  })
+  assert.equal(result.searchMode, "EXACT_GRADUATION_YEAR")
+  assert.match(JSON.stringify(requestBody), /education\.date_to_year/)
+  assert.match(JSON.stringify(requestBody), /2013/)
+})
+
 test("an observed-shape empty 200 response is valid and has no follow-on action", async () => {
   const result = await runtime.executeCoresignalRegularSearch({ filters: filters(), itemsPerPage: 1, operationContext: "empty test", confirmed: true }, {
     searchEnabled: () => true,
@@ -175,7 +211,13 @@ test("runtime and UI integration preserve canonical immutability and explicit op
   assert.doesNotMatch(orchestration, /\.insert\(|\.update\(|\.delete\(|attachCoresignalIdentity|fieldChangeHistory/)
   assert.match(route, /action === "regular_search"/)
   assert.match(route, /operation: "Base Employee ES-DSL Search"/)
+  assert.match(route, /invalid_graduation_year/)
+  assert.doesNotMatch(route, /exact_year_required/)
   assert.match(page, /Confirm One Search Request/)
+  assert.match(page, /All years — not constrained/)
+  assert.match(page, /IIM Lucknow institution only/)
+  assert.match(page, /IIM Lucknow \+ exact education end year/)
+  assert.match(page, /graduationYear: searchFilters\.graduationYear \|\| undefined/)
   assert.match(page, /Filter Preview requests[\s\S]*>0</)
   assert.match(page, /Collect requests[\s\S]*>0</)
   assert.doesNotMatch(page, /CORESIGNAL_API_KEY|apikey/)

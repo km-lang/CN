@@ -127,6 +127,16 @@ test("External Discovery owns every provider-search control", () => {
   assert.match(page, /value=\{discoveryFilters\.graduationYear\}/)
 })
 
+test("ID-only Search preparation supports all years and clearly confirms both query modes", () => {
+  assert.match(page, /Graduation year is optional/)
+  assert.match(page, /leave it blank for institution-only Search/)
+  assert.match(page, /All years — not constrained/)
+  assert.match(page, /IIM Lucknow institution only/)
+  assert.match(page, /IIM Lucknow \+ exact education end year/)
+  assert.doesNotMatch(page, /Requires an exact graduation year/)
+  assert.match(page, /Boolean\(discoveryFilters\.graduationYear && !\/\^\\d\{4\}\$\/\.test\(discoveryFilters\.graduationYear\)\)/)
+})
+
 test("active Programme Reference Data supplies the scalable discovery multi-select", () => {
   const options = programmes.programmeFilterOptions([
     { id: 1, code: "PGP", name: "PGP", active: true, sortOrder: 10 },
