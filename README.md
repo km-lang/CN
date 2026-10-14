@@ -1,296 +1,145 @@
 # Corporate Network
 
-Corporate Network is an alumni relationship and placement-intelligence MVP. It includes a shared alumni database, CSV import, deterministic placement scoring, company intelligence, outreach tracking, and an internal-search-to-Coresignal-to-Lusha discovery workflow.
+Corporate Network is an internal alumni intelligence and engagement platform for the Placement Committee. It brings together canonical alumni records, company targeting, outreach and engagement, data import, enrichment, provider evidence, human review, and controlled external alumni discovery.
 
-## Deployment configuration
+Provider output is evidence, not canonical truth. Corporate Network owns its institutional alumni record and never silently overwrites it from a provider response.
 
-Product identity and deployment paths are centralized in `lib/app-config.ts`. `next.config.ts` applies the base path at build time, while browser API requests, icons, the web manifest, metadata, and visible product copy consume the resolved configuration. Server-side redirects resolve the production URL at request time, so Sites runtime configuration cannot be replaced by a stale build default.
+## Current status
 
-Supported public configuration keys:
+- **Corporate Network:** feature-complete for local acceptance; full suite, lint, type-check, production-equivalent build, and responsive acceptance pass.
+- **Alumni Profile Intelligence integration:** full local cross-service E2E verified, including mapping, enrollment idempotency, eligibility, revalidation, review decisions, persistence, invalid authentication, and service-unavailable handling.
+- **Responsive UI:** validated at 1440, 1280, 768, 390, and 360 pixels. Low-priority polish may remain.
+- **Release:** provider-gated staging and production release are pending. Local acceptance is not production approval.
 
-```text
-NEXT_PUBLIC_APP_NAME=Corporate Network
-NEXT_PUBLIC_APP_SHORT_NAME=CN
-NEXT_PUBLIC_APP_SUBTITLE=Placement Committee Workspace
-NEXT_PUBLIC_APP_TAGLINE=Connect alumni relationships to corporate opportunities.
-APP_PUBLIC_URL=https://network.teamsynapse.app
-APP_BASE_PATH=/
-```
+See [Architecture](docs/architecture.md), [Providers and safety](docs/providers.md), and [Local development](docs/local-development.md) for the detailed current-state contract.
 
-`APP_PUBLIC_URL` and `APP_BASE_PATH` are the production source of truth. The equivalent `NEXT_PUBLIC_` values are emitted during the build for browser-visible configuration. Do not place secrets in any `NEXT_PUBLIC_` variable.
+## Product areas
 
-For a future deployment at `https://teamsynapse.app/corporate_network`, build with:
+- Overview
+- Alumni Directory and Add Alumnus
+- External Discovery
+- Company Intelligence
+- Engagement and Outreach
+- Data Import
+- Enrichment
+- Intelligence
+- Administration
 
-```text
-APP_NAME=Corporate Network
-APP_SHORT_NAME=CN
-APP_PUBLIC_URL=https://teamsynapse.app/corporate_network
-APP_BASE_PATH=/corporate_network
-```
+Growth-prone stored-data lists share pagination; Overview stays compact. External Discovery is intentionally separate from internal Directory filtering.
 
-Changing `APP_BASE_PATH` requires a new deployment build because route prefixes are compiled by Next/Vinext. It does not require application business-logic changes or a D1 schema migration. External Coresignal, Lusha, and professional-profile URLs remain absolute and are intentionally not prefixed.
-
-Institutional sender identity is separate from the product brand. `MAIL_SENDER_DISPLAY_NAME` defaults to `Placement Committee, IIM Lucknow`. `MAIL_OAUTH_CALLBACK_URL` is reserved for a future official-mailbox adapter and should contain the full callback URL registered with the mail provider. The existing `app/chatgpt-auth.ts` callback is dispatch-owned ChatGPT sign-in infrastructure, not the institutional mailbox callback.
-
-## Production security and access control
-
-Corporate Network uses institutional Google Workspace OIDC as the primary authentication path and keeps dispatch-owned **Sign in with ChatGPT** as a temporary Admin/recovery path. Both providers resolve to the same provider-neutral application session. The application stores neither Google nor ChatGPT passwords. Authentication and authorization are separate: after either provider verifies an identity, every page request and sensitive API request reloads the linked `application_users` record, checks that it remains enabled, and applies its server-side role. Access is denied by default.
-
-`application_identities` stores provider links separately from roles. The first successful Google sign-in links the verified Google subject to an existing, pre-authorized user row with the same institutional email. A verified but unrecognized identity is denied and is not added automatically. The Admin screen lists linked providers beside each authorized user.
-
-The application roles are:
-
-- **ADMIN**: normal PCOM workflows plus user/role management, provider application limits, company priorities, audit history, privacy controls, and data lifecycle administration.
-- **PCOM**: alumni search, discovery, assessment, enrichment, outreach, engagement, privacy preferences, and authorized contact details. PCOM cannot manage roles or provider limits.
-- **DEVELOPER**: read-only application/provider diagnostics. Contact details are masked in the server response, and PCOM notes, relationship assessments, outreach content, provider actions, and settings are restricted.
-
-Frontend controls reflect these permissions, but they are not the security boundary. `lib/security.ts` authenticates each protected request and the route handlers enforce server-side permissions. A disabled user is rejected on the next request while historical actor names remain in audit records.
-
-The existing recovery Admin may be preserved by setting the server-only `BOOTSTRAP_ADMIN_EMAILS` allowlist to its verified ChatGPT account email. New institutional users must first be added from the Admin-only **Administration** tab and then authenticate with the exact pre-authorized `@iiml.ac.in` Google Workspace identity.
-
-Security-related server configuration:
+## Architecture at a glance
 
 ```text
-BOOTSTRAP_ADMIN_EMAILS=first.admin@example.edu
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-GOOGLE_ALLOWED_DOMAIN=iiml.ac.in
-AUTH_SESSION_SECRET=
-CORESIGNAL_LIVE_ENABLED=false
-LUSHA_LIVE_ENABLED=false
-CORESIGNAL_LIVE_SEARCH_MAX_RESULTS=20
-CORESIGNAL_LIVE_REFRESH_MAX_PROFILES=1
-MAIL_MODE=mock
-MAIL_LIVE_ENABLED=false
-CORESIGNAL_API_KEY=
-LUSHA_API_KEY=
+Corporate Network (Cloudflare D1 / SQLite)
+  ├─ canonical institutional alumni truth
+  ├─ discovery, engagement, outreach, enrichment, and administration
+  ├─ provider identity mappings and provenance
+  └─ authenticated server-to-server Intelligence integration
+       ↓
+Alumni Profile Intelligence (separate service and Postgres database)
+  └─ provider evidence → normalization/comparison → human review
+       └─ ACCEPT updates Intelligence-side canonical state only
 ```
 
-Live provider access uses independent server-side gates. `CORESIGNAL_LIVE_ENABLED=true` activates only Coresignal, while Lusha remains mock unless `LUSHA_LIVE_ENABLED=true` is separately approved. Live institutional mail similarly requires both `MAIL_MODE=live` and `MAIL_LIVE_ENABLED=true`. Browser controls cannot activate any provider or mail mode.
+Corporate Network and Alumni Profile Intelligence are separate repositories, services, and databases. There is no approved automatic Intelligence-to-CN writeback. Any future CN writeback must be separately designed, explicitly authorized, field-safe, and human-controlled.
 
-Migration `drizzle/0005_security_access_controls.sql` adds `application_users`, `security_audit_events`, `alumni_privacy_controls`, and `alumni_data_lifecycle` without altering or dropping the original 19 tables. Stage 2.5 migration `drizzle/0006_application_identities.sql` adds only `application_identities` and its indexes. Privacy preferences treat `Unknown` as unknown, not affirmative consent. A general `Do not contact` blocks birthday and professional sends in the server route. Data lifecycle changes are Admin-only; anonymization requires typing `ANONYMIZE <record-id>` and retains non-identifying audit history.
+## Identity model
 
-### Google Workspace OAuth configuration
+These identifiers are deliberately distinct:
 
-Create a Google Cloud OAuth 2.0 Web application owned by the institution, configure its consent screen for the IIM Lucknow Workspace organization, and register this exact current callback URI:
+- **CN alumnus ID:** canonical internal Corporate Network identity.
+- **Coresignal Employee ID:** namespaced provider identity.
+- **LinkedIn/professional-profile URL:** normalized external identity evidence.
+- **Intelligence source ID:** stable cross-service identity such as `cn:<CN alumnus ID>`.
+
+`attachCoresignalIdentity` enforces durable provider-ID uniqueness, exact normalized LinkedIn reconciliation, conflict and ambiguity handling, and conditional attachment. It never attaches by name alone, silently reassigns an ID, or overwrites canonical LinkedIn data merely because provider evidence differs.
+
+## Review and canonical ownership
 
 ```text
-https://network.teamsynapse.app/auth/google/callback
+provider evidence
+  → normalize and compare
+  → human review
+  → ACCEPT or REJECT
 ```
 
-Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and a randomly generated `AUTH_SESSION_SECRET` of at least 32 characters as server-only secrets. Keep `GOOGLE_ALLOWED_DOMAIN=iiml.ac.in`. Authorization Code flow uses PKCE, state, nonce, issuer/audience/signature/expiry checks, Google `email_verified`, and the Workspace `hd` claim. The OAuth callback never assigns a role; it only links to an existing approved user.
+- **REJECT:** preserves canonical state and records the decision.
+- **ACCEPT in Intelligence:** changes accepted Intelligence-side canonical state and records audit history.
+- **Corporate Network canonical record:** remains unchanged unless a separately authorized CN workflow changes it.
 
-The Google callback is derived at request time using safe URL joining:
+Provider provenance, field-change history, and security audit infrastructure are retained. An identity match does not imply profile freshness, and an unknown provider ID does not by itself prove a new alumnus.
 
-```text
-APP_PUBLIC_URL=https://network.teamsynapse.app
-APP_BASE_PATH=/
-Generated callback: https://network.teamsynapse.app/auth/google/callback
+## Database and migrations
+
+Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0012_superb_wildside.sql`.
+
+Migration 0012 adds a partial unique index so one non-empty `coresignal_employee_id` can belong to at most one CN alumnus. The empty string remains the supported unassigned value. Migration 0012 has been validated against repository-local D1 only; this README does **not** claim staging or production migration completion.
+
+Generate a migration only when an approved schema change requires one:
+
+```bash
+npm run db:generate
 ```
 
-Changing the public URL or base-path configuration changes the callback without a separate callback override. Existing identity links and application users remain valid; no database migration or re-authorization is required.
+## Implementation status
 
-### Pre-migration D1 recovery point
+| Capability | Status | Notes |
+| --- | --- | --- |
+| CN canonical workflows and product areas | Active / validated | Local functional and responsive acceptance complete. |
+| Intelligence local integration | Active / validated | Loopback authenticated service and review UI verified. |
+| Coresignal Base Employee Filter Preview and selective Collect | Implemented / provider-gated | Explicit live gate, bounded application limits, review before apply. |
+| Coresignal Employee ID persistence and Search-ID deduplication | Active domain capability | Durable identity and bulk indexed lookup. |
+| Regular Search response parser and routing planner | Implemented but dormant | Transport/runtime activation is not wired. |
+| Exact-year ES-DSL request builder | Implemented but dormant | Not used by normal runtime discovery. |
+| Coresignal Real-Time Employee API | Frozen | Previous attempt was unauthorized; later guidance said the API is unavailable. |
+| Coresignal webhooks | Future / support-dependent | No implementation or confirmed entitlement. |
+| Bright execution architecture | Implemented / provider-gated | Secondary, fallback, or corroborating evidence; not primary freshness authority. |
+| PDL | Historical support | Existing provenance remains readable; it is not the current primary strategy. |
+| Lusha Contacts and Professional Signals | Implemented / independently gated | Contact and signal workflows remain separate from professional-profile evidence. |
+| Institutional Gmail | Implemented / independently gated | Mock/off by default; live sending requires all mail safety gates. |
+| Production deployment | Pending | Requires staging, rollback, security, and release approval. |
 
-The version-11 D1 logical backup was captured on 10 September 2026 before migration generation: 19 tables, 89 rows, with no truncated values. The backup JSON SHA-256 is `08bbb74223d57fb5aacd5480a7e0df73132163d281b84d46c51f77e90c141013`; the fresh-database restore SQL SHA-256 is `839f4425ddd7de5f3b1b4ea79e47eb5534e349c1afd7cc17c91c7d60ffd81c17`. Restore into a fresh D1 database after applying migrations 0000–0004, validate table/row counts, and then switch the `DB` binding. The restore script does not delete or overwrite records. The current Sites database tooling does not expose a direct SQL-import or binding-switch operation, so an emergency hosted restore requires approved infrastructure access or Sites support.
+## Safe local start
 
-## Shared engagement workspace
-
-Professional signals and birthdays now use one D1-backed engagement-event framework. Each event records its source, status, owner, views, planned or completed actions, responses, follow-ups, skipped/incorrect reasons, and audit history. Viewing an event does not imply that action was taken, and an atomic action key prevents duplicate sends across committee members.
-
-The **Engagement** tab includes:
-
-- professional-signal and birthday queues with shared statuses
-- authenticated-user attribution for multi-user ownership and activity history
-- birthday date-window, company, and email-readiness filters
-- individual and bulk preview/approval before sending
-- communication-preference and birthday-confidence safety checks
-- approved templates with editable preview text
-- mock email delivery with delivery receipts and an interface for a future official mailbox
-- response capture, follow-up dates, ownership, reassignment, correction, skip, close, and audit timelines
-
-Mail is deliberately semi-automatic. Set `MAIL_MODE=mock` for the demonstrable flow. `MAIL_MODE=live` remains blocked until an approved institutional mailbox adapter is connected; API secrets must stay server-side.
-
-## Company-first alumni discovery
-
-The Alumni Directory supports optional filters for name, current company, role, function, seniority, location, programme, graduation year, previous company, placement relevance, data confidence, contact state, outreach state, and IIML relationship. Filters combine with AND logic. Searching the internal database does not call an external provider.
-
-The end-to-end discovery flow is:
-
-1. Search the internal Corporate Network database.
-2. Select **Discover More Alumni** to carry the active filters into Coresignal discovery.
-3. Keep **Indian Institute of Management Lucknow** as the fixed education criterion.
-4. Review results classified as New, Already in database, Possible duplicate, or Needs review.
-5. Manually approve clearly new records or compare possible matches. No external result is inserted automatically.
-6. After approval, run the controlled Lusha V3 contact preview, review availability, and separately confirm an email-only reveal. Phone and bulk reveal remain disabled for the initial live pilot.
-
-Company Intelligence reuses the same workflow through **Find More Alumni**. Coresignal comparisons never overwrite an existing profile silently. Selected updates are recorded in field-change history, while all provider calls are recorded in provider-response history.
-
-The active filters and requested result count remain visible with every external search. The UI distinguishes a successful zero-result search from a search that was blocked before a provider call, and ignored results retain a shared review reason.
-
-## Target-specific outreach routes
-
-Outreach-route recommendations are made for an explicitly selected alumnus, never for a company alone. The engine recommends direct outreach when the selected person has a usable contact route and reliable profile. A warm route is shown only when a confirmed intermediary relationship is recorded and the intermediary has credible PlaceCom engagement; the recommendation includes the evidence and rationale. If neither route is credible, the app explains what data or relationship evidence is missing.
-
-## Bulk and manual data entry
-
-The Data Import tab separates bulk CSV import from single-record entry. Manual entry validates a minimum identity, checks possible duplicates before insertion, records the source and actor, and consumes no provider usage. Coresignal profile refresh and Lusha contact enrichment remain optional actions after the internal record has been created.
-
-## Enrichment providers
-
-Each Phase 3 provider supports two independent operating modes:
-
-- `mock` is the safe default. It runs deterministic demonstration enrichments, consumes only application-level mock credits, and needs no vendor account.
-- `live` calls Coresignal and Lusha from server routes. Provider keys never reach the browser.
-
-Copy `.env.example` into your local environment configuration and set:
-
-```text
-CORESIGNAL_LIVE_ENABLED=false
-LUSHA_LIVE_ENABLED=false
-CORESIGNAL_LIVE_SEARCH_MAX_RESULTS=20
-CORESIGNAL_LIVE_REFRESH_MAX_PROFILES=1
-MAIL_MODE=mock
-CORESIGNAL_API_KEY=
-LUSHA_API_KEY=
+```bash
+npm ci
+npm run local:setup
+npm run dev:local
 ```
 
-Set `CORESIGNAL_LIVE_ENABLED=true` only after the Coresignal key is configured and the validated Base Employee contracts are approved for live use. This does not activate Lusha. Set `LUSHA_LIVE_ENABLED=true` separately only after its key and the controlled V3 preview/reveal workflow are ready. The application caps a live Coresignal search at 20 collected profiles and a live profile refresh at one profile. Application limits stored in D1 are separate from provider-account usage.
+`npm run dev:local` is the provider-free loopback path. It enables development-only local authentication and forces Coresignal, Lusha Contacts, Professional Signals, and live mail off.
 
-The Enrichment tab provides:
+An explicitly authorized, one-result Coresignal demonstration can use `npm run dev:local:coresignal-live`. That command is intentionally live-provider enabled and must not be used without approval, a server-only key, and confirmation that consuming a provider operation is acceptable.
 
-- manual and selected-batch Coresignal profile/employment refresh with confirmation
-- review-and-apply of changed professional fields; no-change and no-match results remain visible
-- Lusha V3 contact search using a professional-profile URL when available, returning a stable contact ID and availability preview without contact PII
-- a separate human confirmation before an email-only reveal; live phone and bulk reveal are disabled during the controlled pilot
-- monthly credit-limit controls and usage meters
-- sanitized provider-response history
-
-The live discovery adapter uses Coresignal Base Employee `POST /cdapi/v2/employee_base/search/filter/preview` with the canonical IIM Lucknow professional-network URL and `active_experience: true`, then retrieves full records using `GET /cdapi/v2/employee_base/collect/{employee_id}`. Deleted education and employment versions are ignored, ambiguous current roles stay human-reviewable, and professional changes are never applied without approval. The Lusha adapter remains independently gated and owns contact matching, email, phone, and Professional Signals. Provider-reported usage is recorded when available; otherwise history is marked for reconciliation rather than displayed as zero.
-
-## Local setup
-
-1. Install Node.js 22.13 or newer.
-2. Run `npm ci`.
-3. Run `npm run local:setup` to apply migrations to an isolated local D1 database and load the alumnus 15 regression fixture.
-4. Run `npm run dev:local` for credential-free loopback development at `http://localhost:3000`.
-5. Run `npm run lint`, `npm run build`, and `npm test` before release.
-6. After any schema change, run `npm run db:generate` and deploy the new migration.
-
-`dev:local` enables a development-only Admin identity on loopback hosts. The bypass cannot activate in a production build or on a non-loopback host. It also explicitly disables live Coresignal, Lusha Contact, Lusha Professional Signals, and Gmail delivery. Local mail uses the mock adapter. Do not add production credentials to local environment files.
-
-For an explicitly approved, single-result local Coresignal demonstration, place only `CORESIGNAL_API_KEY=<secret>` in the ignored `.env.local` file and run `npm run dev:local:coresignal-live`. That command is restricted to development on `127.0.0.1`, requires the explicit local-demo gate and key, and enforces a search maximum of one result and a refresh maximum of one profile. Lusha Contacts, Professional Signals, and mail remain disabled. Merely opening Directory, Enrichment, Admin, Provider History, or a confirmation dialog makes no provider request; only confirming a live search or refresh invokes Coresignal. Never commit `.env.local` or its contents.
-
-## Source layout
-
-- `app/page.tsx`: main dashboard and enrichment interface
-- `app/api/workspace/route.ts`: alumni import and shared-workspace updates
-- `app/api/enrichment/route.ts`: manual/batch enrichment, limits, usage, and history
-- `app/api/discovery/route.ts`: professional-data discovery, reconciliation, review, approval, and history
-- `app/api/outreach-route/route.ts`: target-specific direct, warm, and no-route recommendations
-- `app/api/engagements/route.ts`: engagement queues, ownership, mail workflow, responses, follow-ups, and audits
-- `lib/alumni-search.ts`: shared internal filtering and provider-query translation
-- `lib/mail-service.ts`: mock mail service and future live-mail boundary
-- `lib/coresignal-adapter.ts`: mock/live professional-data adapter and evidence mapping
-- `lib/coresignal-client.ts`: validated Coresignal search and collect HTTP contracts
-- `lib/enrichment-providers.ts`: Lusha contact adapter
-- `db/schema.ts`: D1 schema
-- `drizzle/`: database migrations
+Detailed commands, environment-variable names, macOS build guidance, and Intelligence startup are in [Local development](docs/local-development.md).
 
 ## Validation
 
-Run `node --test tests/alumni-discovery.test.mjs` for discovery and configuration, `node --test tests/workflow-acceptance.test.mjs` for workflow acceptance, `node --test tests/engagement-workflow.test.mjs` for engagement safety, and `node --test tests/security-access.test.mjs` for the role matrix, contact masking, route protection, DNC, audit, migration, secrets, and security headers. Run `npx tsc --noEmit`, `npm run lint`, and `npm test` before release.
+Typical repository checks are:
 
-## Starter runtime notes
-
-A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
-
-## Prerequisites
-
-- Node.js `>=22.13.0`
-- Linux with `flock`, `curl`, and GNU `timeout`
-
-## Sites Lifecycle
-
-The Sites lifecycle CLI runs the locked dependency install before returning this checkout. Edit the source under `app/`, then checkpoint when a coherent milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit. Do not repeat install or build as a normal pre-checkpoint step.
-
-This starter does not use `wrangler.jsonc`.
-
-`install:ci` is intentionally a single, non-retrying `npm ci`. It refuses a concurrent install for the same project, consumes a matching image-seeded npm cache with `--prefer-offline` while retaining registry fallback for a missing cache object, otherwise downloads and verifies the complete vinext tarball recorded in `package-lock.json`, limits npm to one socket, and terminates a stalled install. `build` applies a short timeout. These helpers target Linux and use GNU `timeout`; they are not native macOS scripts.
-
-Scripts that need writable project-scoped home, npm, XDG, and temporary paths use `scripts/sites-env.sh`. The `dev` and `start` scripts honor the caller's runtime environment and keep Wrangler logs inside the checkout. The generated `.sites-runtime/` directory is disposable and ignored by Git.
-
-## Included Shape
-
-- edit site code under `app/`
-- `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from `oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive `oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty `name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by `oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+node --test tests/*.test.mjs
+npm run lint
+npx tsc --noEmit
+bash scripts/sites-env.sh -- ./node_modules/.bin/vinext build
+git diff --check
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+`npm test` also runs the repository build wrapper before the Node suite. The wrapper expects GNU `timeout`; on macOS, the direct environment-loader plus `vinext build` command above is the validated equivalent.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs optional or required ChatGPT sign-in:
+## Known non-blocking limitations
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send anonymous visitors through Sign in with ChatGPT.
-- In a Server Component, start sign-in with `<a href={chatGPTSignInPath(returnTo)} target="_top">`. The auth helper module is server-only; do not import it into a Client Component.
-- Do not use `fetch`, XHR, a client-side router, or a framework link that can prefetch the sign-in route. SIWC must start as a top-level navigation.
-- Never request the AuthAPI authorization endpoint directly. The dispatch-owned `/signin-with-chatgpt` route must start the SIWC flow.
-- Use `chatGPTSignOutPath(returnTo)` for browser sign-out links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because they depend on per-request identity headers.
+- A selected Intelligence detail may require reselect/reload immediately after a decision to display the persisted state.
+- During an Intelligence outage, the unavailable notice can coexist with empty-list copy.
+- Mobile navigation affordance could be stronger.
+- Enrichment remains information-dense.
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the OAuth cookies, and identity header injection. Do not implement app routes for those reserved paths. Routes that do not import and call the helper remain anonymous-compatible.
+These are P2 polish items, not local P0/P1 blockers.
 
-SIWC establishes identity only; it does not prove workspace membership. Use the Sites hosting platform's access policy controls for workspace-wide restrictions, or enforce explicit server-side membership or allowlist checks.
+## Release preparation remaining
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write actions tied to the current ChatGPT user. Leave public content anonymous.
+Provider work still requires account and entitlement confirmation, server-side credentials, commercial/credit confirmation, explicit live-gate approval, and controlled live acceptance. Release work still requires isolated staging configuration, secret setup, migration and rollback validation, provider-gated staging acceptance, security/release-readiness approval, and production release authorization.
 
-## Diagnostic Commands
+## Documentation maintenance
 
-- `npm run install:ci`: perform the one bounded lockfile install
-- `npm run dev`: start the Vite/Vinext development server
-- `npm run build`: build the deployable Sites artifact
-- `npm run start`: start the built Vinext application
-- `npm test`: build and verify the rendered development-preview metadata
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-Use build commands for targeted diagnosis after a remote failure, not as part of the normal checkpoint path.
-
-The timeout defaults can be overridden for a controlled canary with `SITES_INSTALL_TIMEOUT`, `SITES_INSTALL_KILL_AFTER`, `SITES_BUILD_TIMEOUT`, and `SITES_BUILD_KILL_AFTER`. A timeout fails the command; the helpers never retry an unchanged install or build.
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+Any milestone that changes architecture, schema semantics, provider behavior or status, setup/environment, operational or user-facing workflows, or release status must update the relevant README/docs in the same milestone. If no documentation change is needed, the milestone report must say why.
