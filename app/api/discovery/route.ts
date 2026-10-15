@@ -290,9 +290,9 @@ export async function POST(request: Request) {
       if (payload.action === "regular_search_preflight") {
         return Response.json({ allowed: true, providerCallMade: false, applicationUnits: 0, filters, preparation: preparationSummary })
       }
-      if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before Coresignal Search.", blocked: true, reason: "confirmation_required" }, { status: 400 })
-      if (!coresignalRegularSearchEnabled()) return Response.json({ error: "Coresignal regular Search is disabled.", blocked: true, reason: "search_gate_disabled" }, { status: 403 })
-      if (!providerConfigured("coresignal")) return Response.json({ error: "Coresignal authentication is not configured.", blocked: true, reason: "provider_not_configured" }, { status: 409 })
+      if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before Coresignal Search.", blocked: true, reason: "confirmation_required", providerCallMade: false, applicationUnits: 0 }, { status: 400 })
+      if (!coresignalRegularSearchEnabled()) return Response.json({ error: "Coresignal regular Search is disabled.", blocked: true, reason: "search_gate_disabled", providerCallMade: false, applicationUnits: 0 }, { status: 403 })
+      if (!providerConfigured("coresignal")) return Response.json({ error: "Coresignal authentication is not configured.", blocked: true, reason: "provider_not_configured", providerCallMade: false, applicationUnits: 0 }, { status: 409 })
       const remaining = await remainingApplicationUnits()
       if (remaining < 1) return Response.json({ error: "Coresignal Search was not run because the application operation limit has been reached.", blocked: true, reason: "application_limit" }, { status: 429 })
       const validation = validateDiscoveryCount(payload.limit, remaining, coresignalLiveSearchMaximum(), 0)

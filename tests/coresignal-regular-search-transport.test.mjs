@@ -183,6 +183,19 @@ test("verified Lincoln plus 2011 uses same-row education and experience predicat
   ])
 })
 
+test("provider-free company preflight remains available while live Search is gated off", async () => {
+  process.env.CORESIGNAL_LIVE_ENABLED = "false"
+  process.env.CORESIGNAL_SEARCH_ENABLED = "false"
+  assert.equal(providerRuntime.coresignalRegularSearchEnabled(), false)
+  const prepared = await runtime.prepareCoresignalRegularSearch({
+    filters: { ...filters(), company: "Lincoln International", graduationYear: "2011" },
+    itemsPerPage: 1,
+  }, { companyMappingStore: providerCompanyStore() })
+  assert.equal(prepared.companyMapping.state, "VERIFIED")
+  assert.equal(prepared.contract.searchMode, "CURRENT_COMPANY_EXACT_GRADUATION_YEAR")
+  assert.equal(prepared.contract.body.query.bool.filter.filter(clause => clause.nested).length, 2)
+})
+
 test("missing, unverified, conflicting, and invalid company mappings stop before transport", async () => {
   const cases = [
     { store: { async findByCompany() { return [] } }, message: /No Coresignal mapping exists/ },
@@ -241,6 +254,9 @@ test("disabled gate and missing confirmation stop before transport", async () =>
   assert.equal(calls, 0)
   await assert.rejects(runtime.executeCoresignalRegularSearch({ filters: filters(), itemsPerPage: 1, operationContext: "unconfirmed", confirmed: false }, { ...dependencies, searchEnabled: () => true }), /confirmation/)
   assert.equal(calls, 0)
+  const route = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
+  assert.match(route, /reason: "search_gate_disabled", providerCallMade: false, applicationUnits: 0/)
+  assert.match(route, /reason: "confirmation_required", providerCallMade: false, applicationUnits: 0/)
 })
 
 test("runtime never follows continuation metadata or performs automatic pagination", async () => {
@@ -297,6 +313,12 @@ test("runtime and UI integration preserve canonical immutability and explicit op
   assert.match(page, /regularSearchPreparation\?\.seniority/)
   assert.match(page, /Page size \/ result bound/)
   assert.match(page, /No downstream provider action is automatic/)
+  assert.match(page, /provider-free preparation available/)
+  assert.match(page, /Coresignal — preflight only; LIVE gate disabled/)
+  assert.match(page, /Live Search Unavailable — Gate Off/)
+  assert.match(page, /Prepare and inspect the Search contract without calling Coresignal/)
+  assert.doesNotMatch(page, /disabled=\{discovering \|\| !regularSearchStatus\.enabled \|\| !regularSearchStatus\.configured \|\| Boolean\(discoveryFilters/)
+  assert.match(page, /disabled=\{discovering \|\| !pendingRegularSearchFilters \|\| !regularSearchStatus\.enabled \|\| !regularSearchStatus\.configured/)
   assert.match(page, /graduationYear: searchFilters\.graduationYear \|\| undefined/)
   assert.match(page, /<span>Automatic Collect<\/span>/)
   assert.match(page, /automaticCollect \? "On" : "Off"/)
