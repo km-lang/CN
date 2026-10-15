@@ -43,6 +43,10 @@ function mappingStore(rows = []) {
   return { async findMappings(ids) { return structuredClone(rows.filter(row => ids.includes(row.employeeId))) } }
 }
 
+function providerCompanyStore(status = "VERIFIED", providerCompanyId = "8469989") {
+  return { async findByCompany(provider, normalizedCompanyKey) { return [{ id: 1, normalizedCompanyKey, displayName: "Lincoln International", provider, providerCompanyId, status, mappingSource: "controlled live evidence", evidenceReference: "IIML 2011 + Lincoln diagnostic", providerSourceId: "22432", providerCompanyUrl: "https://www.linkedin.com/company/lincoln-international", verifiedBy: "Admin", verifiedAt: "2026-10-15T00:00:00.000Z", createdAt: "2026-10-15T00:00:00.000Z", updatedAt: "2026-10-15T00:00:00.000Z" }] } }
+}
+
 function response(body, headers = {}) {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json", "x-total-results": "3", "x-total-pages": "1", ...headers } })
 }
@@ -153,6 +157,51 @@ test("exact-year runtime includes the year predicate in the mocked Search reques
   assert.doesNotMatch(JSON.stringify(requestBody), /education\.institution_url/)
 })
 
+test("verified Lincoln plus 2011 uses same-row education and experience predicates", async () => {
+  let requestBody
+  const companyFilters = { ...filters(), company: " Lincoln   International ", graduationYear: "2011" }
+  const result = await runtime.executeCoresignalRegularSearch({ filters: companyFilters, itemsPerPage: 5, operationContext: "company-year test", confirmed: true }, {
+    searchEnabled: () => true,
+    transport: async body => {
+      requestBody = body
+      return { body: [], headers: { "x-total-results": "1", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: null }
+    },
+    store: mappingStore(),
+    companyMappingStore: providerCompanyStore(),
+  })
+  assert.equal(result.searchMode, "CURRENT_COMPANY_EXACT_GRADUATION_YEAR")
+  assert.equal(result.companyMapping.state, "VERIFIED")
+  const nested = requestBody.query.bool.filter.filter(clause => clause.nested).map(clause => clause.nested)
+  assert.deepEqual(nested.find(clause => clause.path === "education").query.bool.filter, [
+    { term: { "education.institution_id": 25919228 } },
+    { term: { "education.date_to_year": 2011 } },
+  ])
+  assert.deepEqual(nested.find(clause => clause.path === "experience").query.bool.filter, [
+    { term: { "experience.company_id": 8469989 } },
+    { term: { "experience.is_current": 1 } },
+    { term: { "experience.deleted": 0 } },
+  ])
+})
+
+test("missing, unverified, conflicting, and invalid company mappings stop before transport", async () => {
+  const cases = [
+    { store: { async findByCompany() { return [] } }, message: /No Coresignal mapping exists/ },
+    { store: providerCompanyStore("UNVERIFIED"), message: /has not been verified/ },
+    { store: providerCompanyStore("CONFLICT"), message: /conflicting/ },
+    { store: providerCompanyStore("VERIFIED", "not-an-id"), message: /invalid Coresignal company ID/ },
+  ]
+  for (const item of cases) {
+    let transportCalls = 0
+    await assert.rejects(runtime.executeCoresignalRegularSearch({ filters: { ...filters(), company: "Lincoln International" }, itemsPerPage: 5, operationContext: "blocked mapping", confirmed: true }, {
+      searchEnabled: () => true,
+      transport: async () => { transportCalls += 1; throw new Error("must not run") },
+      store: mappingStore(),
+      companyMappingStore: item.store,
+    }), item.message)
+    assert.equal(transportCalls, 0)
+  }
+})
+
 test("an observed-shape empty 200 response is valid and has no follow-on action", async () => {
   const result = await runtime.executeCoresignalRegularSearch({ filters: filters(), itemsPerPage: 1, operationContext: "empty test", confirmed: true }, {
     searchEnabled: () => true,
@@ -240,24 +289,24 @@ test("runtime and UI integration preserve canonical immutability and explicit op
   assert.match(route, /invalid_graduation_year/)
   assert.doesNotMatch(route, /exact_year_required/)
   assert.match(page, /Confirm One Search Request/)
-  assert.match(page, /All years — not constrained/)
-  assert.match(page, /<span>Search mode<\/span><strong>\{pendingRegularSearchFilters\?\.graduationYear \? "Exact graduation year" : "Institution only"\}<\/strong>/)
-  assert.match(page, /<span>Company<\/span><strong>Not constrained<\/strong>/)
+  assert.match(page, /regularSearchPreparation\?\.graduationYear/)
+  assert.match(page, /regularSearchPreparation\?\.searchMode/)
+  assert.match(page, /regularSearchPreparation\?\.company/)
+  assert.match(page, /<span>Company mapping<\/span>/)
   assert.match(page, /<span>Programme<\/span><strong>Not constrained<\/strong>/)
-  assert.match(page, /<span>Seniority<\/span><strong>Not constrained by provider Search<\/strong>/)
-  assert.match(page, /IIM Lucknow institution only/)
-  assert.match(page, /IIM Lucknow \+ exact education end year/)
-  assert.match(page, /<span>Page size<\/span><strong>\{discoveryLimit\}<\/strong>/)
+  assert.match(page, /regularSearchPreparation\?\.seniority/)
+  assert.match(page, /Page size \/ result bound/)
   assert.match(page, /No downstream provider action is automatic/)
   assert.match(page, /graduationYear: searchFilters\.graduationYear \|\| undefined/)
-  assert.match(page, /Filter Preview requests[\s\S]*>0</)
-  assert.match(page, /Collect requests[\s\S]*>0</)
+  assert.match(page, /<span>Automatic Collect<\/span>/)
+  assert.match(page, /automaticCollect \? "On" : "Off"/)
+  assert.match(page, /No downstream provider action is automatic/)
   assert.doesNotMatch(page, /CORESIGNAL_API_KEY|apikey/)
 })
 
 test("Cancel closes the Search confirmation without transport or accounting work", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
-  const cancel = page.match(/<Button variant="outline" onClick=\{\(\) => setPendingRegularSearchFilters\(null\)\}>Cancel — No Provider Call<\/Button>/)?.[0] ?? ""
+  const cancel = page.match(/<Button variant="outline" onClick=\{\(\) => \{ setPendingRegularSearchFilters\(null\); setRegularSearchPreparation\(null\) \}\}>Cancel — No Provider Call<\/Button>/)?.[0] ?? ""
   assert.match(cancel, /setPendingRegularSearchFilters\(null\)/)
   assert.doesNotMatch(cancel, /runRegularSearch|fetch\(|providerResponseHistory|applicationUnits/)
 })

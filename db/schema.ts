@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const alumni = sqliteTable("alumni", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -80,6 +80,30 @@ export const companyPriorities = sqliteTable("company_priorities", {
   updatedBy: text("updated_by").notNull().default("System"),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const providerCompanyMappings = sqliteTable("provider_company_mappings", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  normalizedCompanyKey: text("normalized_company_key").notNull(),
+  displayName: text("display_name").notNull(),
+  provider: text("provider").notNull(),
+  providerCompanyId: text("provider_company_id").notNull().default(""),
+  status: text("status").notNull().default("UNVERIFIED"),
+  mappingSource: text("mapping_source").notNull().default(""),
+  evidenceReference: text("evidence_reference").notNull().default(""),
+  providerSourceId: text("provider_source_id").notNull().default(""),
+  providerCompanyUrl: text("provider_company_url").notNull().default(""),
+  verifiedBy: text("verified_by").notNull().default(""),
+  verifiedAt: text("verified_at").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_provider_company_mapping_company_provider").on(table.normalizedCompanyKey, table.provider),
+  uniqueIndex("idx_provider_company_mapping_provider_id").on(table.provider, table.providerCompanyId).where(sql`${table.providerCompanyId} != ''`),
+  index("idx_provider_company_mapping_status").on(table.provider, table.status),
+  check("provider_company_mapping_status_check", sql`${table.status} in ('VERIFIED', 'UNVERIFIED', 'CONFLICT')`),
+  check("provider_company_mapping_identity_check", sql`length(trim(${table.normalizedCompanyKey})) > 0 and length(trim(${table.displayName})) > 0 and length(trim(${table.provider})) > 0`),
+  check("provider_company_mapping_verified_check", sql`${table.status} != 'VERIFIED' or (length(trim(${table.providerCompanyId})) > 0 and length(trim(${table.verifiedBy})) > 0 and length(trim(${table.verifiedAt})) > 0)`),
+]);
 
 export const programmeOptions = sqliteTable("programme_options", {
   id: integer("id").primaryKey({ autoIncrement: true }),

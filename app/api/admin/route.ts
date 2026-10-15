@@ -22,6 +22,7 @@ import {
   fieldChangeHistory,
   importRuns,
   providerRefreshReviews,
+  providerCompanyMappings,
   providerResponseHistory,
   providerSettings,
   programmeOptions,
@@ -36,6 +37,7 @@ import { accessErrorResponse, authorizeRequest, isApplicationRole, writeSecurity
 import { safeAuditMetadata } from "@/lib/security-policy"
 import { normaliseProgrammeCode } from "@/lib/programme-options"
 import { googleAllowedDomain } from "@/lib/auth-config"
+import { validateProviderCompanyMappingInput } from "@/lib/provider-company-mapping"
 
 function clean(value: unknown, max = 500) {
   return String(value ?? "").trim().slice(0, max)
@@ -125,7 +127,7 @@ export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_USERS")
     const db = getDb()
-    const [users, identities, audit, lifecycle, providerLimits, mailValidationRows, programmes] = await Promise.all([
+    const [users, identities, audit, lifecycle, providerLimits, mailValidationRows, programmes, companyMappings] = await Promise.all([
       db.select().from(applicationUsers).orderBy(applicationUsers.displayName),
       db.select({ id: applicationIdentities.id, applicationUserId: applicationIdentities.applicationUserId, provider: applicationIdentities.provider, verifiedEmail: applicationIdentities.verifiedEmail, providerDomain: applicationIdentities.providerDomain, lastAuthenticatedAt: applicationIdentities.lastAuthenticatedAt }).from(applicationIdentities).orderBy(applicationIdentities.provider),
       db.select().from(securityAuditEvents).orderBy(desc(securityAuditEvents.createdAt), desc(securityAuditEvents.id)).limit(200),
@@ -133,6 +135,7 @@ export async function GET(request: Request) {
       db.select().from(providerSettings).orderBy(providerSettings.provider),
       db.select().from(securityAuditEvents).where(eq(securityAuditEvents.action, "gmail_connectivity_validated")).orderBy(desc(securityAuditEvents.createdAt), desc(securityAuditEvents.id)).limit(1),
       db.select().from(programmeOptions).orderBy(programmeOptions.sortOrder, programmeOptions.name),
+      db.select().from(providerCompanyMappings).orderBy(providerCompanyMappings.displayName, providerCompanyMappings.provider),
     ])
     return Response.json({
       users: users.map(user => ({ ...user, identities: identities.filter(identity => identity.applicationUserId === user.id) })),
@@ -140,6 +143,7 @@ export async function GET(request: Request) {
       lifecycle,
       providerLimits,
       programmeOptions: programmes,
+      providerCompanyMappings: companyMappings,
       operationalReadiness: {
         coresignal: {
           mode: providerMode("coresignal"),
@@ -162,9 +166,64 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_USERS")
-    const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean; programmeId?: number; code?: string; name?: string; active?: boolean }
+    const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean; programmeId?: number; code?: string; name?: string; active?: boolean; mappingId?: number; provider?: string; providerCompanyId?: string; mappingSource?: string; evidenceReference?: string; providerSourceId?: string; providerCompanyUrl?: string }
     const db = getDb()
     const now = new Date().toISOString()
+
+    if (payload.action === "upsert_provider_company_mapping") {
+      await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
+      const values = validateProviderCompanyMappingInput(payload, context.displayName, now)
+      const [existing] = Number.isInteger(payload.mappingId)
+        ? await db.select().from(providerCompanyMappings).where(eq(providerCompanyMappings.id, payload.mappingId!)).limit(1)
+        : await db.select().from(providerCompanyMappings).where(and(
+            eq(providerCompanyMappings.normalizedCompanyKey, values.normalizedCompanyKey),
+            eq(providerCompanyMappings.provider, values.provider),
+          )).limit(1)
+      const before = existing ? {
+        status: existing.status,
+        providerCompanyId: existing.providerCompanyId,
+        mappingSource: existing.mappingSource,
+        evidenceReference: existing.evidenceReference,
+        verifiedBy: existing.verifiedBy,
+        verifiedAt: existing.verifiedAt,
+      } : null
+      const after = {
+        status: values.status,
+        providerCompanyId: values.providerCompanyId,
+        mappingSource: values.mappingSource,
+        evidenceReference: values.evidenceReference,
+        verifiedBy: values.verifiedBy,
+        verifiedAt: values.verifiedAt,
+      }
+      const changes = [
+        !existing ? "created" : "updated",
+        existing && existing.status !== values.status ? "status_changed" : "",
+        existing && existing.providerCompanyId !== values.providerCompanyId ? "provider_id_changed" : "",
+        existing && (existing.mappingSource !== values.mappingSource || existing.evidenceReference !== values.evidenceReference) ? "evidence_changed" : "",
+        values.status === "VERIFIED" && existing?.status !== "VERIFIED" ? "verification_performed" : "",
+        values.status === "CONFLICT" && existing?.status !== "CONFLICT" ? "conflict_set" : "",
+        values.status === "UNVERIFIED" && existing?.status === "VERIFIED" ? "mapping_invalidated" : "",
+      ].filter(Boolean)
+      const mappingMutation = existing
+        ? db.update(providerCompanyMappings).set(values).where(eq(providerCompanyMappings.id, existing.id)).returning()
+        : db.insert(providerCompanyMappings).values({ ...values, createdAt: now }).returning()
+      const auditMutation = db.insert(securityAuditEvents).values({
+        actorUserId: context.userId,
+        actorIdentity: context.externalIdentity,
+        actorName: context.displayName,
+        actorRole: context.role,
+        action: "provider_company_mapping_changed",
+        entityType: "provider_company_mapping",
+        entityId: `${values.provider}:${values.normalizedCompanyKey}`,
+        metadataJson: safeAuditMetadata({ changes, normalizedCompanyKey: values.normalizedCompanyKey, displayName: values.displayName, provider: values.provider, before, after }),
+        result: "success",
+        source: "application",
+        createdAt: now,
+      })
+      const [mappingRows] = await db.batch([mappingMutation, auditMutation])
+      const mapping = mappingRows[0]
+      return Response.json({ mapping }, { status: existing ? 200 : 201 })
+    }
 
     if (payload.action === "validate_signals_entitlement") {
       const result = await validateLushaSignalsEntitlement()
@@ -462,6 +521,9 @@ export async function POST(request: Request) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
     if (error instanceof InvalidEmailError) return Response.json({ error: error.message }, { status: 400 })
+    if (error instanceof Error && /UNIQUE constraint failed: provider_company_mappings/i.test(error.message)) {
+      return Response.json({ error: "That company/provider identity is already mapped. Resolve the existing mapping instead of creating a duplicate." }, { status: 409 })
+    }
     return Response.json({ error: error instanceof Error ? error.message : "Unable to complete the administration action." }, { status: 500 })
   }
 }

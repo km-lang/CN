@@ -19,8 +19,9 @@ import { reconcileDiscoveryCandidate, reconcileDiscoveryCandidates, selectiveCol
 import { qualifyCollectedCandidate, qualifyPreviewCandidate, type DiscoveryExecutionCandidate } from "@/lib/discovery-execution"
 import { attachCoresignalIdentity } from "@/lib/coresignal-identity"
 import { coresignalIdentityStore } from "@/lib/coresignal-identity-store"
-import { executeCoresignalRegularSearch, CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS } from "@/lib/coresignal-regular-search"
+import { executeCoresignalRegularSearch, prepareCoresignalRegularSearch, CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS } from "@/lib/coresignal-regular-search"
 import { coresignalSearchIdLookupStore } from "@/lib/coresignal-search-id-store"
+import { providerCompanyMappingStore } from "@/lib/provider-company-mapping-store"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -252,7 +253,7 @@ export async function POST(request: Request) {
       return Response.json({ provider: PROFESSIONAL_DATA_PROVIDER, mode: coresignalProvider.mode(), coverage, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, providerCallMade: false, applicationUnits: 0 })
     }
 
-    if (payload.action === "regular_search") {
+    if (payload.action === "regular_search_preflight" || payload.action === "regular_search") {
       const rawGraduationYear = payload.filters && Object.prototype.hasOwnProperty.call(payload.filters, "graduationYear")
         ? payload.filters.graduationYear
         : undefined
@@ -260,6 +261,35 @@ export async function POST(request: Request) {
         return Response.json({ error: "When supplied, graduation year must be an exact four-digit year.", blocked: true, reason: "invalid_graduation_year" }, { status: 400 })
       }
       const filters = normalizedDiscoveryFilters(payload.filters)
+      const staticValidation = validateDiscoveryCount(payload.limit, Number.MAX_SAFE_INTEGER, coresignalLiveSearchMaximum(), 0)
+      if (!staticValidation.ok) return Response.json({ error: staticValidation.message, blocked: true, reason: staticValidation.reason, maximumAllowed: staticValidation.maximumAllowed }, { status: 400 })
+      let preparation
+      try {
+        preparation = await prepareCoresignalRegularSearch(
+          { filters, itemsPerPage: staticValidation.requested },
+          { companyMappingStore: providerCompanyMappingStore(db) },
+        )
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? error.message : "Company Search is blocked.", blocked: true, reason: "company_mapping_blocked", providerCallMade: false, applicationUnits: 0 }, { status: 409 })
+      }
+      const preparationSummary = {
+        provider: PROFESSIONAL_DATA_PROVIDER_LABEL,
+        operation: "Base Employee ES-DSL Search",
+        institution: FIXED_ALUMNI_SCHOOL,
+        company: preparation.companyMappingRequired ? preparation.companyMapping.displayName : "Not constrained",
+        companyMapping: preparation.companyMappingRequired ? "Verified" : "Not required",
+        graduationYear: filters.graduationYear || "All years",
+        seniority: "Not constrained by provider Search; applied locally later",
+        pageSize: staticValidation.requested,
+        maximumSearchRequests: 1,
+        automaticPagination: false,
+        automaticCollect: false,
+        automaticCanonicalUpdate: false,
+        searchMode: preparation.contract.searchMode,
+      }
+      if (payload.action === "regular_search_preflight") {
+        return Response.json({ allowed: true, providerCallMade: false, applicationUnits: 0, filters, preparation: preparationSummary })
+      }
       if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before Coresignal Search.", blocked: true, reason: "confirmation_required" }, { status: 400 })
       if (!coresignalRegularSearchEnabled()) return Response.json({ error: "Coresignal regular Search is disabled.", blocked: true, reason: "search_gate_disabled" }, { status: 403 })
       if (!providerConfigured("coresignal")) return Response.json({ error: "Coresignal authentication is not configured.", blocked: true, reason: "provider_not_configured" }, { status: 409 })
@@ -267,13 +297,11 @@ export async function POST(request: Request) {
       if (remaining < 1) return Response.json({ error: "Coresignal Search was not run because the application operation limit has been reached.", blocked: true, reason: "application_limit" }, { status: 429 })
       const validation = validateDiscoveryCount(payload.limit, remaining, coresignalLiveSearchMaximum(), 0)
       if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, maximumAllowed: validation.maximumAllowed }, { status: 400 })
-      const queryMode = filters.graduationYear ? "exact-year" : "institution-only"
-      const operationContext = filters.graduationYear
-        ? `External Discovery · IIM Lucknow · exact graduation year ${filters.graduationYear}`
-        : "External Discovery · IIM Lucknow · institution only"
-      const requestSummary = `${operationContext} · institution_match=provider_institution_id · provider_institution_id=${CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
+      const queryMode = preparation.contract.searchMode.toLowerCase().replaceAll("_", "-")
+      const operationContext = `External Discovery · IIM Lucknow${filters.graduationYear ? ` · exact graduation year ${filters.graduationYear}` : " · all years"}${preparation.companyMappingRequired ? ` · current company ${preparation.companyMapping.displayName}` : ""}`
+      const requestSummary = `${operationContext} · institution_match=provider_institution_id · provider_institution_id=${CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID} · company_mapping=${preparation.companyMappingRequired ? "verified" : "not_required"} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
       try {
-        const execution = await executeCoresignalRegularSearch({ filters, itemsPerPage: validation.requested, operationContext, confirmed: true }, { store: coresignalSearchIdLookupStore(db) })
+        const execution = await executeCoresignalRegularSearch({ filters, itemsPerPage: validation.requested, operationContext, confirmed: true }, { store: coresignalSearchIdLookupStore(db), companyMappingStore: providerCompanyMappingStore(db) })
         const remainingSummary = execution.providerCreditsRemaining === null ? "Provider remaining credits were not reported." : `Provider reported ${execution.providerCreditsRemaining} credits remaining.`
         await db.insert(providerResponseHistory).values({
           provider: PROFESSIONAL_DATA_PROVIDER,
@@ -290,7 +318,7 @@ export async function POST(request: Request) {
           responseSummary: `One Search request succeeded. ${execution.routing.providerSearch.pageIdsReceived} IDs returned on this page; ${execution.routing.providerSearch.totalResults} total results reported. ${remainingSummary} No Preview or Collect request was made.`,
           requestedBy: actor,
         })
-        return Response.json({ ...execution, filters, queryMode, itemsPerPage: validation.requested, providerCallMade: true, applicationUnits: 1 })
+        return Response.json({ ...execution, filters, queryMode, itemsPerPage: validation.requested, preparation: preparationSummary, providerCallMade: true, applicationUnits: 1 })
       } catch (error) {
         const failure = safeCoresignalError(error)
         await db.insert(providerResponseHistory).values({

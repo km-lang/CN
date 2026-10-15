@@ -54,7 +54,7 @@ REJECT records the decision without canonical mutation. ACCEPT may update only t
 
 ## Corporate Network database
 
-D1 migrations are additive and currently run through `0012_superb_wildside.sql`. Migration 0012 adds:
+D1 migrations are additive and currently run through `0013_cultured_james_howlett.sql`. Migration 0012 adds:
 
 ```sql
 CREATE UNIQUE INDEX idx_alumni_coresignal_employee_id_unique
@@ -63,6 +63,10 @@ WHERE coresignal_employee_id != '';
 ```
 
 This guarantees uniqueness only for assigned Coresignal Employee IDs while preserving the empty-string unassigned representation. It has been validated on repository-local D1, not claimed as applied to staging or production.
+
+Migration 0013 adds `provider_company_mappings` without altering existing alumni data. One conservative normalized company key can have at most one mapping per provider, and one non-empty provider company ID cannot silently map to multiple company identities for that provider. Persisted states are `VERIFIED`, `UNVERIFIED`, and `CONFLICT`; no row means `MISSING`. Verified rows require provider identity plus server-recorded verifier and verification timestamp. Mapping mutations are Admin-only and use the central security audit for before/after history.
+
+Company-constrained Coresignal Search accepts a human-readable company name only. The server normalizes and resolves it, validates the Coresignal ID as a positive safe integer, and fails closed before transport for every state except `VERIFIED`. A verified mapping adds one same-row current/non-deleted experience clause to the established same-row IIML/year education clause. Seniority remains local, Search is one bounded request with no automatic pagination or Collect, and no canonical field is changed.
 
 ## Provider identity
 

@@ -2,9 +2,11 @@ import type { DiscoveryFilters } from "@/lib/alumni-search"
 import {
   CoresignalProviderError,
   coresignalEmployeeEsDslSearchContract,
+  coresignalVerifiedCompanyEsDslSearchContract,
   searchCoresignalEmployeeIds,
   type CoresignalRegularSearchTransportResult,
 } from "@/lib/coresignal-client"
+import { resolveProviderCompanyMapping, type ProviderCompanyMappingStore, type ProviderCompanyResolution } from "@/lib/provider-company-mapping"
 import type { CoresignalSearchIdLookupStore } from "@/lib/coresignal-search-id-dedupe"
 import { planCoresignalRegularSearchRouting } from "@/lib/coresignal-search-routing"
 import { coresignalRegularSearchEnabled } from "@/lib/provider-runtime"
@@ -18,7 +20,8 @@ export type CoresignalRegularSearchExecution = {
   previewRequests: 0
   collectRequests: 0
   automaticPagination: false
-  searchMode: "INSTITUTION_ONLY" | "EXACT_GRADUATION_YEAR"
+  searchMode: "INSTITUTION_ONLY" | "EXACT_GRADUATION_YEAR" | "CURRENT_COMPANY" | "CURRENT_COMPANY_EXACT_GRADUATION_YEAR"
+  companyMapping: Pick<ProviderCompanyResolution, "state" | "displayName" | "normalizedCompanyKey">
   providerCreditsRemaining: number | null
   routing: Awaited<ReturnType<typeof planCoresignalRegularSearchRouting>>
 }
@@ -27,6 +30,45 @@ type Transport = (
   esDslBody: unknown,
   options: { itemsPerPage: number; operationContext: string; signal?: AbortSignal },
 ) => Promise<CoresignalRegularSearchTransportResult>
+
+export async function prepareCoresignalRegularSearch(
+  input: { filters: DiscoveryFilters; itemsPerPage: number },
+  dependencies: { companyMappingStore?: ProviderCompanyMappingStore },
+) {
+  const companyName = input.filters.company.trim()
+  if (!companyName) {
+    const contract = coresignalEmployeeEsDslSearchContract({
+      graduationYear: input.filters.graduationYear || undefined,
+      itemsPerPage: input.itemsPerPage,
+    })
+    return {
+      contract,
+      companyMapping: { state: "MISSING" as const, displayName: "", normalizedCompanyKey: "" },
+      companyMappingRequired: false,
+    }
+  }
+  if (!dependencies.companyMappingStore) {
+    throw new CoresignalProviderError("Company Search is blocked because provider-company mapping resolution is unavailable.", "invalid_request", 409)
+  }
+  const companyMapping = await resolveProviderCompanyMapping(companyName, "Coresignal", dependencies.companyMappingStore)
+  if (companyMapping.state !== "VERIFIED" || companyMapping.providerCompanyId === null) {
+    throw new CoresignalProviderError(`Company Search blocked: ${companyMapping.reason}`, "invalid_request", 409)
+  }
+  const contract = coresignalVerifiedCompanyEsDslSearchContract({
+    companyId: companyMapping.providerCompanyId,
+    graduationYear: input.filters.graduationYear || undefined,
+    itemsPerPage: input.itemsPerPage,
+  })
+  return {
+    contract,
+    companyMapping: {
+      state: companyMapping.state,
+      displayName: companyMapping.displayName,
+      normalizedCompanyKey: companyMapping.normalizedCompanyKey,
+    },
+    companyMappingRequired: true,
+  }
+}
 
 export async function executeCoresignalRegularSearch(
   input: {
@@ -38,19 +80,21 @@ export async function executeCoresignalRegularSearch(
   },
   dependencies: {
     store: CoresignalSearchIdLookupStore
+    companyMappingStore?: ProviderCompanyMappingStore
     transport?: Transport
     searchEnabled?: () => boolean
   },
 ): Promise<CoresignalRegularSearchExecution> {
   if (!input.confirmed) throw new CoresignalProviderError("Explicit confirmation is required before Coresignal Search.", "invalid_request", 400)
+  const prepared = await prepareCoresignalRegularSearch(
+    { filters: input.filters, itemsPerPage: input.itemsPerPage },
+    { companyMappingStore: dependencies.companyMappingStore },
+  )
   if (!(dependencies.searchEnabled ?? coresignalRegularSearchEnabled)()) {
     throw new CoresignalProviderError("Coresignal regular Search is disabled.", "invalid_request", 403)
   }
   const transport = dependencies.transport ?? searchCoresignalEmployeeIds
-  const contract = coresignalEmployeeEsDslSearchContract({
-    graduationYear: input.filters.graduationYear || undefined,
-    itemsPerPage: input.itemsPerPage,
-  })
+  const contract = prepared.contract
   const response = await transport(contract.body, {
     itemsPerPage: input.itemsPerPage,
     operationContext: input.operationContext,
@@ -65,6 +109,7 @@ export async function executeCoresignalRegularSearch(
     collectRequests: 0,
     automaticPagination: false,
     searchMode: contract.searchMode,
+    companyMapping: prepared.companyMapping,
     providerCreditsRemaining: response.providerCreditsRemaining,
     routing,
   }

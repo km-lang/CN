@@ -71,9 +71,11 @@ Provider provenance, field-change history, and security audit infrastructure are
 
 ## Database and migrations
 
-Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0012_superb_wildside.sql`.
+Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0013_cultured_james_howlett.sql`.
 
 Migration 0012 adds a partial unique index so one non-empty `coresignal_employee_id` can belong to at most one CN alumnus. The empty string remains the supported unassigned value. Migration 0012 has been validated against repository-local D1 only; this README does **not** claim staging or production migration completion.
+
+Migration 0013 adds the provider-company mapping boundary. It stores conservative normalized company keys and provider identities with `VERIFIED`, `UNVERIFIED`, or `CONFLICT` status; `MISSING` is represented by no row. Only an Admin-verified mapping with provider ID, verifier, and verification time can enable company-constrained Search. The migration is schema-only and seeds no company data.
 
 Generate a migration only when an approved schema change requires one:
 
@@ -92,7 +94,7 @@ npm run db:generate
 | Coresignal Base Employee ES-DSL Search transport | Implemented / disabled by default | Nested IIM Lucknow institution ID 25919228 is live-verified. The same-row combination with `education.date_to_year=2011` is live-verified for the IIM Lucknow 2011 case. Institution-only or institution + exact-year mode; independent `CORESIGNAL_SEARCH_ENABLED` server gate, explicit confirmation, one request, zero retry/pagination, no automatic Preview/Collect. |
 | Regular Search response parser and routing planner | Implemented behind disabled Search gate | Parses one page, deduplicates IDs, and routes identity without canonical mutation. |
 | Exact-year ES-DSL request builder | Implemented behind disabled Search gate | Provider-free structure is validated; exact-year Search is live-verified for the IIM Lucknow 2011 case only. Search matches are not freshness or alumni qualification evidence; post-Collect evidence and human review remain authoritative. |
-| Current-company ES-DSL contract | Controlled proof / dormant | IIM Lucknow + 2011 + current Lincoln International returned HTTP 200 with one provider match, Shruti Chaturvedi (`289351894`). This proves only the controlled combined contract. Normal product wiring remains blocked on a verified CN-to-Coresignal company mapping model; no name-only or arbitrary-company mapping is allowed. |
+| Current-company ES-DSL Search | Implemented / disabled by default | A selected company resolves server-side through an Admin-managed verified mapping before one bounded Search. Missing, unverified, conflicting, duplicate, or invalid mappings fail closed before provider transport. Lincoln International is the only currently live-evidenced mapping; no name-only or arbitrary-company mapping is allowed. |
 | Coresignal Real-Time Employee API | Frozen | Previous attempt was unauthorized; later guidance said the API is unavailable. |
 | Coresignal webhooks | Future / support-dependent | No implementation or confirmed entitlement. |
 | Bright execution architecture | Implemented / provider-gated | Secondary, fallback, or corroborating evidence; not primary freshness authority. |

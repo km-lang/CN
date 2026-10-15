@@ -54,7 +54,7 @@ export function coresignalSearchContract(filters?: DiscoveryFilters, now: Date =
   }
 }
 
-export type CoresignalEmployeeEsDslSearchMode = "INSTITUTION_ONLY" | "EXACT_GRADUATION_YEAR"
+export type CoresignalEmployeeEsDslSearchMode = "INSTITUTION_ONLY" | "EXACT_GRADUATION_YEAR" | "CURRENT_COMPANY" | "CURRENT_COMPANY_EXACT_GRADUATION_YEAR"
 
 export function coresignalEmployeeEsDslGraduationYear(value: unknown): number | undefined {
   if (value === undefined) return undefined
@@ -112,22 +112,22 @@ export function coresignalEmployeeEsDslSearchContract(
   }
 }
 
-function coresignalDiagnosticCompanyId(value: unknown) {
+export function coresignalProviderCompanyId(value: unknown) {
   const companyId = typeof value === "number"
     ? value
     : typeof value === "string" && /^[1-9][0-9]*$/.test(value)
       ? Number(value)
       : Number.NaN
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
-    throw new Error("Coresignal diagnostic company ID must be a positive safe integer.")
+    throw new Error("Coresignal company ID must be a positive safe integer.")
   }
   return companyId
 }
 
 /**
- * Provider-free diagnostic contract only. The Base Employee ES mapping for
- * experience, including its nested shape and company/current/deleted fields,
- * is UNVERIFIED. Nothing in the runtime or product UI executes this helper.
+ * Provider-free builder for the live-verified current-company ES structure.
+ * Product execution must supply companyId only from a VERIFIED server-side
+ * provider-company mapping; browser input must never reach this helper.
  *
  * Controlled Collect evidence makes a same-row company ID + is_current=1 +
  * deleted=0 predicate the safest candidate. A null end date is deliberately
@@ -138,13 +138,23 @@ export function coresignalCurrentCompanyEsDslDiagnosticContract(options: {
   graduationYear?: unknown
   itemsPerPage?: number
 }) {
-  const companyId = coresignalDiagnosticCompanyId(options.companyId)
+  return coresignalVerifiedCompanyEsDslSearchContract(options)
+}
+
+export function coresignalVerifiedCompanyEsDslSearchContract(options: {
+  companyId: unknown
+  graduationYear?: unknown
+  itemsPerPage?: number
+}) {
+  const companyId = coresignalProviderCompanyId(options.companyId)
   const base = coresignalEmployeeEsDslSearchContract({
     graduationYear: options.graduationYear,
     itemsPerPage: options.itemsPerPage,
   })
   return {
-    searchMode: base.searchMode,
+    searchMode: (options.graduationYear === undefined || options.graduationYear === ""
+      ? "CURRENT_COMPANY"
+      : "CURRENT_COMPANY_EXACT_GRADUATION_YEAR") as CoresignalEmployeeEsDslSearchMode,
     method: base.method,
     path: base.path,
     query: base.query,

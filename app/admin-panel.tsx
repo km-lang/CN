@@ -16,13 +16,14 @@ import type { ProgrammeOption } from "@/lib/programme-options"
 type AdminIdentity = { id: number; provider: "google_workspace" | "chatgpt"; verifiedEmail: string; providerDomain: string; lastAuthenticatedAt: string }
 type AdminUser = { id: number; externalIdentity: string; displayName: string; email: string; role: ApplicationRole; enabled: boolean; createdAt: string; updatedAt: string; lastLoginAt: string; identities: AdminIdentity[] }
 type AuditEvent = { id: number; actorName: string; actorRole: string; action: string; entityType: string; entityId: string; result: string; createdAt: string }
+type ProviderCompanyMapping = { id: number; normalizedCompanyKey: string; displayName: string; provider: string; providerCompanyId: string; status: "VERIFIED" | "UNVERIFIED" | "CONFLICT"; mappingSource: string; evidenceReference: string; providerSourceId: string; providerCompanyUrl: string; verifiedBy: string; verifiedAt: string; updatedAt: string }
 type OperationalReadiness = {
   coresignal: { mode: string; configured: boolean; searchMaximum: number; refreshMaximum: number }
   lushaContacts: { mode: string; configured: boolean }
   signals: { implementationStatus: string; liveEnabled: boolean; entitlement: "unknown" | "confirmed" | "not_entitled"; lastVerifiedAt: string; verificationSource: string }
   mail: { mode: string; liveEnabled: boolean; provider: string; senderConfigured: boolean; oauthConfigured: boolean; sendPermissionConfigured: boolean; lastValidationStatus: string; lastValidatedAt: string; validationSource: string; validationReason?: string; scopeVerified?: boolean | null }
 }
-type AdminData = { users: AdminUser[]; audit: AuditEvent[]; programmeOptions?: ProgrammeOption[]; operationalReadiness?: OperationalReadiness }
+type AdminData = { users: AdminUser[]; audit: AuditEvent[]; programmeOptions?: ProgrammeOption[]; providerCompanyMappings?: ProviderCompanyMapping[]; operationalReadiness?: OperationalReadiness }
 type SignalsEntitlementValidation = {
   entitlement: "confirmed" | "not_entitled" | "unknown"
   outcome: string
@@ -100,6 +101,8 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [data, setData] = useState<AdminData>({ users: [], audit: [] })
   const [form, setForm] = useState({ displayName: "", email: "", role: "PCOM" as ApplicationRole })
   const [programmeForm, setProgrammeForm] = useState({ code: "", name: "" })
+  const emptyCompanyMappingForm = { mappingId: undefined as number | undefined, displayName: "", provider: "coresignal", providerCompanyId: "", status: "UNVERIFIED" as ProviderCompanyMapping["status"], mappingSource: "", evidenceReference: "", providerSourceId: "", providerCompanyUrl: "" }
+  const [companyMappingForm, setCompanyMappingForm] = useState(emptyCompanyMappingForm)
   const [programmeNameDrafts, setProgrammeNameDrafts] = useState<Record<number, string>>({})
   const [message, setMessage] = useState("")
   const [loading, setLoading] = useState(false)
@@ -226,6 +229,25 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
 
   async function addProgramme() {
     if (await action({ action: "add_programme", ...programmeForm })) setProgrammeForm({ code: "", name: "" })
+  }
+
+  async function saveCompanyMapping() {
+    if (companyMappingForm.status === "VERIFIED" && !window.confirm(`Verify the ${companyMappingForm.provider} identity for ${companyMappingForm.displayName}?\n\nOnly verified mappings can constrain provider Search.`)) return
+    if (await action({ action: "upsert_provider_company_mapping", ...companyMappingForm })) setCompanyMappingForm(emptyCompanyMappingForm)
+  }
+
+  function editCompanyMapping(mapping: ProviderCompanyMapping) {
+    setCompanyMappingForm({
+      mappingId: mapping.id,
+      displayName: mapping.displayName,
+      provider: mapping.provider,
+      providerCompanyId: mapping.providerCompanyId,
+      status: mapping.status,
+      mappingSource: mapping.mappingSource,
+      evidenceReference: mapping.evidenceReference,
+      providerSourceId: mapping.providerSourceId,
+      providerCompanyUrl: mapping.providerCompanyUrl,
+    })
   }
 
   async function renameProgramme(programme: ProgrammeOption) {
@@ -376,6 +398,25 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       <div className="panel-heading"><div><h2>Programme reference data</h2><span>Active programmes are available for future selection. Deactivation preserves historical alumni values.</span></div></div>
       <div className="admin-programme-add"><Input aria-label="New programme code" placeholder="Code, e.g. PGPWE" value={programmeForm.code} onChange={event => setProgrammeForm(current => ({ ...current, code: event.target.value }))} /><Input aria-label="New programme name" placeholder="Programme name" value={programmeForm.name} onChange={event => setProgrammeForm(current => ({ ...current, name: event.target.value }))} /><Button disabled={loading || !programmeForm.code.trim() || !programmeForm.name.trim()} onClick={() => void addProgramme()}><BookPlus /> Add programme</Button></div>
       <Table><TableHeader><TableRow><TableHead>Code</TableHead><TableHead>Display name</TableHead><TableHead>Availability</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>{(data.programmeOptions ?? []).map(programme => <TableRow key={programme.id}><TableCell><strong>{programme.code}</strong></TableCell><TableCell><Input aria-label={`Programme name for ${programme.code}`} value={programmeNameDrafts[programme.id] ?? programme.name} onChange={event => setProgrammeNameDrafts(current => ({ ...current, [programme.id]: event.target.value }))} /></TableCell><TableCell><span className={`history-status ${programme.active ? "history-success" : "history-blocked"}`}>{programme.active ? "Active" : "Inactive"}</span></TableCell><TableCell><div className="programme-actions"><Button size="sm" variant="outline" disabled={loading || !(programmeNameDrafts[programme.id] ?? programme.name).trim() || (programmeNameDrafts[programme.id] ?? programme.name).trim() === programme.name} onClick={() => void renameProgramme(programme)}>Save name</Button><Button size="sm" variant="ghost" disabled={loading} onClick={() => void action({ action: "set_programme_status", programmeId: programme.id, active: !programme.active })}>{programme.active ? "Deactivate" : "Reactivate"}</Button></div></TableCell></TableRow>)}</TableBody></Table>
+    </section>
+
+    <section className="panel admin-section">
+      <div className="panel-heading"><div><h2>Provider company mappings</h2><span>Admin-verified company identities are required before a selected company can constrain provider Search. Name-only and fuzzy matching are not used.</span></div></div>
+      <div className="admin-programme-add">
+        <Input aria-label="Company display name" placeholder="Company display name" value={companyMappingForm.displayName} onChange={event => setCompanyMappingForm(current => ({ ...current, displayName: event.target.value }))} />
+        <Select value={companyMappingForm.provider} onValueChange={provider => setCompanyMappingForm(current => ({ ...current, provider }))}><SelectTrigger aria-label="Company mapping provider"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="coresignal">Coresignal</SelectItem></SelectContent></Select>
+        <Input aria-label="Provider company ID" placeholder="Provider company ID" value={companyMappingForm.providerCompanyId} onChange={event => setCompanyMappingForm(current => ({ ...current, providerCompanyId: event.target.value }))} />
+        <Select value={companyMappingForm.status} onValueChange={status => setCompanyMappingForm(current => ({ ...current, status: status as ProviderCompanyMapping["status"] }))}><SelectTrigger aria-label="Company mapping status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNVERIFIED">Unverified</SelectItem><SelectItem value="VERIFIED">Verified</SelectItem><SelectItem value="CONFLICT">Conflict</SelectItem></SelectContent></Select>
+        <Input aria-label="Mapping source" placeholder="Mapping source" value={companyMappingForm.mappingSource} onChange={event => setCompanyMappingForm(current => ({ ...current, mappingSource: event.target.value }))} />
+        <Input aria-label="Evidence reference" placeholder="Evidence reference" value={companyMappingForm.evidenceReference} onChange={event => setCompanyMappingForm(current => ({ ...current, evidenceReference: event.target.value }))} />
+        <Input aria-label="Provider source ID" placeholder="Optional provider source ID" value={companyMappingForm.providerSourceId} onChange={event => setCompanyMappingForm(current => ({ ...current, providerSourceId: event.target.value }))} />
+        <Input aria-label="Provider company URL" placeholder="Optional provider company URL" value={companyMappingForm.providerCompanyUrl} onChange={event => setCompanyMappingForm(current => ({ ...current, providerCompanyUrl: event.target.value }))} />
+        <Button disabled={loading || !companyMappingForm.displayName.trim() || (companyMappingForm.status === "VERIFIED" && !companyMappingForm.providerCompanyId.trim())} onClick={() => void saveCompanyMapping()}><ShieldCheck /> {companyMappingForm.mappingId ? "Update mapping" : "Add mapping"}</Button>
+        {companyMappingForm.mappingId && <Button variant="ghost" onClick={() => setCompanyMappingForm(emptyCompanyMappingForm)}>Cancel edit</Button>}
+      </div>
+      <Table><TableHeader><TableRow><TableHead>Company</TableHead><TableHead>Provider</TableHead><TableHead>Status</TableHead><TableHead>Evidence</TableHead><TableHead>Verification</TableHead><TableHead>Action</TableHead></TableRow></TableHeader><TableBody>{(data.providerCompanyMappings ?? []).map(mapping => <TableRow key={mapping.id}><TableCell><strong>{mapping.displayName}</strong><small className="review-status">Key: {mapping.normalizedCompanyKey}</small></TableCell><TableCell>{mapping.provider}<small className="review-status">ID: {mapping.providerCompanyId || "Not assigned"}</small></TableCell><TableCell><span className={`history-status ${mapping.status === "VERIFIED" ? "history-success" : "history-blocked"}`}>{mapping.status}</span></TableCell><TableCell>{mapping.mappingSource || "Not recorded"}<small className="review-status">{mapping.evidenceReference || "No evidence reference"}</small></TableCell><TableCell>{mapping.verifiedBy || "Not verified"}<small className="review-status">{mapping.verifiedAt ? new Date(mapping.verifiedAt).toLocaleString() : "Verification timestamp absent"}</small></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => editCompanyMapping(mapping)}>Edit</Button></TableCell></TableRow>)}</TableBody></Table>
+      {!(data.providerCompanyMappings ?? []).length && <p className="section-help">No provider-company mappings exist. A company Search will fail closed until an Admin creates and verifies one.</p>}
+      <p className="section-help">Verification and every identity, status, and evidence change are written to the central security audit. PCOM users cannot manage these mappings.</p>
     </section>
 
     <section className="panel admin-section">

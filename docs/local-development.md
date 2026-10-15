@@ -12,6 +12,14 @@ npm run dev:local
 
 `local:setup` applies migrations to isolated local D1 and loads deterministic fixtures. `dev:local` listens on loopback port 3000, enables only the development authentication path, forces Coresignal/Lusha/Signals gates off, and keeps mail in mock mode. It requires no production secret and must never use a production D1 binding.
 
+Migration 0013 adds the provider-company mapping schema. Apply it only to repository-local D1 with:
+
+```bash
+npx wrangler d1 migrations apply DB --config wrangler.local.jsonc --local --persist-to .wrangler/state
+```
+
+Do not add `--remote`. The migration seeds no mappings. Use the Admin provider-company mapping workflow for local acceptance data; only `VERIFIED` enables company-constrained preparation. Lincoln International (`Coresignal` ID `8469989`, source ID `22432`) is the sole currently controlled live-evidenced example. Local development still keeps all provider gates off, so preparation and Admin testing consume no provider credits.
+
 ## Local Intelligence integration
 
 Alumni Profile Intelligence is a separate repository and Postgres-backed service. From that repository:

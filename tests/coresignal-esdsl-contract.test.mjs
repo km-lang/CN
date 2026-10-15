@@ -145,9 +145,9 @@ test("unsupported discovery filters cannot leak into dormant exact-year provider
   assert.doesNotMatch(JSON.stringify(withUnsupportedFilters), /Lincoln|Vice President|Finance|Director|CXO|PGP|ABM|Mumbai|experience|program/i)
 })
 
-test("dormant current-company diagnostic keeps company, current, and deletion terms in one experience row", () => {
+test("verified current-company builder keeps company, current, and deletion terms in one experience row", () => {
   const contract = client.coresignalCurrentCompanyEsDslDiagnosticContract({ companyId: 8469989 })
-  assert.equal(contract.searchMode, "INSTITUTION_ONLY")
+  assert.equal(contract.searchMode, "CURRENT_COMPANY")
   assert.equal(contract.method, "POST")
   assert.equal(contract.path, "/cdapi/v2/employee_base/search/es_dsl")
   assert.deepEqual(contract.query, { items_per_page: 1 })
@@ -167,16 +167,16 @@ test("dormant current-company diagnostic keeps company, current, and deletion te
   assert.doesNotMatch(serialized, /institution_url|date_to|date_to_year|company_name|seniority|title/)
 })
 
-test("dormant current-company diagnostic strictly validates provider company IDs", () => {
+test("verified current-company builder strictly validates provider company IDs", () => {
   assert.equal(client.coresignalCurrentCompanyEsDslDiagnosticContract({ companyId: "8469989" }).body.query.bool.filter.length, 3)
   for (const companyId of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "", " ", " 8469989", "8469989 ", "1.5", "company", "9007199254740992", Number.MAX_SAFE_INTEGER + 1, null, undefined]) {
     assert.throws(() => client.coresignalCurrentCompanyEsDslDiagnosticContract({ companyId }), /positive safe integer/)
   }
 })
 
-test("optional diagnostic year reuses the same verified nested education row", () => {
+test("optional company year reuses the same verified nested education row", () => {
   const contract = client.coresignalCurrentCompanyEsDslDiagnosticContract({ companyId: 8469989, graduationYear: "2011" })
-  assert.equal(contract.searchMode, "EXACT_GRADUATION_YEAR")
+  assert.equal(contract.searchMode, "CURRENT_COMPANY_EXACT_GRADUATION_YEAR")
   const nestedClauses = contract.body.query.bool.filter.filter(clause => clause.nested).map(clause => clause.nested)
   assert.equal(nestedClauses.filter(clause => clause.path === "education").length, 1)
   assert.deepEqual(nestedClauses.find(clause => clause.path === "education").query.bool.filter, [
@@ -185,7 +185,7 @@ test("optional diagnostic year reuses the same verified nested education row", (
   ])
 })
 
-test("current-company diagnostic remains dormant and provider-free", async () => {
+test("current-company builder remains provider-free and raw client IDs are not accepted by product routes", async () => {
   const previousFetch = globalThis.fetch
   let fetchCalls = 0
   globalThis.fetch = async () => {
@@ -202,6 +202,7 @@ test("current-company diagnostic remains dormant and provider-free", async () =>
   for (const file of ["app/page.tsx", "app/api/discovery/route.ts", "lib/coresignal-regular-search.ts"]) {
     const source = await readFile(new URL(`../${file}`, import.meta.url), "utf8")
     assert.doesNotMatch(source, /coresignalCurrentCompanyEsDslDiagnosticContract/, file)
+    assert.doesNotMatch(source, /payload\.(companyId|providerCompanyId)/, file)
   }
 })
 
@@ -250,14 +251,14 @@ test("building the contract is provider-free and only the separately gated runti
   assert.match(runtime, /searchCoresignalEmployeeIds/)
 })
 
-test("documentation separates live-verified education predicates from unverified current-company semantics", async () => {
+test("documentation separates verified search predicates from post-Collect authority", async () => {
   const clientSource = await readFile(new URL("../lib/coresignal-client.ts", import.meta.url), "utf8")
   const providerDocs = await readFile(new URL("../docs/providers.md", import.meta.url), "utf8")
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8")
-  assert.match(clientSource, /experience[\s\S]*UNVERIFIED/)
+  assert.match(clientSource, /experience[\s\S]*live-verified current-company ES structure/)
   assert.match(providerDocs, /education\.institution_id=25919228[^\n]*provider reported 35,103 matches/)
   assert.match(providerDocs, /Bharani[^\n]*2013[^\n]*deleted legacy/)
   assert.match(providerDocs, /live verified for the IIM Lucknow 2011 case/)
-  assert.match(providerDocs, /CURRENT COMPANY ES SEMANTICS[^\n]*UNVERIFIED/)
+  assert.match(providerDocs, /provider_company_mappings/)
   assert.match(readme, /institution ID 25919228[^\n]*live-verified/)
 })
