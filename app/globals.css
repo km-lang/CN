@@ -676,6 +676,10 @@ button { cursor: pointer; }
 .already-engaged, .assignment-note { display: flex; gap: .65rem; align-items: flex-start; margin-top: .75rem; padding: .75rem .8rem; border-radius: 10px; }
 .already-engaged { background: #eff8f5; color: #0c6b53; }
 .assignment-note { background: #edf2f5; color: #405a6c; }
+.engagement-owner-control { display: grid; gap: .35rem; min-width: min(100%, 240px); padding: .7rem; border: 1px solid #d9e2e7; border-radius: 10px; background: #f8fafb; }
+.engagement-owner-control > span { color: #405a6c; font-size: .72rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.engagement-owner-control > small { color: #71818e; font-size: .7rem; }
+.pcom-work-panel { margin-bottom: 1rem; }
 .already-engaged svg, .assignment-note svg { width: 17px; flex: 0 0 auto; }
 .already-engaged strong, .already-engaged span { display: block; }
 .already-engaged strong { font-size: .8rem; }

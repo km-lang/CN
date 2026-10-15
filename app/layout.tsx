@@ -49,11 +49,8 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   if (chatGPTUser && !token) {
     redirect(withBasePath(`/auth/chatgpt/session?return_to=${encodeURIComponent(returnTo)}`))
   }
-  const googleHref = withBasePath(`/auth/google/start?return_to=${encodeURIComponent(returnTo)}`)
-  const chatGPTSessionReturn = withBasePath(`/auth/chatgpt/session?return_to=${encodeURIComponent(returnTo)}`)
-  const chatGPTHref = chatGPTSignInPath(chatGPTSessionReturn)
   const message = accessMessage || "Authenticate with your approved institutional identity. Application access is granted separately by an administrator and denied by default."
-  return <html lang="en"><body><AccessPage title="Sign in to Corporate Network" message={message} primaryHref={googleHref} primaryLabel="Sign in with IIM Lucknow" secondaryHref={chatGPTHref} secondaryLabel="Sign in with ChatGPT (Admin recovery)" /></body></html>
+  return <html lang="en"><body><AccessPage title="Sign in to Corporate Network" message={message} primaryHref={withBasePath("/login/pcom")} primaryLabel="PCOM sign in" secondaryHref={withBasePath("/login/admin")} secondaryLabel="Admin sign in" /></body></html>
 }
 
 function AccessPage({ title, message, primaryHref, primaryLabel, secondaryHref, secondaryLabel }: { title: string; message: string; primaryHref: string; primaryLabel: string; secondaryHref: string; secondaryLabel: string }) {

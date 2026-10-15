@@ -55,7 +55,19 @@ export async function GET(request: Request) {
       usageSnapshot(),
       db.select().from(providerResponseHistory).orderBy(desc(providerResponseHistory.createdAt), desc(providerResponseHistory.id)).limit(100),
     ]);
-    return Response.json({ modes: { coresignal: coresignalProvider.mode(), lusha: enrichmentMode("lusha") }, usage, history: context.role === "DEVELOPER" ? [] : history.map(presentProviderHistorySearchEvidence), historyRestricted: context.role === "DEVELOPER" });
+    const contactResume = context.role === "DEVELOPER" ? {} : Object.fromEntries(history
+      .filter(item => item.provider === "lusha" && item.alumnusId && item.operation === "Contact Search Preview" && item.status === "success")
+      .map(item => [item.alumnusId!, {
+        emailAvailable: item.responseSummary.includes("Email availability: available.") ? true : item.responseSummary.includes("Email availability: not available.") ? false : null,
+        phoneAvailable: item.responseSummary.includes("Phone availability: available.") ? true : item.responseSummary.includes("Phone availability: not available.") ? false : null,
+      }]));
+    return Response.json({
+      modes: { coresignal: coresignalProvider.mode(), lusha: enrichmentMode("lusha") },
+      usage,
+      contactResume,
+      history: context.role === "ADMIN" ? history.map(presentProviderHistorySearchEvidence) : [],
+      historyRestricted: context.role !== "ADMIN",
+    });
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;

@@ -42,8 +42,8 @@ test("security 1: role values are explicit and deny-by-default is visible", () =
 test("security 2: unauthenticated visitors receive only the sign-in page", () => {
   assert.match(layout, /if \(session\)/);
   assert.match(layout, /Sign in to Corporate Network/);
-  assert.match(layout, /Sign in with IIM Lucknow/);
-  assert.match(layout, /Sign in with ChatGPT \(Admin recovery\)/);
+  assert.match(layout, /PCOM sign in/);
+  assert.match(layout, /Admin sign in/);
 });
 
 test("security 3: PCOM can operate but cannot administer users or provider settings", () => {

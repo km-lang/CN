@@ -2,6 +2,7 @@ import { absoluteAppUrl } from "@/lib/auth-config"
 import { authenticationErrorResponse } from "@/lib/auth-responses"
 import { APP_SESSION_COOKIE, GOOGLE_OAUTH_COOKIE, clearGoogleOAuthCookie, cookieValue, createAppSessionToken, sessionCookie, verifyGoogleOAuthToken } from "@/lib/auth-session"
 import { exchangeGoogleAuthorizationCode, GoogleOidcError } from "@/lib/google-oidc"
+import { roleHome } from "@/lib/login-intent"
 import { AccessError, resolveAuthorizedIdentity, writeSecurityAudit } from "@/lib/security"
 
 export async function GET(request: Request) {
@@ -16,7 +17,8 @@ export async function GET(request: Request) {
     const identity = await exchangeGoogleAuthorizationCode(code, transient.codeVerifier, transient.nonce)
     const context = await resolveAuthorizedIdentity(identity)
     const session = await createAppSessionToken({ applicationUserId: context.userId, applicationIdentityId: context.identityId, provider: context.provider })
-    const headers = new Headers({ location: absoluteAppUrl(transient.returnTo), "cache-control": "no-store" })
+    const destination = transient.returnTo === "/" ? roleHome(context.role) : transient.returnTo
+    const headers = new Headers({ location: absoluteAppUrl(destination), "cache-control": "no-store" })
     headers.append("set-cookie", sessionCookie(session))
     headers.append("set-cookie", clearGoogleOAuthCookie())
     return new Response(null, { status: 302, headers })

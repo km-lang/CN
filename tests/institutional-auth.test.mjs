@@ -22,6 +22,7 @@ const sessions = await vite.ssrLoadModule("/lib/auth-session.ts");
 const google = await vite.ssrLoadModule("/lib/google-oidc.ts");
 const security = await readFile(new URL("../lib/security.ts", import.meta.url), "utf8");
 const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
+const loginEntry = await readFile(new URL("../lib/login-entry.ts", import.meta.url), "utf8");
 const callback = await readFile(new URL("../app/auth/google/callback/route.ts", import.meta.url), "utf8");
 const chatgpt = await readFile(new URL("../app/auth/chatgpt/session/route.ts", import.meta.url), "utf8");
 const admin = await readFile(new URL("../app/api/admin/route.ts", import.meta.url), "utf8");
@@ -124,7 +125,8 @@ test("institutional auth 11: OAuth replay controls bind and clear the transient 
 });
 
 test("institutional auth 12: ChatGPT remains a recovery identity through the same application session", () => {
-  assert.match(layout, /Sign in with ChatGPT \(Admin recovery\)/);
+  assert.match(layout, /Admin sign in/);
+  assert.match(loginEntry, /Admin recovery with ChatGPT/);
   assert.match(chatgpt, /resolveAuthorizedIdentity\(identity\)/);
   assert.match(chatgpt, /createAppSessionToken/);
   assert.match(security, /provider === "chatgpt"/);

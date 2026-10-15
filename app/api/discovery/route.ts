@@ -203,7 +203,7 @@ function alumnusValues(result: typeof externalDiscoveryResults.$inferSelect, act
 
 export async function GET(request: Request) {
   try {
-    await authorizeRequest(request, "OPERATE_PCOM")
+    const context = await authorizeRequest(request, "OPERATE_PCOM")
     const db = getDb(); const url = new URL(request.url); const view = url.searchParams.get("view") === "pending" ? "pending" : "summary"
     const requestedSearchIdValue = url.searchParams.get("searchId")
     const requestedSearchId = requestedSearchIdValue === null ? null : Number(requestedSearchIdValue)
@@ -238,7 +238,7 @@ export async function GET(request: Request) {
     const reconciliationByKey = new Map(reconciliations.map(item => [item.candidateKey, item]))
     const presentedResults = activeResults.map(result => ({ ...presentResult(result, filters, new Date(), activeSearch), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)), ...storedQualificationPresentation(result, filters) }))
     const counts = discoveryClassificationCounts(activeResults)
-    return Response.json({ ...common, activeSearch: activeSearchSummary, results: presentedResults, counts, reconciliationSummary: reconciliations.length ? selectiveCollectSummary(reconciliations) : null, filters, providerHistory: activeProviderHistory, creditsUsed: activeSearch.creditsUsed, retrieval: "stored", source: { provider: activeSearch.provider, mode: activeSearch.mode, searchId: activeSearch.id, createdAt: activeSearch.createdAt } })
+    return Response.json({ ...common, activeSearch: activeSearchSummary, results: presentedResults, counts, reconciliationSummary: reconciliations.length ? selectiveCollectSummary(reconciliations) : null, filters, providerHistory: context.role === "ADMIN" ? activeProviderHistory : [], historyRestricted: context.role !== "ADMIN", creditsUsed: activeSearch.creditsUsed, retrieval: "stored", source: { provider: activeSearch.provider, mode: activeSearch.mode, searchId: activeSearch.id, createdAt: activeSearch.createdAt } })
   } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return Response.json({ error: error instanceof Error ? error.message : "Unable to load discovery history." }, { status: 500 }) }
 }
 
@@ -337,7 +337,7 @@ export async function POST(request: Request) {
             return history
           },
         })
-        return Response.json({ ...completed.execution, filters, queryMode, itemsPerPage: validation.requested, preparation: preparationSummary, providerCallMade: true, applicationUnits: 1, historyId: completed.persisted.id, searchEvidence: completed.evidence })
+        return Response.json({ ...completed.execution, filters, queryMode, itemsPerPage: validation.requested, preparation: preparationSummary, providerCallMade: true, applicationUnits: 1, ...(context.role === "ADMIN" ? { historyId: completed.persisted.id, searchEvidence: completed.evidence } : {}) })
       } catch (error) {
         if (error instanceof CoresignalSearchEvidencePersistenceError) {
           return Response.json({ error: error.message, blocked: true, reason: "evidence_persistence_failed", providerCallMade: true, upstreamHttpStatus: error.upstreamHttpStatus, applicationUnits: error.applicationUnits, retryAllowed: error.retryAllowed, accountingState: "RECONCILIATION_REQUIRED" }, { status: 500 })
@@ -406,7 +406,7 @@ export async function POST(request: Request) {
       const recentResults = recentSearchIds.length ? await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, recentSearchIds)) : []
       const previousSearches = previousDiscoveryRuns(recentSearches, recentResults, search.id)
       await writeSecurityAudit(context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.totalAvailable, storedResultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, mode: coresignalProvider.mode(), selectiveExecution: response.execution?.metrics ?? null } })
-      return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [history]), previousSearches, providerHistory: [history], results: storedResults, counts, reconciliationSummary: selectiveCollectSummary(reconciled.map(item => item.reconciliation)), executionSummary: response.execution?.metrics ?? null, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: validation.requested, returnedCount: response.totalAvailable, storedResultCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
+      return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [history]), previousSearches, providerHistory: context.role === "ADMIN" ? [history] : [], historyRestricted: context.role !== "ADMIN", results: storedResults, counts, reconciliationSummary: selectiveCollectSummary(reconciled.map(item => item.reconciliation)), executionSummary: response.execution?.metrics ?? null, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: validation.requested, returnedCount: response.totalAvailable, storedResultCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
     }
 
     if (payload.action === "qualify" && Number.isInteger(payload.resultId) && affiliationStatuses.has(String(payload.affiliationStatus))) {

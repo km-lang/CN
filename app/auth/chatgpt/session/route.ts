@@ -2,6 +2,7 @@ import { chatGPTSignInPath } from "@/app/chatgpt-auth"
 import { absoluteAppUrl, safeReturnPath } from "@/lib/auth-config"
 import { authenticationErrorResponse } from "@/lib/auth-responses"
 import { createAppSessionToken, sessionCookie } from "@/lib/auth-session"
+import { roleHome } from "@/lib/login-intent"
 import { AccessError, identityFromRequest, resolveAuthorizedIdentity } from "@/lib/security"
 
 export async function GET(request: Request) {
@@ -15,7 +16,8 @@ export async function GET(request: Request) {
   try {
     const context = await resolveAuthorizedIdentity(identity)
     const session = await createAppSessionToken({ applicationUserId: context.userId, applicationIdentityId: context.identityId, provider: context.provider })
-    return new Response(null, { status: 302, headers: { location: absoluteAppUrl(returnTo), "set-cookie": sessionCookie(session), "cache-control": "no-store" } })
+    const destination = returnTo === "/" ? roleHome(context.role) : returnTo
+    return new Response(null, { status: 302, headers: { location: absoluteAppUrl(destination), "set-cookie": sessionCookie(session), "cache-control": "no-store" } })
   } catch (error) {
     const message = error instanceof AccessError ? error.message : "ChatGPT recovery authentication could not be completed."
     return authenticationErrorResponse("Corporate Network access unavailable", message, error instanceof AccessError ? error.status : 403)

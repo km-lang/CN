@@ -247,6 +247,7 @@ export async function POST(request: Request) {
       body?: string;
       reason?: string;
       force?: boolean;
+      assigneeId?: number;
       responseType?: string;
       notes?: string;
       followUpRequired?: boolean;
@@ -355,7 +356,17 @@ export async function POST(request: Request) {
     } else if (payload.action === "acknowledge") {
       if (!terminalStatuses.has(event.status)) await db.update(engagementEvents).set({ status: "Acknowledged", acknowledgedAt: now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(eq(engagementEvents.id, eventId));
       await audit(eventId, context, "acknowledged", "Signal reviewed and acknowledged.");
+    } else if (payload.action === "assign_to") {
+      if (terminalStatuses.has(event.status)) return Response.json({ error: "A completed engagement cannot be reassigned." }, { status: 409 });
+      const assigneeId = Number(payload.assigneeId);
+      if (!Number.isInteger(assigneeId) || assigneeId < 1) return Response.json({ error: "Choose an active PCOM or Admin owner." }, { status: 400 });
+      const [assignee] = await db.select().from(applicationUsers).where(and(eq(applicationUsers.id, assigneeId), eq(applicationUsers.enabled, true))).limit(1);
+      if (!assignee || !["ADMIN", "PCOM"].includes(assignee.role)) return Response.json({ error: "The selected owner is not an active PCOM or Admin user." }, { status: 409 });
+      const [updated] = await db.update(engagementEvents).set({ assignedTo: String(assignee.id), assignedAt: now, lastUpdatedBy: actor, lastUpdatedAt: now }).where(and(eq(engagementEvents.id, eventId), eq(engagementEvents.assignedTo, event.assignedTo))).returning();
+      if (!updated) return Response.json({ error: "Ownership changed while you were reviewing this engagement. Reload and try again." }, { status: 409 });
+      await audit(eventId, context, event.assignedTo ? "reassigned" : "assigned", `${event.assignedTo ? `Reassigned from ${event.assignedTo}` : "Assigned"} to ${assignee.displayName} (user ${assignee.id}).`);
     } else if (payload.action === "assign") {
+      if (terminalStatuses.has(event.status)) return Response.json({ error: "A completed engagement cannot be reassigned." }, { status: 409 });
       if (event.assignedTo && event.assignedTo !== actor && !payload.force) {
         return Response.json({ error: `This engagement is currently assigned to ${event.assignedTo}.` }, { status: 409 });
       }

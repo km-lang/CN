@@ -105,14 +105,14 @@ test("evidence persistence failure is explicit and never re-executes the provide
   assert.equal(persistenceCalls, 1)
 })
 
-test("Search evidence remains behind existing operator RBAC with no Collect or canonical mutation path", async () => {
+test("Search evidence remains behind Admin RBAC with no Collect or canonical mutation path", async () => {
   const discoveryRoute = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
   const enrichmentRoute = await readFile(new URL("../app/api/enrichment/route.ts", import.meta.url), "utf8")
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
   assert.match(discoveryRoute, /authorizeRequest\(request, "OPERATE_PCOM"\)/)
-  assert.match(enrichmentRoute, /context\.role === "DEVELOPER" \? \[\] : history\.map\(presentProviderHistorySearchEvidence\)/)
-  assert.match(page, /session\.canOperate && item\.searchEvidence\?\.state === "RETAINED"/)
+  assert.match(enrichmentRoute, /context\.role === "ADMIN" \? history\.map\(presentProviderHistorySearchEvidence\) : \[\]/)
+  assert.match(page, /session\.canAdminister && item\.searchEvidence\?\.state === "RETAINED"/)
   assert.match(page, /View returned Employee IDs/)
   assert.match(page, /Search 1 · Preview 0 · Collect 0/)
   assert.match(page, /No pagination or canonical mutation/)
