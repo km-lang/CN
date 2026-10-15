@@ -22,6 +22,7 @@ import { coresignalIdentityStore } from "@/lib/coresignal-identity-store"
 import { executeCoresignalRegularSearch, prepareCoresignalRegularSearch, CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS } from "@/lib/coresignal-regular-search"
 import { coresignalSearchIdLookupStore } from "@/lib/coresignal-search-id-store"
 import { providerCompanyMappingStore } from "@/lib/provider-company-mapping-store"
+import { CoresignalSearchEvidencePersistenceError, createCoresignalSearchEvidence, executeAndPersistCoresignalSearchEvidence, presentProviderHistorySearchEvidence, serializeCoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
@@ -220,7 +221,7 @@ export async function GET(request: Request) {
     const historySearchIds = [...new Set(searchPool.map(search => search.id))]
     const historyResults = historySearchIds.length ? await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, historySearchIds)).orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id) : []
     const activeResults = activeSearch ? historyResults.filter(result => result.searchId === activeSearch.id) : []
-    const activeProviderHistory = activeSearch ? await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.searchId, activeSearch.id)).orderBy(providerResponseHistory.id) : []
+    const activeProviderHistory = activeSearch ? (await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.searchId, activeSearch.id)).orderBy(providerResponseHistory.id)).map(presentProviderHistorySearchEvidence) : []
     const activeSearchSummary = activeSearch ? discoveryRunSummary(activeSearch, activeResults, activeProviderHistory) : null
     const previousSearches = previousDiscoveryRuns(recentSearches, historyResults, activeSearch?.id ?? null)
     const common = { pendingCount: actionablePendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, regularSearch: { enabled: coresignalRegularSearchEnabled(), configured: providerConfigured("coresignal"), maxRequests: CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS, automaticPagination: false } }
@@ -300,27 +301,49 @@ export async function POST(request: Request) {
       const queryMode = preparation.contract.searchMode.toLowerCase().replaceAll("_", "-")
       const operationContext = `External Discovery · IIM Lucknow${filters.graduationYear ? ` · exact graduation year ${filters.graduationYear}` : " · all years"}${preparation.companyMappingRequired ? ` · current company ${preparation.companyMapping.displayName}` : ""}`
       const requestSummary = `${operationContext} · institution_match=provider_institution_id · provider_institution_id=${CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID} · company_mapping=${preparation.companyMappingRequired ? "verified" : "not_required"} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
+      const attemptId = crypto.randomUUID()
+      const requestedAt = new Date().toISOString()
       try {
-        const execution = await executeCoresignalRegularSearch({ filters, itemsPerPage: validation.requested, operationContext, confirmed: true }, { store: coresignalSearchIdLookupStore(db), companyMappingStore: providerCompanyMappingStore(db) })
-        const remainingSummary = execution.providerCreditsRemaining === null ? "Provider remaining credits were not reported." : `Provider reported ${execution.providerCreditsRemaining} credits remaining.`
-        await db.insert(providerResponseHistory).values({
-          provider: PROFESSIONAL_DATA_PROVIDER,
-          alumnusName: "External alumni discovery",
-          operation: execution.operation,
-          mode: "live",
-          status: "success",
-          creditsUsed: 0,
-          applicationUnits: 1,
-          providerReportedCredits: null,
-          usageState: "not_applicable",
-          resultCount: execution.routing.providerSearch.totalResults,
-          requestSummary,
-          responseSummary: `One Search request succeeded. ${execution.routing.providerSearch.pageIdsReceived} IDs returned on this page; ${execution.routing.providerSearch.totalResults} total results reported. ${remainingSummary} No Preview or Collect request was made.`,
-          requestedBy: actor,
+        const completed = await executeAndPersistCoresignalSearchEvidence({
+          execute: () => executeCoresignalRegularSearch({ filters, itemsPerPage: validation.requested, operationContext, confirmed: true }, { store: coresignalSearchIdLookupStore(db), companyMappingStore: providerCompanyMappingStore(db) }),
+          createEvidence: execution => createCoresignalSearchEvidence({
+            attemptId,
+            filters,
+            institutionId: CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID,
+            itemsPerPage: validation.requested,
+            requestedAt,
+            completedAt: new Date().toISOString(),
+            execution,
+          }),
+          persist: async (execution, evidence) => {
+            const remainingSummary = execution.providerCreditsRemaining === null ? "Provider remaining credits were not reported." : `Provider reported ${execution.providerCreditsRemaining} credits remaining.`
+            const totalSummary = execution.routing.providerSearch.totalResults === null ? "the total result header was not supplied" : `${execution.routing.providerSearch.totalResults} total results reported`
+            const summary = `One Search request succeeded. ${execution.routing.providerSearch.pageIdsReceived} IDs returned on this page; ${totalSummary}. ${remainingSummary} No Preview or Collect request was made.`
+            const [history] = await db.insert(providerResponseHistory).values({
+              provider: PROFESSIONAL_DATA_PROVIDER,
+              alumnusName: "External alumni discovery",
+              operation: execution.operation,
+              mode: "live",
+              status: "success",
+              creditsUsed: 0,
+              applicationUnits: 1,
+              providerReportedCredits: null,
+              usageState: "not_applicable",
+              resultCount: execution.routing.providerSearch.totalResults ?? execution.routing.providerSearch.pageIdsReceived,
+              requestSummary,
+              responseSummary: serializeCoresignalSearchEvidence(summary, evidence),
+              requestedBy: actor,
+            }).returning()
+            return history
+          },
         })
-        return Response.json({ ...execution, filters, queryMode, itemsPerPage: validation.requested, preparation: preparationSummary, providerCallMade: true, applicationUnits: 1 })
+        return Response.json({ ...completed.execution, filters, queryMode, itemsPerPage: validation.requested, preparation: preparationSummary, providerCallMade: true, applicationUnits: 1, historyId: completed.persisted.id, searchEvidence: completed.evidence })
       } catch (error) {
+        if (error instanceof CoresignalSearchEvidencePersistenceError) {
+          return Response.json({ error: error.message, blocked: true, reason: "evidence_persistence_failed", providerCallMade: true, upstreamHttpStatus: error.upstreamHttpStatus, applicationUnits: error.applicationUnits, retryAllowed: error.retryAllowed, accountingState: "RECONCILIATION_REQUIRED" }, { status: 500 })
+        }
         const failure = safeCoresignalError(error)
+        const outcome = failure.kind === "timeout" ? "AMBIGUOUS" : "FAILED"
         await db.insert(providerResponseHistory).values({
           provider: PROFESSIONAL_DATA_PROVIDER,
           alumnusName: "External alumni discovery",
@@ -332,11 +355,11 @@ export async function POST(request: Request) {
           providerReportedCredits: null,
           usageState: "not_applicable",
           requestSummary,
-          responseSummary: `One Search request failed. ${failure.message} No retry, Preview, or Collect request was made.`,
+          responseSummary: `One Search request ${outcome === "AMBIGUOUS" ? "ended with an ambiguous timeout outcome" : "failed"}. ${failure.message} No retry, Preview, or Collect request was made.`,
           errorMessage: failure.message,
           requestedBy: actor,
         })
-        return Response.json({ error: failure.message, failureType: failure.kind, blocked: true, reason: "provider_error", providerCallMade: true, applicationUnits: 0 }, { status: failure.status === 429 ? 429 : 502 })
+        return Response.json({ error: failure.message, failureType: failure.kind, outcome, blocked: true, reason: "provider_error", providerCallMade: true, applicationUnits: 0, automaticRetry: false }, { status: failure.status === 429 ? 429 : 502 })
       }
     }
 

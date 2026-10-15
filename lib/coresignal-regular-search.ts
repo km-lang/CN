@@ -21,8 +21,9 @@ export type CoresignalRegularSearchExecution = {
   collectRequests: 0
   automaticPagination: false
   searchMode: "INSTITUTION_ONLY" | "EXACT_GRADUATION_YEAR" | "CURRENT_COMPANY" | "CURRENT_COMPANY_EXACT_GRADUATION_YEAR"
-  companyMapping: Pick<ProviderCompanyResolution, "state" | "displayName" | "normalizedCompanyKey">
+  companyMapping: Pick<ProviderCompanyResolution, "state" | "displayName" | "normalizedCompanyKey" | "providerCompanyId">
   providerCreditsRemaining: number | null
+  upstreamHttpStatus: number
   routing: Awaited<ReturnType<typeof planCoresignalRegularSearchRouting>>
 }
 
@@ -43,7 +44,7 @@ export async function prepareCoresignalRegularSearch(
     })
     return {
       contract,
-      companyMapping: { state: "MISSING" as const, displayName: "", normalizedCompanyKey: "" },
+      companyMapping: { state: "MISSING" as const, displayName: "", normalizedCompanyKey: "", providerCompanyId: null },
       companyMappingRequired: false,
     }
   }
@@ -65,6 +66,7 @@ export async function prepareCoresignalRegularSearch(
       state: companyMapping.state,
       displayName: companyMapping.displayName,
       normalizedCompanyKey: companyMapping.normalizedCompanyKey,
+      providerCompanyId: companyMapping.providerCompanyId,
     },
     companyMappingRequired: true,
   }
@@ -100,6 +102,9 @@ export async function executeCoresignalRegularSearch(
     operationContext: input.operationContext,
     signal: input.signal,
   })
+  if (!Array.isArray(response.body) || response.body.length > input.itemsPerPage) {
+    throw new CoresignalProviderError("Coresignal Search returned more Employee IDs than the authorized page-size bound.", "invalid_response", 502)
+  }
   const routing = await planCoresignalRegularSearchRouting(response.body, response.headers, dependencies.store)
   return {
     operation: "Base Employee ES-DSL Search",
@@ -111,6 +116,7 @@ export async function executeCoresignalRegularSearch(
     searchMode: contract.searchMode,
     companyMapping: prepared.companyMapping,
     providerCreditsRemaining: response.providerCreditsRemaining,
+    upstreamHttpStatus: response.upstreamHttpStatus,
     routing,
   }
 }

@@ -70,6 +70,7 @@ test("one ES-DSL request uses apikey auth, JSON headers, exact contract, and pre
   assert.equal(calls[0].init.headers["content-type"], "application/json")
   assert.doesNotMatch(JSON.stringify(result), /test-secret-never-return/)
   assert.equal(result.providerCreditsRemaining, 4950)
+  assert.equal(result.upstreamHttpStatus, 200)
   assert.deepEqual(result.body, [1696198, 289351894, 123456])
 })
 
@@ -81,7 +82,7 @@ test("live-diagnostic response shape parses, deduplicates, and routes without fo
       calls += 1
       assert.match(JSON.stringify(body), /education\.institution_id/)
       assert.doesNotMatch(JSON.stringify(body), /education\.institution_url|education\.date_to_year/)
-      return { body: [718517], headers: { "x-total-results": "35103", "x-total-pages": "35103", "x-next-page-after": "718517" }, providerCreditsRemaining: 4950 }
+      return { body: [718517], headers: { "x-total-results": "35103", "x-total-pages": "35103", "x-next-page-after": "718517" }, providerCreditsRemaining: 4950, upstreamHttpStatus: 200 }
     },
     store: mappingStore(),
   })
@@ -99,7 +100,7 @@ test("transport, parser, dedupe, and routing handle known and unknown IDs end to
     searchEnabled: () => true,
     transport: async () => {
       calls += 1
-      return { body: [1696198, 289351894, 123456], headers: { "x-total-results": "3", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: 4950 }
+      return { body: [1696198, 289351894, 123456], headers: { "x-total-results": "3", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: 4950, upstreamHttpStatus: 200 }
     },
     store: mappingStore([
       { employeeId: "1696198", alumnusId: 11, linkedinUrl: "https://linkedin.com/in/a" },
@@ -126,7 +127,7 @@ test("institution-only runtime makes one mocked Search with no year predicate", 
     transport: async body => {
       calls += 1
       requestBody = body
-      return { body: [1696198], headers: { "x-total-results": "1", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: null }
+      return { body: [1696198], headers: { "x-total-results": "1", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: null, upstreamHttpStatus: 200 }
     },
     store: mappingStore(),
   })
@@ -146,7 +147,7 @@ test("exact-year runtime includes the year predicate in the mocked Search reques
     searchEnabled: () => true,
     transport: async body => {
       requestBody = body
-      return { body: [], headers: { "x-total-results": "0", "x-total-pages": "0", "x-next-page-after": null }, providerCreditsRemaining: null }
+      return { body: [], headers: { "x-total-results": "0", "x-total-pages": "0", "x-next-page-after": null }, providerCreditsRemaining: null, upstreamHttpStatus: 200 }
     },
     store: mappingStore(),
   })
@@ -164,7 +165,7 @@ test("verified Lincoln plus 2011 uses same-row education and experience predicat
     searchEnabled: () => true,
     transport: async body => {
       requestBody = body
-      return { body: [], headers: { "x-total-results": "1", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: null }
+      return { body: [], headers: { "x-total-results": "1", "x-total-pages": "1", "x-next-page-after": null }, providerCreditsRemaining: null, upstreamHttpStatus: 200 }
     },
     store: mappingStore(),
     companyMappingStore: providerCompanyStore(),
@@ -218,7 +219,7 @@ test("missing, unverified, conflicting, and invalid company mappings stop before
 test("an observed-shape empty 200 response is valid and has no follow-on action", async () => {
   const result = await runtime.executeCoresignalRegularSearch({ filters: filters(), itemsPerPage: 1, operationContext: "empty test", confirmed: true }, {
     searchEnabled: () => true,
-    transport: async () => ({ body: [], headers: { "x-total-results": "0", "x-total-pages": "0", "x-next-page-after": null }, providerCreditsRemaining: 4950 }),
+    transport: async () => ({ body: [], headers: { "x-total-results": "0", "x-total-pages": "0", "x-next-page-after": null }, providerCreditsRemaining: 4950, upstreamHttpStatus: 200 }),
     store: mappingStore(),
   })
   assert.deepEqual(result.routing.routes, [])
@@ -265,7 +266,7 @@ test("runtime never follows continuation metadata or performs automatic paginati
     searchEnabled: () => true,
     transport: async () => {
       calls += 1
-      return { body: [1696198], headers: { "x-total-results": "500", "x-total-pages": "20", "x-next-page-after": "opaque-cursor" }, providerCreditsRemaining: null }
+      return { body: [1696198], headers: { "x-total-results": "500", "x-total-pages": "20", "x-next-page-after": "opaque-cursor" }, providerCreditsRemaining: null, upstreamHttpStatus: 200 }
     },
     store: mappingStore(),
   })
@@ -274,6 +275,16 @@ test("runtime never follows continuation metadata or performs automatic paginati
   assert.equal(result.routing.providerSearch.totalPages, 20)
   assert.equal(result.routing.providerSearch.nextPageAfter, "opaque-cursor")
   assert.equal(result.automaticPagination, false)
+})
+
+test("a page larger than the authorized result bound is rejected before identity lookup", async () => {
+  let lookupCalls = 0
+  await assert.rejects(runtime.executeCoresignalRegularSearch({ filters: filters(), itemsPerPage: 1, operationContext: "bounded page", confirmed: true }, {
+    searchEnabled: () => true,
+    transport: async () => ({ body: [1696198, 289351894], headers: { "x-total-results": "2", "x-total-pages": "2", "x-next-page-after": "289351894" }, providerCreditsRemaining: 4950, upstreamHttpStatus: 200 }),
+    store: { async findMappings() { lookupCalls += 1; return [] } },
+  }), /authorized page-size bound/)
+  assert.equal(lookupCalls, 0)
 })
 
 test("server gate is fail-closed and normal local development explicitly keeps Search off", async () => {

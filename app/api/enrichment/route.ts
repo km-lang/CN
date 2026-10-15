@@ -12,6 +12,7 @@ import { contactEnrichmentPermission, eligibleContactChannels, type ContactChann
 import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
 import { attachCoresignalIdentity } from "@/lib/coresignal-identity";
 import { coresignalIdentityStore } from "@/lib/coresignal-identity-store";
+import { presentProviderHistorySearchEvidence } from "@/lib/coresignal-search-evidence";
 
 const providers: ProviderName[] = ["coresignal", "lusha"];
 const defaultLimits: Record<ProviderName, number> = { coresignal: 25, lusha: 100 };
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
       usageSnapshot(),
       db.select().from(providerResponseHistory).orderBy(desc(providerResponseHistory.createdAt), desc(providerResponseHistory.id)).limit(100),
     ]);
-    return Response.json({ modes: { coresignal: coresignalProvider.mode(), lusha: enrichmentMode("lusha") }, usage, history: context.role === "DEVELOPER" ? [] : history, historyRestricted: context.role === "DEVELOPER" });
+    return Response.json({ modes: { coresignal: coresignalProvider.mode(), lusha: enrichmentMode("lusha") }, usage, history: context.role === "DEVELOPER" ? [] : history.map(presentProviderHistorySearchEvidence), historyRestricted: context.role === "DEVELOPER" });
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;

@@ -11,9 +11,9 @@ export type CoresignalRegularSearchPage = {
   employeeIds: readonly string[]
   pageIdsReceived: number
   uniquePageIds: number
-  totalResults: number
+  totalResults: number | null
   pagination: {
-    totalPages: number
+    totalPages: number | null
     nextPageAfter: string | null
   }
 }
@@ -35,11 +35,10 @@ function headerValue(headers: CoresignalRegularSearchResponseHeaders, name: stri
   return value === null || value === undefined ? null : String(value)
 }
 
-function nonNegativeSafeIntegerHeader(headers: CoresignalRegularSearchResponseHeaders, name: string) {
+function optionalNonNegativeSafeIntegerHeader(headers: CoresignalRegularSearchResponseHeaders, name: string) {
   const raw = headerValue(headers, name)
-  if (raw === null || !/^(0|[1-9][0-9]*)$/.test(raw)) {
-    throw new CoresignalRegularSearchResponseError(`Coresignal regular Search response requires a valid ${name} header.`)
-  }
+  if (raw === null) return null
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) throw new CoresignalRegularSearchResponseError(`Coresignal regular Search response ${name} must be a non-negative integer when supplied.`)
   const value = Number(raw)
   if (!Number.isSafeInteger(value)) {
     throw new CoresignalRegularSearchResponseError(`Coresignal regular Search response ${name} exceeds the safe integer range.`)
@@ -71,13 +70,13 @@ export function parseCoresignalRegularSearchResponse(
     throw error
   }
 
-  const totalResults = nonNegativeSafeIntegerHeader(headers, "x-total-results")
-  const totalPages = nonNegativeSafeIntegerHeader(headers, "x-total-pages")
+  const totalResults = optionalNonNegativeSafeIntegerHeader(headers, "x-total-results")
+  const totalPages = optionalNonNegativeSafeIntegerHeader(headers, "x-total-pages")
   const nextPageAfterHeader = headerValue(headers, "x-next-page-after")
-  if (nextPageAfterHeader !== null && !nextPageAfterHeader.trim()) {
-    throw new CoresignalRegularSearchResponseError("Coresignal regular Search returned an empty x-next-page-after header.")
+  if (nextPageAfterHeader !== null && (!nextPageAfterHeader.trim() || nextPageAfterHeader.length > 256 || /[\u0000-\u001f\u007f]/.test(nextPageAfterHeader))) {
+    throw new CoresignalRegularSearchResponseError("Coresignal regular Search returned an invalid x-next-page-after header.")
   }
-  if (body.length > totalResults) {
+  if (totalResults !== null && body.length > totalResults) {
     throw new CoresignalRegularSearchResponseError("Coresignal regular Search page contains more IDs than its x-total-results header reports.")
   }
   if (body.length > 0 && totalPages === 0) {

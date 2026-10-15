@@ -66,10 +66,9 @@ test("malformed body IDs and response shapes fail before database lookup", async
   }
 })
 
-test("malformed total and pagination headers fail before database lookup", async () => {
+test("malformed supplied total and pagination headers fail before database lookup", async () => {
   const invalidHeaders = [
     null,
-    { "x-total-pages": "1" },
     { "x-total-results": "three", "x-total-pages": "1" },
     { "x-total-results": "1", "x-total-pages": "-1" },
     { "x-total-results": "1", "x-total-pages": "0" },
@@ -80,6 +79,16 @@ test("malformed total and pagination headers fail before database lookup", async
     await assert.rejects(routing.planCoresignalRegularSearchRouting([1696198], responseHeaders, store), /Coresignal regular Search/)
     assert.equal(store.calls.length, 0)
   }
+})
+
+test("missing optional provider headers remain distinct from numeric zero", async () => {
+  const missing = await routing.planCoresignalRegularSearchRouting([], {}, fakeStore())
+  assert.equal(missing.providerSearch.totalResults, null)
+  assert.equal(missing.providerSearch.totalPages, null)
+  assert.equal(missing.providerSearch.nextPageAfter, null)
+  const zero = await routing.planCoresignalRegularSearchRouting([], { "x-total-results": "0", "x-total-pages": "0" }, fakeStore())
+  assert.equal(zero.providerSearch.totalResults, 0)
+  assert.equal(zero.providerSearch.totalPages, 0)
 })
 
 test("documented empty page produces a valid empty plan and zero database operations", async () => {

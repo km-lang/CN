@@ -15,6 +15,7 @@ export type CoresignalRegularSearchTransportResult = {
   body: unknown
   headers: Readonly<Record<"x-total-results" | "x-total-pages" | "x-next-page-after", string | null>>
   providerCreditsRemaining: number | null
+  upstreamHttpStatus: number
 }
 
 export type CoresignalFailureKind = "authentication" | "rate_limit" | "timeout" | "unavailable" | "invalid_request" | "invalid_response"
@@ -293,6 +294,7 @@ export async function searchCoresignalEmployeeIds(
       "x-next-page-after": providerResponse.headers.get("x-next-page-after"),
     },
     providerCreditsRemaining: optionalNonNegativeIntegerHeader(providerResponse.headers, "x-credits-remaining"),
+    upstreamHttpStatus: providerResponse.status,
   }
 }
 

@@ -18,10 +18,10 @@ export type CoresignalSearchIdentityRoute = {
 
 export type CoresignalSearchRoutingPlan = {
   providerSearch: {
-    totalResults: number
+    totalResults: number | null
     pageIdsReceived: number
     uniquePageIds: number
-    totalPages: number
+    totalPages: number | null
     nextPageAfter: string | null
   }
   routes: readonly CoresignalSearchIdentityRoute[]

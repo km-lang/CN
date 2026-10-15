@@ -183,6 +183,24 @@ type LatestImport = { filename: string; rowCount: number; importedBy: string; cr
 type Provider = "coresignal" | "lusha"
 type ProviderMode = "mock" | "live"
 type ProviderUsage = Record<Provider, { used: number; limit: number; remaining: number; configured: boolean; mode?: ProviderMode }>
+type CoresignalSearchEvidence = {
+  schemaVersion: 1
+  attemptId: string
+  searchParameters: { institutionId: number; company: string | null; mappedCompanyId: number | null; graduationYear: number | null; itemsPerPage: number; searchMode: string }
+  upstreamHttpStatus: number
+  employeeIds: readonly string[]
+  returnedCount: number
+  totalResults: number | null
+  totalPages: number | null
+  nextPageAfter: string | null
+  creditsRemaining: number | null
+  identityRoutes: readonly { employeeId: string; routingState: "IDENTITY_RESOLVED" | "IDENTITY_RESOLUTION_REQUIRED" | "IDENTITY_REVIEW_REQUIRED"; mappedAlumnusId: number | null; profileFreshness: "NOT_EVALUATED" }[]
+  profileFreshness: "NOT_EVALUATED"
+  applicationAccounting: { applicationUnits: 1; providerRequestCost: "UNRESOLVED" }
+  providerActions: { searchRequests: 1; previewRequests: 0; collectRequests: 0; automaticPagination: false; canonicalMutations: 0 }
+  audit: { requestedAt: string; completedAt: string; provenance: "provider_response_history" }
+}
+type PresentedSearchEvidence = { state: "RETAINED"; evidence: CoresignalSearchEvidence } | { state: "NOT_RETAINED" | "UNAVAILABLE"; reason: string }
 type ProviderHistory = {
   id: number
   provider: Provider | "pdl"
@@ -205,6 +223,7 @@ type ProviderHistory = {
   errorMessage: string
   requestedBy: string
   createdAt: string
+  searchEvidence?: PresentedSearchEvidence
 }
 
 type DiscoveryResult = {
@@ -483,6 +502,25 @@ function StatusBadge({ status }: { status: OutreachStatus }) {
   return <span className={`status-badge status-${status.toLowerCase().replaceAll(" ", "-")}`}>{status}</span>
 }
 
+function CoresignalSearchEvidencePanel({ evidence, showIds = false }: { evidence: CoresignalSearchEvidence; showIds?: boolean }) {
+  return <div className="search-evidence-panel">
+    <div className="search-evidence-grid">
+      <div><span>Search conditions</span><strong>IIM Lucknow{evidence.searchParameters.graduationYear ? ` · ${evidence.searchParameters.graduationYear}` : " · all years"}{evidence.searchParameters.company ? ` · ${evidence.searchParameters.company}` : ""}</strong></div>
+      <div><span>Provider response</span><strong>HTTP {evidence.upstreamHttpStatus}</strong><small>Attempt {evidence.attemptId}</small></div>
+      <div><span>Returned candidates</span><strong>{evidence.returnedCount}</strong><small>{evidence.totalResults === null ? "Total not supplied" : `${evidence.totalResults} provider matches reported`}</small></div>
+      <div><span>Pagination</span><strong>{evidence.totalPages === null ? "Pages not supplied" : `${evidence.totalPages} page${evidence.totalPages === 1 ? "" : "s"}`}</strong><small>{evidence.nextPageAfter === null ? "No next-page cursor supplied" : "Next-page cursor retained; not followed"}</small></div>
+      <div><span>Profile freshness</span><strong>{evidence.profileFreshness.replaceAll("_", " ")}</strong><small>Search IDs are not verified profiles</small></div>
+      <div><span>Provider actions</span><strong>Search 1 · Preview 0 · Collect 0</strong><small>No pagination or canonical mutation</small></div>
+      <div><span>Application accounting</span><strong>1 application unit</strong><small>Provider request cost unresolved · remaining {evidence.creditsRemaining ?? "not supplied"}</small></div>
+      <div><span>Observed</span><strong>{new Date(evidence.audit.completedAt).toLocaleString()}</strong><small>Provider History evidence v{evidence.schemaVersion}</small></div>
+    </div>
+    <div className="search-route-summary">
+      {(["IDENTITY_RESOLVED", "IDENTITY_RESOLUTION_REQUIRED", "IDENTITY_REVIEW_REQUIRED"] as const).map(state => <span key={state}><strong>{evidence.identityRoutes.filter(route => route.routingState === state).length}</strong> {state.replaceAll("_", " ").toLowerCase()}</span>)}
+    </div>
+    {showIds && <details className="search-id-evidence"><summary>View returned Employee IDs</summary>{evidence.identityRoutes.length ? <div>{evidence.identityRoutes.map(route => <article key={route.employeeId}><code>{route.employeeId}</code><span>{route.routingState.replaceAll("_", " ")}</span><small>Freshness {route.profileFreshness.replaceAll("_", " ").toLowerCase()}</small></article>)}</div> : <p>No Employee IDs were returned.</p>}<p>IDs are secondary provider evidence only. They do not create alumni, attach identities, or prove profile freshness.</p></details>}
+  </div>
+}
+
 function EngagementStatusBadge({ status }: { status: EngagementStatus }) {
   return <span className={`engagement-status engagement-${status.toLowerCase().replaceAll(" ", "-")}`}>{status}</span>
 }
@@ -592,6 +630,7 @@ export default function Home() {
   const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
   const [pendingRegularSearchFilters, setPendingRegularSearchFilters] = useState<DiscoveryFilters | null>(null)
   const [regularSearchPreparation, setRegularSearchPreparation] = useState<{ provider: string; operation: string; institution: string; company: string; companyMapping: string; graduationYear: string; seniority: string; pageSize: number; maximumSearchRequests: number; automaticPagination: boolean; automaticCollect: boolean; automaticCanonicalUpdate: boolean; searchMode: string } | null>(null)
+  const [regularSearchResultEvidence, setRegularSearchResultEvidence] = useState<CoresignalSearchEvidence | null>(null)
   const [regularSearchStatus, setRegularSearchStatus] = useState({ enabled: false, configured: false, maxRequests: 1, automaticPagination: false })
   const [coresignalLiveMaximum, setCoresignalLiveMaximum] = useState(5)
   const [activeDiscoveryRun, setActiveDiscoveryRun] = useState<DiscoveryRunSummary | null>(null)
@@ -1886,6 +1925,7 @@ export default function Home() {
   async function runRegularSearch(searchFilters: DiscoveryFilters) {
     setDiscovering(true)
     setDiscoveryMessage("")
+    setRegularSearchResultEvidence(null)
     try {
       const response = await fetch(API_ROUTES.discovery, {
         method: "POST",
@@ -1893,7 +1933,8 @@ export default function Home() {
         body: JSON.stringify({ action: "regular_search", filters: { ...searchFilters, graduationYear: searchFilters.graduationYear || undefined }, limit: Number(discoveryLimit), confirmed: true }),
       })
       const data = await response.json() as {
-        routing?: { providerSearch: { totalResults: number; pageIdsReceived: number; totalPages: number }; summary: { identityResolved: number; identityResolutionRequired: number; identityReviewRequired: number } }
+        routing?: { providerSearch: { totalResults: number | null; pageIdsReceived: number; totalPages: number | null }; summary: { identityResolved: number; identityResolutionRequired: number; identityReviewRequired: number } }
+        searchEvidence?: CoresignalSearchEvidence
         previewRequests?: number
         collectRequests?: number
         providerCreditsRemaining?: number | null
@@ -1901,7 +1942,8 @@ export default function Home() {
       }
       if (!response.ok || !data.routing) throw new Error(data.error || "Unable to run Coresignal Base Employee Search.")
       const summary = data.routing.summary
-      setDiscoveryMessage(`Coresignal Search returned ${data.routing.providerSearch.pageIdsReceived} Employee ID${data.routing.providerSearch.pageIdsReceived === 1 ? "" : "s"} on this page (${data.routing.providerSearch.totalResults} total reported): ${summary.identityResolved} mapped, ${summary.identityResolutionRequired} require identity resolution, ${summary.identityReviewRequired} require identity review. Preview ${data.previewRequests ?? 0}; Collect ${data.collectRequests ?? 0}; provider remaining credits ${data.providerCreditsRemaining == null ? "not reported" : data.providerCreditsRemaining}. No alumnus or profile field was changed.`)
+      setRegularSearchResultEvidence(data.searchEvidence ?? null)
+      setDiscoveryMessage(`Coresignal Search returned ${data.routing.providerSearch.pageIdsReceived} Employee ID${data.routing.providerSearch.pageIdsReceived === 1 ? "" : "s"} on this page (${data.routing.providerSearch.totalResults === null ? "total not supplied" : `${data.routing.providerSearch.totalResults} total reported`}): ${summary.identityResolved} mapped, ${summary.identityResolutionRequired} require identity resolution, ${summary.identityReviewRequired} require identity review. Preview ${data.previewRequests ?? 0}; Collect ${data.collectRequests ?? 0}; provider remaining credits ${data.providerCreditsRemaining == null ? "not reported" : data.providerCreditsRemaining}. No alumnus or profile field was changed.`)
       await Promise.all([loadEnrichment(), loadPendingDiscoverySummary()])
     } catch (error) {
       setDiscoveryMessage(error instanceof Error ? error.message : "Unable to run Coresignal Base Employee Search.")
@@ -2558,7 +2600,7 @@ export default function Home() {
 
             <section className="panel history-panel">
               <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canAdminister && <Button variant="ghost" size="sm" onClick={() => void refreshProviderHistory()}>Refresh history</Button>}</div>
-              <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Usage</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistoryPagination.items.map(item => { const usage = providerUsageLabel(item); return <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span>{item.resultCount ? <small className="review-status">{item.resultCount} results</small> : null}</TableCell><TableCell><span className="stacked-cell"><strong>{usage.label}</strong><small>{usage.detail}</small>{item.provider === "coresignal" && <small>{item.applicationUnits ?? 0} application unit{(item.applicationUnits ?? 0) === 1 ? "" : "s"}</small>}{item.reconciliationSource && <small>{item.reconciliationSource}</small>}{session.canAdminister && item.provider === "lusha" && usage.label === "Reconciliation required" && <span className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => setUsageReconciliationDrafts(current => ({ ...current, [item.id]: event.target.value }))} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => void reconcileProviderUsage(item)}>Reconcile</Button></span>}</span></TableCell><TableCell className="response-cell">{item.requestSummary && <small>{item.requestSummary}</small>}{item.errorMessage || item.responseSummary}</TableCell></TableRow> })}</TableBody></Table>
+              <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Provider</TableHead><TableHead>Alumnus</TableHead><TableHead>Operation</TableHead><TableHead>Result</TableHead><TableHead>Usage</TableHead><TableHead>Response</TableHead></TableRow></TableHeader><TableBody>{providerHistoryPagination.items.map(item => { const usage = providerUsageLabel(item); return <TableRow key={item.id}><TableCell>{new Date(item.createdAt).toLocaleString()}</TableCell><TableCell><span className="provider-chip">{item.provider.toUpperCase()}</span></TableCell><TableCell>{item.alumnusName}</TableCell><TableCell>{item.operation} · {item.mode}</TableCell><TableCell><span className={`history-status history-${item.status}`}>{item.status.replace("_", " ")}</span>{item.resultCount ? <small className="review-status">{item.resultCount} results</small> : null}</TableCell><TableCell><span className="stacked-cell"><strong>{usage.label}</strong><small>{usage.detail}</small>{item.provider === "coresignal" && <small>{item.applicationUnits ?? 0} application unit{(item.applicationUnits ?? 0) === 1 ? "" : "s"}</small>}{item.reconciliationSource && <small>{item.reconciliationSource}</small>}{session.canAdminister && item.provider === "lusha" && usage.label === "Reconciliation required" && <span className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => setUsageReconciliationDrafts(current => ({ ...current, [item.id]: event.target.value }))} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => void reconcileProviderUsage(item)}>Reconcile</Button></span>}</span></TableCell><TableCell className="response-cell">{item.requestSummary && <small>{item.requestSummary}</small>}{item.errorMessage || item.responseSummary}{session.canOperate && item.searchEvidence?.state === "RETAINED" && <details className="history-evidence-details"><summary>Review Search evidence</summary><CoresignalSearchEvidencePanel evidence={item.searchEvidence.evidence} showIds /></details>}{session.canOperate && item.searchEvidence && item.searchEvidence.state !== "RETAINED" && <small className="history-evidence-unavailable">{item.searchEvidence.reason}</small>}</TableCell></TableRow> })}</TableBody></Table>
               <PaginationFooter model={providerHistoryPagination} label="Provider history pagination" />
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section>
@@ -2743,6 +2785,10 @@ export default function Home() {
 
       <Dialog open={Boolean(pendingRegularSearchFilters && regularSearchPreparation)} onOpenChange={open => { if (!open) { setPendingRegularSearchFilters(null); setRegularSearchPreparation(null) } }}>
         <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run one Coresignal Base Employee ES-DSL Search?</DialogTitle><DialogDescription>Server-side preparation verified this ID-only Search contract without calling Coresignal. Live execution remains independently gated.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>{regularSearchStatus.enabled ? "Coresignal — LIVE gate enabled" : "Coresignal — preflight only; LIVE gate disabled"}</strong></div><div><span>Operation</span><strong>{regularSearchPreparation?.operation}</strong></div><div><span>Search mode</span><strong>{regularSearchPreparation?.searchMode.replaceAll("_", " ")}</strong></div><div><span>Institution</span><strong>{regularSearchPreparation?.institution}</strong></div><div><span>Graduation year</span><strong>{regularSearchPreparation?.graduationYear}</strong></div><div><span>Company</span><strong>{regularSearchPreparation?.company}</strong></div><div><span>Company mapping</span><strong>{regularSearchPreparation?.companyMapping}</strong></div><div><span>Programme</span><strong>Not constrained</strong></div><div><span>Seniority</span><strong>{regularSearchPreparation?.seniority}</strong></div><div><span>Page size / result bound</span><strong>{regularSearchPreparation?.pageSize}</strong></div><div><span>Maximum Search requests</span><strong>{regularSearchPreparation?.maximumSearchRequests}</strong></div><div><span>Automatic pagination</span><strong>{regularSearchPreparation?.automaticPagination ? "On" : "Off"}</strong></div><div><span>Automatic Collect</span><strong>{regularSearchPreparation?.automaticCollect ? "On" : "Off"}</strong></div><div><span>Automatic canonical update</span><strong>{regularSearchPreparation?.automaticCanonicalUpdate ? "On" : "Off"}</strong></div></div><div className="credit-notice"><Activity /><span>{regularSearchStatus.enabled ? "A confirmed Search may consume provider usage." : "Live Search is unavailable because the server gate is disabled. Preparation and cancellation consume no provider usage."} No downstream provider action is automatic. Returned Employee IDs are routed against stored identities only. Search matches are not verified alumni or fresh profiles. Unknown IDs remain unresolved; no alumnus is created, no identity is attached, freshness is not evaluated, and no profile field is changed.</span></div><DialogFooter><Button variant="outline" onClick={() => { setPendingRegularSearchFilters(null); setRegularSearchPreparation(null) }}>Cancel — No Provider Call</Button><Button title={!regularSearchStatus.enabled ? "Live Search is unavailable while CORESIGNAL_SEARCH_ENABLED is off." : !regularSearchStatus.configured ? "Live Search requires configured server-side Coresignal authentication." : undefined} disabled={discovering || !pendingRegularSearchFilters || !regularSearchStatus.enabled || !regularSearchStatus.configured || Boolean(pendingRegularSearchFilters.graduationYear && !/^\d{4}$/.test(pendingRegularSearchFilters.graduationYear))} onClick={() => pendingRegularSearchFilters && void runRegularSearch(pendingRegularSearchFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {regularSearchStatus.enabled ? "Confirm One Search Request" : "Live Search Unavailable — Gate Off"}</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(regularSearchResultEvidence)} onOpenChange={open => { if (!open) setRegularSearchResultEvidence(null) }}>
+        <DialogContent className="search-evidence-dialog"><DialogHeader><DialogTitle>Coresignal Search evidence</DialogTitle><DialogDescription>Sanitized ID-only evidence from the confirmed Search. These candidates are not verified alumni and their profiles were not collected or marked fresh.</DialogDescription></DialogHeader>{regularSearchResultEvidence && <CoresignalSearchEvidencePanel evidence={regularSearchResultEvidence} showIds />}<DialogFooter><Button onClick={() => setRegularSearchResultEvidence(null)}>Done</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>
