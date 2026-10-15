@@ -68,6 +68,10 @@ The provider-reported 927 matches establish support for that Search field combin
 
 The controlled exact-year response reported `x-credits-remaining=4950`. That account-balance signal does not establish the cost of the request, so regular Search must not be described as free; exact provider cost remains unresolved. Saved Collect evidence still does not support Bharani as an active exact-2013 case: the active IIML row has null year fields, while 2013 appears only on a deleted legacy row.
 
+### Dormant current-company diagnostic
+
+**CURRENT COMPANY ES SEMANTICS: UNVERIFIED.** `coresignalCurrentCompanyEsDslDiagnosticContract` is a provider-free request builder with no UI, route, or automatic runtime integration. Its candidate current-company predicate keeps `experience.company_id`, `experience.is_current=1`, and `experience.deleted=0` within one proposed nested `experience` row. Controlled Collect evidence supports that interpretation of returned employment rows, but does not establish that Base Employee ES exposes those fields or maps `experience` as nested. A null `date_to` is deliberately not used because saved evidence contains non-current employment with no end date. The Lincoln company ID used in focused tests is evidence for that single diagnostic case, not a general company-directory mapping.
+
 ### RTAPI and webhooks
 
 Real-Time Employee API work is frozen: a controlled attempt was unauthorized and later provider guidance said the API is currently unavailable. It is not active or recommended.

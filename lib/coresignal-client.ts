@@ -112,6 +112,69 @@ export function coresignalEmployeeEsDslSearchContract(
   }
 }
 
+function coresignalDiagnosticCompanyId(value: unknown) {
+  const companyId = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^[1-9][0-9]*$/.test(value)
+      ? Number(value)
+      : Number.NaN
+  if (!Number.isSafeInteger(companyId) || companyId <= 0) {
+    throw new Error("Coresignal diagnostic company ID must be a positive safe integer.")
+  }
+  return companyId
+}
+
+/**
+ * Provider-free diagnostic contract only. The Base Employee ES mapping for
+ * experience, including its nested shape and company/current/deleted fields,
+ * is UNVERIFIED. Nothing in the runtime or product UI executes this helper.
+ *
+ * Controlled Collect evidence makes a same-row company ID + is_current=1 +
+ * deleted=0 predicate the safest candidate. A null end date is deliberately
+ * not used because non-current experience can also have date_to=null.
+ */
+export function coresignalCurrentCompanyEsDslDiagnosticContract(options: {
+  companyId: unknown
+  graduationYear?: unknown
+  itemsPerPage?: number
+}) {
+  const companyId = coresignalDiagnosticCompanyId(options.companyId)
+  const base = coresignalEmployeeEsDslSearchContract({
+    graduationYear: options.graduationYear,
+    itemsPerPage: options.itemsPerPage,
+  })
+  return {
+    searchMode: base.searchMode,
+    method: base.method,
+    path: base.path,
+    query: base.query,
+    body: {
+      query: {
+        bool: {
+          filter: [
+            ...base.body.query.bool.filter,
+            {
+              nested: {
+                path: "experience",
+                query: {
+                  bool: {
+                    filter: [
+                      { term: { "experience.company_id": companyId } },
+                      { term: { "experience.is_current": 1 } },
+                      { term: { "experience.deleted": 0 } },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+      sort: base.body.sort,
+    },
+  }
+}
+
 /** Compatibility wrapper for callers that require an exact graduation year. */
 export function coresignalExactYearEsDslSearchContract(
   filters: DiscoveryFilters,
@@ -190,9 +253,9 @@ function optionalNonNegativeIntegerHeader(headers: Headers, name: string) {
 /**
  * Performs exactly one Base Employee ES-DSL Search request. It never retries,
  * follows continuation headers, calls Preview/Collect, or interprets returned
- * Employee IDs. Institution-only and exact-year request shapes are
- * structurally validated, but exact-year behavior against live Base Employee
- * data is not yet empirically proven.
+ * Employee IDs. The IIM Lucknow institution predicate and its 2011 exact-year
+ * combination are live verified; this transport does not imply support for
+ * arbitrary caller-supplied ES fields such as the diagnostic experience terms.
  */
 export async function searchCoresignalEmployeeIds(
   esDslBody: unknown,
