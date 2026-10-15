@@ -4,6 +4,7 @@ import { coresignalProgrammeQuery, providerEducationDateTo } from "@/lib/discove
 
 export const CORESIGNAL_API_BASE = "https://api.coresignal.com"
 export const CORESIGNAL_IIML_INSTITUTION_URL = "https://www.linkedin.com/school/indian-institute-of-management-lucknow"
+export const CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID = 25_919_228
 export const CORESIGNAL_SEARCH_PATH = "/cdapi/v2/employee_base/search/filter/preview"
 export const CORESIGNAL_ES_DSL_SEARCH_PATH = "/cdapi/v2/employee_base/search/es_dsl"
 export const CORESIGNAL_COLLECT_PATH = "/cdapi/v2/employee_base/collect"
@@ -63,8 +64,8 @@ export function coresignalEmployeeEsDslGraduationYear(value: unknown): number | 
 }
 
 /**
- * Provider-free contract for Base Employee ID discovery by the stable IIML
- * institution URL, with an optional exact education end year.
+ * Provider-free contract for Base Employee ID discovery by the live-verified
+ * IIM Lucknow institution ID, with an optional exact education end year.
  *
  * This deliberately does not support company, role, function, seniority,
  * programme, location, or deleted-record clauses. Their Base Employee ES
@@ -72,16 +73,15 @@ export function coresignalEmployeeEsDslGraduationYear(value: unknown): number | 
  * Collect remains authoritative for final education and employment evidence.
  */
 export function coresignalEmployeeEsDslSearchContract(
-  options: { institutionUrl?: string; graduationYear?: unknown; itemsPerPage?: number } = {},
+  options: { graduationYear?: unknown; itemsPerPage?: number } = {},
 ) {
   const graduationYear = coresignalEmployeeEsDslGraduationYear(options.graduationYear)
   const itemsPerPage = options.itemsPerPage ?? CORESIGNAL_ES_DSL_DEFAULT_ITEMS_PER_PAGE
   if (!Number.isInteger(itemsPerPage) || itemsPerPage < 1 || itemsPerPage > CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE) {
     throw new Error(`Coresignal ES-DSL items_per_page must be between 1 and ${CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE}.`)
   }
-  const institutionUrl = options.institutionUrl ?? CORESIGNAL_IIML_INSTITUTION_URL
   const educationFilters = [
-    { term: { "education.institution_url": institutionUrl } },
+    { term: { "education.institution_id": CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } },
     ...(graduationYear === undefined ? [] : [{ term: { "education.date_to_year": graduationYear } }]),
   ]
   return {

@@ -152,10 +152,10 @@ test("Shruti exact-year verification rejects active 2011 evidence despite the 20
   assert.doesNotMatch(qualified.seniority.evidence, /Vice President/)
 })
 
-test("Bharani exact-year verification accepts non-deleted 2011–2013 IIML evidence", () => {
-  const bharani = adapter.mapCoresignalProfile({
-    id: "bharani",
-    full_name: "Bharani Kumar R",
+test("exact-year verification accepts non-deleted evidence ending in the requested year", () => {
+  const candidate = adapter.mapCoresignalProfile({
+    id: "active-year-match",
+    full_name: "Active Year Match",
     deleted: 0,
     education: [
       { institution_name: "Indian Institute of Management Lucknow", degree_name: "PGDM", date_from: "2011", date_to: "2013", deleted: 0 },
@@ -163,8 +163,8 @@ test("Bharani exact-year verification accepts non-deleted 2011–2013 IIML evide
     ],
     experience: [{ company_name: "Lincoln International", title: "Vice President", is_current: 1, deleted: 0 }],
   }, 0, { selectedProgrammes: ["PGP"] })
-  const qualified = execution.qualifyCollectedCandidate(bharani, filters({ discoveryProgrammes: ["PGP"] }))
-  assert.equal(bharani.iimlEducationEvidence.length, 1)
+  const qualified = execution.qualifyCollectedCandidate(candidate, filters({ discoveryProgrammes: ["PGP"] }))
+  assert.equal(candidate.iimlEducationEvidence.length, 1)
   assert.equal(qualified.graduationYear.result, "VERIFIED_MATCH")
   assert.equal(qualified.graduationYear.evidence, "IIM Lucknow · 2011–2013")
   assert.match(qualified.graduationYear.rationale, /matching the requested graduation year/)

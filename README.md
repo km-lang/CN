@@ -89,7 +89,7 @@ npm run db:generate
 | Intelligence local integration | Active / validated | Loopback authenticated service and review UI verified. |
 | Coresignal Base Employee Filter Preview and selective Collect | Implemented / provider-gated | Explicit live gate, bounded application limits, review before apply. |
 | Coresignal Employee ID persistence and Search-ID deduplication | Active domain capability | Durable identity and bulk indexed lookup. |
-| Coresignal Base Employee ES-DSL Search transport | Implemented / disabled by default | Institution-only or institution + exact-year mode; independent `CORESIGNAL_SEARCH_ENABLED` server gate, explicit confirmation, one request, zero retry/pagination, no automatic Preview/Collect. Exact-year live semantics remain unconfirmed. |
+| Coresignal Base Employee ES-DSL Search transport | Implemented / disabled by default | Nested IIM Lucknow institution ID 25919228 is live-verified; institution-only or institution + exact-year mode; independent `CORESIGNAL_SEARCH_ENABLED` server gate, explicit confirmation, one request, zero retry/pagination, no automatic Preview/Collect. Exact-year live semantics remain unconfirmed. |
 | Regular Search response parser and routing planner | Implemented behind disabled Search gate | Parses one page, deduplicates IDs, and routes identity without canonical mutation. |
 | Exact-year ES-DSL request builder | Implemented behind disabled Search gate | Provider-free structure is validated; live exact-year semantics remain unconfirmed. |
 | Coresignal Real-Time Employee API | Frozen | Previous attempt was unauthorized; later guidance said the API is unavailable. |

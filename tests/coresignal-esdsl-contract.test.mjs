@@ -13,7 +13,7 @@ const search = await vite.ssrLoadModule("/lib/alumni-search.ts")
 
 const exactYearFilters = overrides => ({
   ...search.defaultDiscoveryFilters(),
-  graduationYear: "2013",
+  graduationYear: "2011",
   ...overrides,
 })
 
@@ -33,7 +33,7 @@ test("institution-only ES-DSL contract omits education year and keeps one nested
               query: {
                 bool: {
                   filter: [
-                    { term: { "education.institution_url": "https://www.linkedin.com/school/indian-institute-of-management-lucknow" } },
+                    { term: { "education.institution_id": 25919228 } },
                   ],
                 },
               },
@@ -45,17 +45,20 @@ test("institution-only ES-DSL contract omits education year and keeps one nested
     sort: ["id"],
   })
   assert.equal(JSON.stringify(contract.body).includes("education.date_to_year"), false)
+  assert.equal(JSON.stringify(contract.body).includes("education.institution_url"), false)
+  assert.equal(client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID, 25919228)
 })
 
 test("general ES-DSL contract keeps institution and exact year in one nested education query", () => {
-  const contract = client.coresignalEmployeeEsDslSearchContract({ graduationYear: 2013 })
+  const contract = client.coresignalEmployeeEsDslSearchContract({ graduationYear: 2011 })
   assert.equal(contract.searchMode, "EXACT_GRADUATION_YEAR")
   const nestedClauses = contract.body.query.bool.filter.filter(clause => clause.nested)
   assert.equal(nestedClauses.length, 1)
   assert.deepEqual(nestedClauses[0].nested.query.bool.filter, [
-    { term: { "education.institution_url": client.CORESIGNAL_IIML_INSTITUTION_URL } },
-    { term: { "education.date_to_year": 2013 } },
+    { term: { "education.institution_id": client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } },
+    { term: { "education.date_to_year": 2011 } },
   ])
+  assert.equal(JSON.stringify(contract.body).includes("education.institution_url"), false)
 })
 
 function educationMatchesGeneratedNestedQuery(education, contract = exactContract()) {
@@ -84,8 +87,8 @@ test("exact-year ES-DSL contract uses free Base Employee Search with conservativ
                 query: {
                   bool: {
                     filter: [
-                      { term: { "education.institution_url": "https://www.linkedin.com/school/indian-institute-of-management-lucknow" } },
-                      { term: { "education.date_to_year": 2013 } },
+                      { term: { "education.institution_id": 25919228 } },
+                      { term: { "education.date_to_year": 2011 } },
                     ],
                   },
                 },
@@ -115,15 +118,15 @@ test("items_per_page is configurable only inside the documented bounded integer 
 })
 
 test("nested education binds stable IIML identity and exact year to the same education row", () => {
-  const shruti = [{ institution_url: client.CORESIGNAL_IIML_INSTITUTION_URL, date_to_year: 2011 }]
-  const bharani = [{ institution_url: client.CORESIGNAL_IIML_INSTITUTION_URL, date_to_year: 2013 }]
+  const shruti = [{ institution_id: client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID, date_to_year: 2011 }]
+  const differentYear = [{ institution_id: client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID, date_to_year: 2013 }]
   const crossObject = [
-    { institution_url: client.CORESIGNAL_IIML_INSTITUTION_URL, date_to_year: 2011 },
-    { institution_url: "https://www.linkedin.com/school/another-institution", date_to_year: 2013 },
+    { institution_id: client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID, date_to_year: 2013 },
+    { institution_id: 999, date_to_year: 2011 },
   ]
 
-  assert.equal(educationMatchesGeneratedNestedQuery(shruti), false)
-  assert.equal(educationMatchesGeneratedNestedQuery(bharani), true)
+  assert.equal(educationMatchesGeneratedNestedQuery(shruti), true)
+  assert.equal(educationMatchesGeneratedNestedQuery(differentYear), false)
   assert.equal(educationMatchesGeneratedNestedQuery(crossObject), false)
 })
 
@@ -152,7 +155,7 @@ test("exact-year builder does not replace or alter the upper-bound Filter Previe
   assert.deepEqual(client.coresignalSearchContract(filters).body, {
     education_institution_professional_network_url: client.CORESIGNAL_IIML_INSTITUTION_URL,
     active_experience: true,
-    education_date_to: "2013",
+    education_date_to: "2011",
     experience_company_name: "Lincoln International",
   })
   assert.equal("education_date_to" in exactContract().body, false)
@@ -187,10 +190,14 @@ test("building the contract is provider-free and only the separately gated runti
   assert.match(runtime, /searchCoresignalEmployeeIds/)
 })
 
-test("exact-year live behavior is explicitly not inferred from the zero-result entitlement request", async () => {
+test("documentation separates the live-verified institution predicate from unverified exact-year semantics", async () => {
   const clientSource = await readFile(new URL("../lib/coresignal-client.ts", import.meta.url), "utf8")
   const providerDocs = await readFile(new URL("../docs/providers.md", import.meta.url), "utf8")
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8")
   assert.match(clientSource, /not yet empirically proven/)
-  assert.match(providerDocs, /date_to_year=2013[^\n]*zero matches/)
+  assert.match(providerDocs, /education\.institution_id=25919228[^\n]*provider reported 35,103 matches/)
+  assert.match(providerDocs, /Shruti[^\n]*active, non-deleted[^\n]*2011/)
+  assert.match(providerDocs, /Bharani[^\n]*2013[^\n]*deleted legacy/)
   assert.match(providerDocs, /exact-year live data semantics are \*\*not\*\* yet empirically confirmed/)
+  assert.match(readme, /institution ID 25919228[^\n]*live-verified/)
 })

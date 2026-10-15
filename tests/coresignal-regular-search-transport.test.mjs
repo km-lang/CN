@@ -69,6 +69,26 @@ test("one ES-DSL request uses apikey auth, JSON headers, exact contract, and pre
   assert.deepEqual(result.body, [1696198, 289351894, 123456])
 })
 
+test("live-diagnostic response shape parses, deduplicates, and routes without follow-on provider work", async () => {
+  let calls = 0
+  const result = await runtime.executeCoresignalRegularSearch({ filters: { ...search.defaultDiscoveryFilters(), graduationYear: "" }, itemsPerPage: 1, operationContext: "institution ID diagnostic regression", confirmed: true }, {
+    searchEnabled: () => true,
+    transport: async body => {
+      calls += 1
+      assert.match(JSON.stringify(body), /education\.institution_id/)
+      assert.doesNotMatch(JSON.stringify(body), /education\.institution_url|education\.date_to_year/)
+      return { body: [718517], headers: { "x-total-results": "35103", "x-total-pages": "35103", "x-next-page-after": "718517" }, providerCreditsRemaining: 4950 }
+    },
+    store: mappingStore(),
+  })
+  assert.equal(calls, 1)
+  assert.deepEqual(result.routing.routes.map(route => [route.employeeId, route.routingState]), [["718517", "IDENTITY_RESOLUTION_REQUIRED"]])
+  assert.equal(result.routing.providerSearch.totalResults, 35103)
+  assert.equal(result.routing.providerSearch.totalPages, 35103)
+  assert.equal(result.routing.providerSearch.nextPageAfter, "718517")
+  assert.equal(result.previewRequests + result.collectRequests, 0)
+})
+
 test("transport, parser, dedupe, and routing handle known and unknown IDs end to end", async () => {
   let calls = 0
   const result = await runtime.executeCoresignalRegularSearch({ filters: filters(), itemsPerPage: 3, operationContext: "routing test", confirmed: true }, {
@@ -109,7 +129,9 @@ test("institution-only runtime makes one mocked Search with no year predicate", 
   assert.equal(calls, 1)
   assert.equal(result.searchMode, "INSTITUTION_ONLY")
   assert.doesNotMatch(JSON.stringify(requestBody), /education\.date_to_year/)
-  assert.match(JSON.stringify(requestBody), /education\.institution_url/)
+  assert.match(JSON.stringify(requestBody), /education\.institution_id/)
+  assert.match(JSON.stringify(requestBody), /25919228/)
+  assert.doesNotMatch(JSON.stringify(requestBody), /education\.institution_url/)
   assert.equal(result.previewRequests, 0)
   assert.equal(result.collectRequests, 0)
 })
@@ -125,8 +147,10 @@ test("exact-year runtime includes the year predicate in the mocked Search reques
     store: mappingStore(),
   })
   assert.equal(result.searchMode, "EXACT_GRADUATION_YEAR")
+  assert.match(JSON.stringify(requestBody), /education\.institution_id/)
   assert.match(JSON.stringify(requestBody), /education\.date_to_year/)
   assert.match(JSON.stringify(requestBody), /2013/)
+  assert.doesNotMatch(JSON.stringify(requestBody), /education\.institution_url/)
 })
 
 test("an observed-shape empty 200 response is valid and has no follow-on action", async () => {
@@ -211,6 +235,8 @@ test("runtime and UI integration preserve canonical immutability and explicit op
   assert.doesNotMatch(orchestration, /\.insert\(|\.update\(|\.delete\(|attachCoresignalIdentity|fieldChangeHistory/)
   assert.match(route, /action === "regular_search"/)
   assert.match(route, /operation: "Base Employee ES-DSL Search"/)
+  assert.match(route, /institution_match=provider_institution_id/)
+  assert.match(route, /provider_institution_id=\$\{CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID\}/)
   assert.match(route, /invalid_graduation_year/)
   assert.doesNotMatch(route, /exact_year_required/)
   assert.match(page, /Confirm One Search Request/)

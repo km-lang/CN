@@ -3,7 +3,7 @@ import { getDb } from "@/db"
 import { alumni, externalDiscoveryResults, externalDiscoverySearches, fieldChangeHistory, providerResponseHistory, providerSettings } from "@/db/schema"
 import { FIXED_ALUMNI_SCHOOL, criteriaSummary, defaultDiscoveryFilters, matchesDiscoverySeniorities, normalizeDiscoveryFiltersInput, normalized, type DiscoveryFilters, type DiscoveryProfile, type MatchStatus } from "@/lib/alumni-search"
 import { coresignalProvider } from "@/lib/coresignal-adapter"
-import { coresignalEmployeeEsDslGraduationYear, safeCoresignalError } from "@/lib/coresignal-client"
+import { CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID, coresignalEmployeeEsDslGraduationYear, safeCoresignalError } from "@/lib/coresignal-client"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { validateDiscoveryCount } from "@/lib/discovery-limit"
 import { PROFESSIONAL_DATA_PROVIDER, PROFESSIONAL_DATA_PROVIDER_LABEL } from "@/lib/professional-data"
@@ -271,7 +271,7 @@ export async function POST(request: Request) {
       const operationContext = filters.graduationYear
         ? `External Discovery · IIM Lucknow · exact graduation year ${filters.graduationYear}`
         : "External Discovery · IIM Lucknow · institution only"
-      const requestSummary = `${operationContext} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
+      const requestSummary = `${operationContext} · institution_match=provider_institution_id · provider_institution_id=${CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
       try {
         const execution = await executeCoresignalRegularSearch({ filters, itemsPerPage: validation.requested, operationContext, confirmed: true }, { store: coresignalSearchIdLookupStore(db) })
         const remainingSummary = execution.providerCreditsRemaining === null ? "Provider remaining credits were not reported." : `Provider reported ${execution.providerCreditsRemaining} credits remaining.`
