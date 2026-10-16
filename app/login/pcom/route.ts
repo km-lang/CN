@@ -1,5 +1,5 @@
 import { loginEntryResponse } from "@/lib/login-entry"
 
-export async function GET() {
-  return loginEntryResponse("pcom")
+export async function GET(request: Request) {
+  return loginEntryResponse(request, "pcom")
 }

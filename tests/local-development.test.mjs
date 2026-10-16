@@ -10,9 +10,12 @@ const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "ut
 const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8")
 
 test("local authentication requires both development runtime and the explicit opt-in", () => {
-  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true" }), true)
-  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "production", LOCAL_DEV_AUTH_ENABLED: "true" }), false)
-  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "false" }), false)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN" }), true)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "PCOM" }), true)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "production", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN" }), false)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "false", LOCAL_DEV_AUTH_ROLE: "ADMIN" }), false)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "DEVELOPER" }), false)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true" }), false)
 })
 
 test("local authentication accepts loopback hosts only", () => {
@@ -23,11 +26,11 @@ test("local authentication accepts loopback hosts only", () => {
   assert.equal(localDevelopment.isLoopbackHost("localhost.attacker.example"), false)
 })
 
-test("local acceptance can select PCOM while invalid local roles fail back to Admin", () => {
+test("local acceptance supports approved fixtures while invalid local roles fail closed", () => {
   assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "PCOM" }).role, "PCOM")
   assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "PCOM" }).userId, 2)
   assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "ADMIN" }).role, "ADMIN")
-  assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "DEVELOPER" }).role, "ADMIN")
+  assert.throws(() => localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "DEVELOPER" }), /must be ADMIN or PCOM/)
   assert.match(viteConfig, /LOCAL_DEV_AUTH_ROLE/)
   assert.match(viteConfig, /LOCAL_DEV_D1_PERSIST_PATH/)
 })
@@ -44,6 +47,7 @@ test("local scripts hard-disable every live provider and mail gate", () => {
   assert.match(viteConfig, /command === "serve"/)
   assert.match(viteConfig, /NODE_ENV: "development"/)
   assert.match(viteConfig, /LOCAL_DEV_AUTH_ENABLED: "true"/)
+  assert.match(viteConfig, /AUTH_SESSION_SECRET: localEnvironment\.AUTH_SESSION_SECRET\?\.trim\(\) \|\| "local-development-only-session-signing-key"/)
   assert.match(viteConfig, /CORESIGNAL_LIVE_ENABLED: localCoresignalDemo \? "true" : "false"/)
   assert.match(viteConfig, /localCoresignalLiveDemoEnabled\(localEnvironment\)/)
   assert.match(viteConfig, /LUSHA_LIVE_ENABLED: "false"/)
@@ -62,6 +66,7 @@ test("local fixture contains alumnus 15, a recipient, and completed email histor
 })
 
 test("local authorization is wired through layout and server request authentication", () => {
-  assert.match(layout, /localDevelopmentAuthEnabled\(\).*isLoopbackHost/)
-  assert.match(security, /localDevelopmentAuthEnabled\(\).*isLoopbackHost/s)
+  assert.doesNotMatch(layout, /localDevelopmentSecurityContext\(\)/)
+  assert.match(security, /verifyAppSessionToken\(token\)/)
+  assert.doesNotMatch(security, /localDevelopmentSecurityContext\(\)/)
 })

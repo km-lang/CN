@@ -43,15 +43,17 @@ export default defineConfig(async ({ command, mode }) => {
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
-  const localDevelopment = command === "serve"
-    && process.env.NODE_ENV === "development"
-    && process.env.LOCAL_DEV_AUTH_ENABLED === "true";
   const localEnvironment = {
     ...loadEnv(mode, process.cwd(), ""),
     ...process.env,
   };
+  const configuredLocalRole = localEnvironment.LOCAL_DEV_AUTH_ROLE?.trim() ?? "";
+  const localDevelopment = command === "serve"
+    && process.env.NODE_ENV === "development"
+    && process.env.LOCAL_DEV_AUTH_ENABLED === "true"
+    && (configuredLocalRole === "ADMIN" || configuredLocalRole === "PCOM");
   const localCoresignalKey = localEnvironment.CORESIGNAL_API_KEY?.trim() ?? "";
-  const localAuthRole = localEnvironment.LOCAL_DEV_AUTH_ROLE === "PCOM" ? "PCOM" : "ADMIN";
+  const localAuthRole = configuredLocalRole;
   const localPersistPath = localDevelopment
     ? localEnvironment.LOCAL_DEV_D1_PERSIST_PATH?.trim()
     : "";
@@ -62,6 +64,7 @@ export default defineConfig(async ({ command, mode }) => {
         NODE_ENV: "development",
         LOCAL_DEV_AUTH_ENABLED: "true",
         LOCAL_DEV_AUTH_ROLE: localAuthRole,
+        AUTH_SESSION_SECRET: localEnvironment.AUTH_SESSION_SECRET?.trim() || "local-development-only-session-signing-key",
         LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: localCoresignalDemo ? "true" : "false",
         LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
         CORESIGNAL_LIVE_ENABLED: localCoresignalDemo ? "true" : "false",

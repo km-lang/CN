@@ -4,11 +4,10 @@ import { redirect } from "next/navigation"
 import "./globals.css"
 
 import { AccessProvider } from "@/app/access-provider"
-import { chatGPTSignInPath, getChatGPTUser } from "@/app/chatgpt-auth"
+import { getChatGPTUser } from "@/app/chatgpt-auth"
 import { appConfig, assetPath, withBasePath } from "@/lib/app-config"
 import { APP_SESSION_COOKIE, cookieValue, verifyAppSessionToken } from "@/lib/auth-session"
 import type { AccessSession } from "@/lib/access-types"
-import { isLoopbackHost, localDevelopmentAuthEnabled, localDevelopmentSecurityContext } from "@/lib/local-development"
 import { AccessError, resolveSessionIdentity, toAccessSession } from "@/lib/security"
 
 export const dynamic = "force-dynamic"
@@ -27,16 +26,15 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const requestHeaders = await headers()
   const token = cookieValue(requestHeaders.get("cookie"), APP_SESSION_COOKIE)
-  let session: AccessSession | null = localDevelopmentAuthEnabled() && isLoopbackHost(requestHeaders.get("host"))
-    ? toAccessSession(localDevelopmentSecurityContext(), "")
-    : null
+  let session: AccessSession | null = null
   let accessMessage = ""
   if (!session && token) {
     try {
       const claims = await verifyAppSessionToken(token)
       if (!claims) throw new AccessError("Your authentication session has expired. Please sign in again.", 401, "invalid_session")
       const context = await resolveSessionIdentity(claims)
-      session = toAccessSession(context, withBasePath(`/auth/signout?provider=${context.provider}`))
+      const localFixture = context.externalIdentity.startsWith("local-development-")
+      session = toAccessSession(context, withBasePath(`/auth/signout?provider=${localFixture ? "local" : context.provider}`))
     } catch (error) {
       accessMessage = error instanceof AccessError ? error.message : "Corporate Network access could not be verified. Please sign in again."
     }

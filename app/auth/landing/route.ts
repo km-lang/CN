@@ -1,5 +1,6 @@
 import { absoluteAppUrl } from "@/lib/auth-config"
 import { landingForRole, parseLoginIntent } from "@/lib/login-intent"
+import { isLoopbackHost, localDevelopmentAuthEnabled } from "@/lib/local-development"
 import { AccessError, authenticateRequest } from "@/lib/security"
 
 function denied(message: string, status: 401 | 403) {
@@ -14,7 +15,11 @@ export async function GET(request: Request) {
     const context = await authenticateRequest(request)
     const landing = landingForRole(context.role, intent)
     if (!landing.allowed) return denied(landing.reason, 403)
-    return new Response(null, { status: 302, headers: { location: absoluteAppUrl(landing.destination), "cache-control": "no-store" } })
+    const requestUrl = new URL(request.url)
+    const destination = localDevelopmentAuthEnabled() && isLoopbackHost(requestUrl.host)
+      ? new URL(landing.destination, requestUrl).toString()
+      : absoluteAppUrl(landing.destination)
+    return new Response(null, { status: 302, headers: { location: destination, "cache-control": "no-store" } })
   } catch (error) {
     return denied(error instanceof AccessError ? error.message : "Your authenticated account could not be verified.", error instanceof AccessError ? error.status : 401)
   }

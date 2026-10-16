@@ -105,7 +105,7 @@ test("Admin workflow is server-authorized and records meaningful before/after au
   assert.match(route, /provider_id_changed/)
   assert.match(route, /verification_performed/)
   assert.match(route, /mapping_invalidated/)
-  assert.match(panel, /Provider company mappings/)
+  assert.match(panel, /Verified provider-company mappings/)
   assert.match(panel, /Name-only and fuzzy matching are not used/)
   assert.match(panel, /PCOM users cannot manage these mappings/)
 })

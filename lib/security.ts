@@ -6,7 +6,6 @@ import { type AccessSession, type ApplicationRole } from "@/lib/access-types"
 import type { IdentityProvider } from "@/lib/auth-config"
 import { APP_SESSION_COOKIE, cookieValue, createAppSessionToken, sessionCookie, type AppSessionClaims, verifyAppSessionToken } from "@/lib/auth-session"
 import { tryNormalizeEmail } from "@/lib/email-identity"
-import { isLoopbackHost, localDevelopmentAuthEnabled, localDevelopmentSecurityContext } from "@/lib/local-development"
 import { hasPermission, isApplicationRole, safeAuditMetadata, type Permission } from "@/lib/security-policy"
 
 export { hasPermission, isApplicationRole, maskEmail, maskPhone, safeAuditMetadata } from "@/lib/security-policy"
@@ -180,9 +179,6 @@ export async function resolveSessionIdentity(claims: AppSessionClaims): Promise<
 }
 
 export async function authenticateRequest(request: Request): Promise<SecurityContext> {
-  if (localDevelopmentAuthEnabled() && isLoopbackHost(new URL(request.url).host)) {
-    return localDevelopmentSecurityContext()
-  }
   const token = cookieValue(request.headers.get("cookie"), APP_SESSION_COOKIE)
   const claims = await verifyAppSessionToken(token)
   if (!claims) throw new AccessError("Authentication is required.", 401, "authentication_required")

@@ -11,7 +11,17 @@ type LocalDevelopmentEnvironment = {
 export function localDevelopmentAuthEnabled(
   values: LocalDevelopmentEnvironment = process.env,
 ) {
-  return values.NODE_ENV === "development" && values.LOCAL_DEV_AUTH_ENABLED === "true"
+  return values.NODE_ENV === "development"
+    && values.LOCAL_DEV_AUTH_ENABLED === "true"
+    && localDevelopmentAuthRole(values) !== null
+}
+
+export function localDevelopmentAuthRole(
+  values: LocalDevelopmentEnvironment = process.env,
+) {
+  return values.LOCAL_DEV_AUTH_ROLE === "ADMIN" || values.LOCAL_DEV_AUTH_ROLE === "PCOM"
+    ? values.LOCAL_DEV_AUTH_ROLE
+    : null
 }
 
 export function isLoopbackHost(host: string | null | undefined) {
@@ -36,7 +46,12 @@ export function localCoresignalLiveDemoEnabled(
 export function localDevelopmentSecurityContext(
   values: LocalDevelopmentEnvironment = process.env,
 ) {
-  const role = values.LOCAL_DEV_AUTH_ROLE === "PCOM" ? "PCOM" : "ADMIN"
+  const role = localDevelopmentAuthRole(values)
+  if (!role) throw new Error("LOCAL_DEV_AUTH_ROLE must be ADMIN or PCOM when local authentication is enabled.")
+  return localDevelopmentSecurityContextForRole(role)
+}
+
+export function localDevelopmentSecurityContextForRole(role: "ADMIN" | "PCOM") {
   const roleLabel = role === "PCOM" ? "PCOM" : "Admin"
   const localIdentityId = role === "PCOM" ? 2 : 1
   return {

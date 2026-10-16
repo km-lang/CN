@@ -1,0 +1,69 @@
+import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
+import test from "node:test"
+
+const localDevelopment = await import("../lib/local-development.ts")
+const loginEntry = await readFile(new URL("../lib/login-entry.ts", import.meta.url), "utf8")
+const localLogin = await readFile(new URL("../app/auth/local/start/route.ts", import.meta.url), "utf8")
+const authLanding = await readFile(new URL("../app/auth/landing/route.ts", import.meta.url), "utf8")
+const security = await readFile(new URL("../lib/security.ts", import.meta.url), "utf8")
+const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8")
+const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
+const admin = await readFile(new URL("../app/admin-panel.tsx", import.meta.url), "utf8")
+const intelligence = await readFile(new URL("../components/intelligence/intelligence-workspace.tsx", import.meta.url), "utf8")
+
+test("local login is explicit, loopback-only, session-backed, and invalid roles fail closed", () => {
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN" }), true)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "invalid" }), false)
+  assert.equal(localDevelopment.localDevelopmentAuthEnabled({ NODE_ENV: "production", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN" }), false)
+  assert.match(loginEntry, /localDevelopmentAuthEnabled\(\).*isLoopbackHost/s)
+  assert.match(localLogin, /localDevelopmentAuthEnabled\(\).*isLoopbackHost\(url\.host\)/s)
+  assert.match(localLogin, /resolveSessionIdentity/)
+  assert.match(localLogin, /context\.role !== expectedRole/)
+  assert.match(localLogin, /sessionCookie\(session, \{ secure: false \}\)/)
+  assert.doesNotMatch(security, /LOCAL_DEV_AUTH_ROLE/)
+  assert.doesNotMatch(layout, /localDevelopmentSecurityContext/)
+})
+
+test("Admin and PCOM entry points use server-selected fixture identities and preserve role-aware landing", () => {
+  assert.match(loginEntry, /auth\/local\/start\?intent=\$\{intent\}/)
+  assert.match(loginEntry, /Enter local \$\{admin \? "Admin" : "PCOM"\} workspace/)
+  assert.match(loginEntry, /Development-only access/)
+  assert.match(localLogin, /intent === "admin" \? "ADMIN" : "PCOM"/)
+  assert.match(localLogin, /landingForRole\(context\.role, intent\)/)
+  assert.match(localLogin, /safeReturnPath/)
+  assert.match(authLanding, /localDevelopmentAuthEnabled\(\) && isLoopbackHost\(requestUrl\.host\)/)
+  assert.match(authLanding, /new URL\(landing\.destination, requestUrl\)/)
+  assert.match(authLanding, /: absoluteAppUrl\(landing\.destination\)/)
+})
+
+test("Directory filters have intentional rows, an aligned programme field, and functional Clear", () => {
+  assert.match(page, /className="directory-clear"[^>]*onClick=\{clearDirectoryFilters\}/)
+  assert.match(page, /className="directory-more-filters"/)
+  assert.match(page, />Directory programme</)
+  assert.match(page, /Applies only to existing Corporate Network records/)
+  assert.match(styles, /grid-template-areas: "name company role more clear" "function seniority location linkedin \."/)
+  assert.match(styles, /\.directory-clear \{ grid-area: clear;/)
+})
+
+test("Discovery actions remain bounded and the Coresignal preparation panel is readable", () => {
+  assert.match(page, /className="coresignal-id-search"/)
+  assert.match(page, /Verified mapping required/)
+  assert.match(page, /No automatic Collect/)
+  assert.match(page, /This action opens confirmation; it does not call Search, Preview or Collect/)
+  assert.match(styles, /\.discovery-count-control \{[^}]*minmax\(220px, 280px\)/s)
+  assert.match(styles, /\.discovery-count-control > button \{[^}]*max-width: 250px/s)
+  assert.match(styles, /\.coresignal-id-search-action button \{[^}]*min-width: 190px/s)
+})
+
+test("Intelligence, Administration, and Opportunities use balanced responsive layouts and explanatory copy", () => {
+  assert.match(intelligence, /What this workspace does/)
+  assert.match(intelligence, /Preview is provider-free and never changes canonical alumni data/)
+  assert.match(admin, /User access management/)
+  assert.match(admin, /Verified provider-company mappings/)
+  assert.match(admin, /Why this matters:/)
+  assert.match(styles, /\.intelligence-refresh-layout \{[^}]*1\.08fr[^}]*\.92fr/s)
+  assert.match(styles, /\.opportunity-filters \{[^}]*minmax\(280px, 1\.7fr\)/s)
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*\.coresignal-id-search \{ grid-template-columns: minmax\(0, 1fr\)/)
+})

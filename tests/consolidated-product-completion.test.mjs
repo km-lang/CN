@@ -24,8 +24,8 @@ const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8
 test("dedicated Admin and PCOM login entries preserve server-resolved authority", () => {
   assert.match(layout, /primaryHref=\{withBasePath\("\/login\/pcom"\)\}/)
   assert.match(layout, /secondaryHref=\{withBasePath\("\/login\/admin"\)\}/)
-  assert.match(adminLogin, /loginEntryResponse\("admin"\)/)
-  assert.match(pcomLogin, /loginEntryResponse\("pcom"\)/)
+  assert.match(adminLogin, /loginEntryResponse\(request, "admin"\)/)
+  assert.match(pcomLogin, /loginEntryResponse\(request, "pcom"\)/)
   assert.match(landing, /authenticateRequest\(request\)/)
   assert.match(landing, /landingForRole\(context\.role, intent\)/)
 })

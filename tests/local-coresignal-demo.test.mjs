@@ -41,6 +41,7 @@ function demoEnvironment(overrides = {}) {
   return {
     NODE_ENV: "development",
     LOCAL_DEV_AUTH_ENABLED: "true",
+    LOCAL_DEV_AUTH_ROLE: "ADMIN",
     LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: "true",
     LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
     CORESIGNAL_LIVE_ENABLED: "true",

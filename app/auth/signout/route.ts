@@ -8,5 +8,5 @@ export async function GET(request: Request) {
   const location = provider === "chatgpt"
     ? new URL(chatGPTSignOutPath(withBasePath("/")), request.url).toString()
     : absoluteAppUrl("/")
-  return new Response(null, { status: 302, headers: { location, "set-cookie": clearSessionCookie(), "cache-control": "no-store" } })
+  return new Response(null, { status: 302, headers: { location, "set-cookie": clearSessionCookie({ secure: provider !== "local" }), "cache-control": "no-store" } })
 }

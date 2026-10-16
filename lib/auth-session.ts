@@ -51,16 +51,16 @@ export async function verifyGoogleOAuthToken(token: string | null | undefined): 
   return claims as GoogleOAuthClaims
 }
 
-export function sessionCookie(token: string) {
-  return serializeCookie(APP_SESSION_COOKIE, token, SESSION_TTL_SECONDS)
+export function sessionCookie(token: string, options: { secure?: boolean } = {}) {
+  return serializeCookie(APP_SESSION_COOKIE, token, SESSION_TTL_SECONDS, options.secure ?? true)
 }
 
 export function googleOAuthCookie(token: string) {
   return serializeCookie(GOOGLE_OAUTH_COOKIE, token, OAUTH_TTL_SECONDS)
 }
 
-export function clearSessionCookie() {
-  return serializeCookie(APP_SESSION_COOKIE, "", 0)
+export function clearSessionCookie(options: { secure?: boolean } = {}) {
+  return serializeCookie(APP_SESSION_COOKIE, "", 0, options.secure ?? true)
 }
 
 export function clearGoogleOAuthCookie() {
@@ -77,8 +77,8 @@ export function cookieValue(cookieHeader: string | null | undefined, name: strin
   return null
 }
 
-function serializeCookie(name: string, value: string, maxAge: number) {
-  return `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`
+function serializeCookie(name: string, value: string, maxAge: number, secure = true) {
+  return `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; HttpOnly; ${secure ? "Secure; " : ""}SameSite=Lax`
 }
 
 async function signClaims(claims: Record<string, unknown>) {
