@@ -65,9 +65,9 @@ test("Directory filters have intentional rows, an aligned programme field, and f
 
 test("Discovery actions remain bounded and the Coresignal preparation panel is readable", () => {
   assert.match(page, /className="coresignal-id-search"/)
-  assert.match(page, /Verified mapping required/)
+  assert.match(page, /Verified company mapping required when selected/)
   assert.match(page, /No automatic Collect/)
-  assert.match(page, /This action opens confirmation; it does not call Search, Preview or Collect/)
+  assert.match(page, /This provider-free action opens confirmation; it does not call Search, Preview or Collect/)
   assert.match(styles, /\.discovery-count-control \{[^}]*minmax\(220px, 280px\)/s)
   assert.match(styles, /\.discovery-count-control > button \{[^}]*max-width: 250px/s)
   assert.match(styles, /\.coresignal-id-search-action button \{[^}]*min-width: 190px/s)

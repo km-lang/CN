@@ -130,8 +130,11 @@ test("External Discovery owns every provider-search control", () => {
 
 test("ID-only Search preparation clearly confirms institution, year, and verified-company constraints", () => {
   assert.match(page, /Graduation year is optional/)
-  assert.match(page, /selected company is sent only after the server resolves an Admin-verified provider-company mapping/)
-  assert.match(page, /missing, unverified, conflicting, or invalid mappings block before any provider request/)
+  assert.match(page, /Find Alumni on Coresignal \(ID-only\)/)
+  assert.match(page, /Search returns candidate Employee IDs for review, not complete professional profiles/)
+  assert.match(page, /Verified company mapping required when selected/)
+  assert.match(page, /Missing, unverified, conflicting or invalid company mappings block before any provider request/)
+  assert.match(page, /Review Search Criteria/)
   assert.match(page, /Status: provider-free preparation available/)
   assert.match(page, /LIVE execution gate disabled/)
   assert.match(page, />Search mode<\/span><strong>\{regularSearchPreparation\?\.searchMode\.replaceAll\("_", " "\)\}</)
