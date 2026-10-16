@@ -1,11 +1,11 @@
-const VALID_TABS = new Set(["overview", "directory", "companies", "engagement", "outreach", "data-import", "enrichment", "intelligence", "admin"])
+const VALID_TABS = new Set(["overview", "directory", "companies", "engagement", "outreach", "opportunities", "data-import", "enrichment", "intelligence", "admin"])
 const EMAIL_STATE_KEYS = ["compose", "alumnusId", "returnAlumnusId", "returnTab"]
 
 export type WorkspaceAccess = { canOperate: boolean; canAdminister: boolean }
 
 function permittedTab(tab: string, access: WorkspaceAccess) {
   if (!VALID_TABS.has(tab)) return "overview"
-  if (["engagement", "outreach", "data-import"].includes(tab) && !access.canOperate) return "overview"
+  if (["engagement", "outreach", "opportunities", "data-import"].includes(tab) && !access.canOperate) return "overview"
   if (tab === "admin" && !access.canAdminister) return "overview"
   return tab
 }

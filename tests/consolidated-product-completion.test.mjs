@@ -16,6 +16,8 @@ const landing = await readFile(new URL("../app/auth/landing/route.ts", import.me
 const enrichment = await readFile(new URL("../app/api/enrichment/route.ts", import.meta.url), "utf8")
 const discovery = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
 const engagement = await readFile(new URL("../app/api/engagements/route.ts", import.meta.url), "utf8")
+const opportunities = await readFile(new URL("../app/api/opportunities/route.ts", import.meta.url), "utf8")
+const opportunityMigration = await readFile(new URL("../drizzle/0014_wandering_revanche.sql", import.meta.url), "utf8")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
 const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8")
 
@@ -79,8 +81,14 @@ test("responsible-owner assignment validates an active operational user and is c
   assert.match(page, /postEngagement\("assign_to"/)
 })
 
-test("existing schema has no fake corporate-opportunity persistence", () => {
-  assert.doesNotMatch(schema, /export const (corporateOpportunities|opportunities|placementOpportunities)\s*=/)
+test("Corporate Opportunities use additive persistent schema and server-authorized APIs", () => {
+  assert.match(schema, /export const corporateOpportunities = sqliteTable\("corporate_opportunities"/)
+  assert.match(schema, /export const corporateOpportunityHistory = sqliteTable\("corporate_opportunity_history"/)
+  assert.match(opportunityMigration, /CREATE TABLE `corporate_opportunities`/)
+  assert.match(opportunityMigration, /CREATE TABLE `corporate_opportunity_history`/)
+  assert.match(opportunities, /authorizeRequest\(request, "OPERATE_PCOM"\)/)
+  assert.match(opportunities, /db\.batch\(\[insertOpportunity, insertCreatedHistory\]\)/)
+  assert.match(opportunities, /eq\(corporateOpportunities\.version, version\)/)
   assert.match(schema, /export const engagementEvents = sqliteTable/)
   assert.match(schema, /export const engagementActions = sqliteTable/)
 })

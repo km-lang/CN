@@ -498,3 +498,50 @@ export const alumniDataLifecycle = sqliteTable("alumni_data_lifecycle", {
   uniqueIndex("idx_alumni_lifecycle_alumnus").on(table.alumnusId),
   index("idx_alumni_lifecycle_status").on(table.status),
 ]);
+
+export const corporateOpportunities = sqliteTable("corporate_opportunities", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  opportunityKey: text("opportunity_key").notNull(),
+  company: text("company").notNull(),
+  alumnusId: integer("alumnus_id").references(() => alumni.id),
+  engagementId: integer("engagement_id").references(() => engagementEvents.id),
+  ownerUserId: integer("owner_user_id").notNull().references(() => applicationUsers.id),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  stage: text("stage").notNull().default("IDENTIFIED"),
+  nextAction: text("next_action").notNull().default(""),
+  followUpDate: text("follow_up_date").notNull().default(""),
+  outcome: text("outcome").notNull().default(""),
+  version: integer("version").notNull().default(1),
+  createdByUserId: integer("created_by_user_id").notNull().references(() => applicationUsers.id),
+  lastUpdatedByUserId: integer("last_updated_by_user_id").notNull().references(() => applicationUsers.id),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_corporate_opportunities_key").on(table.opportunityKey),
+  index("idx_corporate_opportunities_company").on(table.company),
+  index("idx_corporate_opportunities_alumnus").on(table.alumnusId),
+  index("idx_corporate_opportunities_engagement").on(table.engagementId),
+  index("idx_corporate_opportunities_owner_stage").on(table.ownerUserId, table.stage),
+  index("idx_corporate_opportunities_follow_up").on(table.followUpDate),
+  check("corporate_opportunity_company_check", sql`length(trim(${table.company})) > 0`),
+  check("corporate_opportunity_title_check", sql`length(trim(${table.title})) > 0`),
+  check("corporate_opportunity_version_check", sql`${table.version} > 0`),
+  check("corporate_opportunity_stage_check", sql`${table.stage} in ('IDENTIFIED', 'QUALIFYING', 'OUTREACH_IN_PROGRESS', 'IN_DISCUSSION', 'CONFIRMED', 'ON_HOLD', 'CLOSED_LOST')`),
+  check("corporate_opportunity_outcome_check", sql`${table.stage} not in ('CONFIRMED', 'CLOSED_LOST') or length(trim(${table.outcome})) > 0`),
+]);
+
+export const corporateOpportunityHistory = sqliteTable("corporate_opportunity_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  opportunityId: integer("opportunity_id").notNull().references(() => corporateOpportunities.id),
+  actorUserId: integer("actor_user_id").notNull().references(() => applicationUsers.id),
+  action: text("action").notNull(),
+  fromStage: text("from_stage").notNull().default(""),
+  toStage: text("to_stage").notNull().default(""),
+  summary: text("summary").notNull().default(""),
+  changesJson: text("changes_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_corporate_opportunity_history_opportunity").on(table.opportunityId, table.createdAt),
+  index("idx_corporate_opportunity_history_actor").on(table.actorUserId),
+]);

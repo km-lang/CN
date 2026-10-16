@@ -51,12 +51,17 @@ export default defineConfig(async ({ command, mode }) => {
     ...process.env,
   };
   const localCoresignalKey = localEnvironment.CORESIGNAL_API_KEY?.trim() ?? "";
+  const localAuthRole = localEnvironment.LOCAL_DEV_AUTH_ROLE === "PCOM" ? "PCOM" : "ADMIN";
+  const localPersistPath = localDevelopment
+    ? localEnvironment.LOCAL_DEV_D1_PERSIST_PATH?.trim()
+    : "";
   const localCoresignalDemo = localDevelopment
     && localCoresignalLiveDemoEnabled(localEnvironment);
   const localRuntimeVariables: Record<string, string> = localDevelopment
     ? {
         NODE_ENV: "development",
         LOCAL_DEV_AUTH_ENABLED: "true",
+        LOCAL_DEV_AUTH_ROLE: localAuthRole,
         LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: localCoresignalDemo ? "true" : "false",
         LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
         CORESIGNAL_LIVE_ENABLED: localCoresignalDemo ? "true" : "false",
@@ -95,6 +100,7 @@ export default defineConfig(async ({ command, mode }) => {
       sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+        persistState: localPersistPath ? { path: localPersistPath } : true,
         inspectorPort: false,
         config: { ...localBindingConfig, vars: localRuntimeVariables },
       }),

@@ -31,6 +31,8 @@ test("canonical navigation removes inaccessible tabs and compose state", () => {
   const developer = { canOperate: false, canAdminister: false }
   assert.equal(navigation.canonicalWorkspaceUrl("https://network.example/?tab=admin", developer), "/?tab=overview")
   assert.equal(navigation.canonicalWorkspaceUrl("https://network.example/?tab=engagement&compose=email&alumnusId=15", developer), "/?tab=overview")
+  assert.equal(navigation.canonicalWorkspaceUrl("https://network.example/?tab=opportunities", developer), "/?tab=overview")
+  assert.equal(navigation.canonicalWorkspaceUrl("https://network.example/?tab=opportunities"), "/?tab=opportunities")
 })
 
 test("profile history URLs remain deterministic for consecutive selection, close, Back and Forward", () => {

@@ -1,6 +1,7 @@
 type LocalDevelopmentEnvironment = {
   NODE_ENV?: string
   LOCAL_DEV_AUTH_ENABLED?: string
+  LOCAL_DEV_AUTH_ROLE?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_HOST?: string
   CORESIGNAL_LIVE_ENABLED?: string
@@ -32,14 +33,19 @@ export function localCoresignalLiveDemoEnabled(
     && Boolean(values.CORESIGNAL_API_KEY?.trim())
 }
 
-export function localDevelopmentSecurityContext() {
+export function localDevelopmentSecurityContext(
+  values: LocalDevelopmentEnvironment = process.env,
+) {
+  const role = values.LOCAL_DEV_AUTH_ROLE === "PCOM" ? "PCOM" : "ADMIN"
+  const roleLabel = role === "PCOM" ? "PCOM" : "Admin"
+  const localIdentityId = role === "PCOM" ? 2 : 1
   return {
-    userId: 1,
-    identityId: 1,
+    userId: localIdentityId,
+    identityId: localIdentityId,
     provider: "chatgpt",
-    externalIdentity: "local-development-admin",
-    email: "local.admin@example.test",
-    displayName: "Local Development Admin",
-    role: "ADMIN",
+    externalIdentity: `local-development-${role.toLowerCase()}`,
+    email: `local.${role.toLowerCase()}@example.test`,
+    displayName: `Local Development ${roleLabel}`,
+    role,
   } as const
 }

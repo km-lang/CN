@@ -23,6 +23,7 @@ import { AlumnusCombobox } from "@/components/alumnus-combobox"
 import { CompanyCombobox, normalizeCompanyOptions } from "@/components/company-combobox"
 import { PaginationFooter, usePagination } from "@/components/pagination"
 import { IntelligenceWorkspace } from "@/components/intelligence/intelligence-workspace"
+import { OpportunitiesWorkspace } from "@/components/opportunities/opportunities-workspace"
 import { ProfileIntelligencePanel } from "@/components/intelligence/profile-intelligence-panel"
 import { AdminPanel } from "@/app/admin-panel"
 import { useAccessSession } from "@/app/access-provider"
@@ -599,6 +600,8 @@ export default function Home() {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [targetCompany, setTargetCompany] = useState("")
   const [overviewCompany, setOverviewCompany] = useState("All companies")
+  const [opportunityContext, setOpportunityContext] = useState<{ company: string; alumnusId: number | null; mode: "create" | "filter"; key: number }>({ company: "", alumnusId: null, mode: "create", key: 0 })
+  const [opportunitySummary, setOpportunitySummary] = useState({ total: 0, active: 0, assignedToMe: 0, followUpsDue: 0 })
   const [routeSearch, setRouteSearch] = useState("")
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -738,6 +741,24 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadWorkspace(), 0)
     return () => window.clearTimeout(timer)
   }, [loadWorkspace, session.canOperate])
+
+  const loadOpportunitySummary = useCallback(async () => {
+    if (!session.canOperate) return
+    try {
+      const response = await fetch(`${apiPath("/api/opportunities")}?page=1&pageSize=10`, { cache: "no-store" })
+      const data = await response.json() as { summary?: { total: number; active: number; assignedToMe: number; followUpsDue: number } }
+      if (response.ok && data.summary) setOpportunitySummary(data.summary)
+    } catch {
+      // The Opportunities workspace owns its visible error state; overview remains non-blocking.
+    }
+  }, [session.canOperate])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadOpportunitySummary(), 0)
+    const refresh = () => void loadOpportunitySummary()
+    window.addEventListener("corporate-opportunities:changed", refresh)
+    return () => { window.clearTimeout(timer); window.removeEventListener("corporate-opportunities:changed", refresh) }
+  }, [loadOpportunitySummary])
 
   useEffect(() => {
     const applyRouteState = () => {
@@ -1631,6 +1652,16 @@ export default function Home() {
     setMailSendConfirmOpen(false)
   }
 
+  function createOpportunity(company = "", alumnusId: number | null = null) {
+    setOpportunityContext({ company, alumnusId, mode: "create", key: Date.now() })
+    changeWorkspaceTab("opportunities")
+  }
+
+  function viewOpportunities(company = "", alumnusId: number | null = null) {
+    setOpportunityContext({ company, alumnusId, mode: "filter", key: Date.now() })
+    changeWorkspaceTab("opportunities")
+  }
+
   function changeIntelligenceView(view: IntelligenceView) {
     navigateWorkspace(intelligenceViewUrl(window.location.href, view))
   }
@@ -2278,6 +2309,7 @@ export default function Home() {
             <TabsTrigger value="companies">Company intelligence</TabsTrigger>
             {session.canOperate && <TabsTrigger value="engagement">Engagement</TabsTrigger>}
             {session.canOperate && <TabsTrigger value="outreach">Outreach</TabsTrigger>}
+            {session.canOperate && <TabsTrigger value="opportunities">Opportunities</TabsTrigger>}
             {session.canOperate && <TabsTrigger value="data-import">Data import</TabsTrigger>}
             <TabsTrigger value="enrichment">Enrichment</TabsTrigger>
             <TabsTrigger value="intelligence">Intelligence</TabsTrigger>
@@ -2289,11 +2321,12 @@ export default function Home() {
               <StatCard icon={Building2} label="Companies covered" value={`${companies.length}`} delta="Calculated from current records" />
               <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumni.length}`} delta="Based on field verification" help="Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone." />
               <StatCard icon={Target} label="Active outreach" value={`${activeOutreach}`} delta="Visible to all committee members" help="Includes shared outreach states Contacted, Responded, and Meeting set." />
+              {session.canOperate && <StatCard icon={BriefcaseBusiness} label="Active opportunities" value={`${opportunitySummary.active}`} delta={`${opportunitySummary.followUpsDue} follow-up${opportunitySummary.followUpsDue === 1 ? "" : "s"} due`} help="Persistent Corporate Opportunities that are not Confirmed or Closed Lost." />}
             </section>
 
             {session.role === "PCOM" && <section className="panel pcom-work-panel" aria-label="My work">
               <div className="panel-heading"><div><p className="eyebrow">My work</p><h2>Assigned actions and follow-ups</h2><span>Use the shared ownership state to avoid parallel outreach.</span></div><Button variant="ghost" size="sm" onClick={() => { setEngagementFilter("Assigned to Me"); changeWorkspaceTab("engagement") }}>Open my queue <ChevronRight /></Button></div>
-              <div className="engagement-stats"><button onClick={() => { setEngagementFilter("Assigned to Me"); changeWorkspaceTab("engagement") }}><UserRoundCheck /><span>Assigned to me<strong>{assignedToMe.length}</strong></span></button><button onClick={() => { setEngagementFilter("Follow-ups"); changeWorkspaceTab("engagement") }}><CalendarClock /><span>Follow-ups due<strong>{followUpsDue.length}</strong></span></button><button onClick={() => { setEngagementFilter("Needs Action"); changeWorkspaceTab("engagement") }}><BellRing /><span>Needs action<strong>{visibleEngagements.filter(event => !isCompletedEngagement(event.status)).length}</strong></span></button></div>
+              <div className="engagement-stats"><button onClick={() => { setEngagementFilter("Assigned to Me"); changeWorkspaceTab("engagement") }}><UserRoundCheck /><span>Assigned to me<strong>{assignedToMe.length}</strong></span></button><button onClick={() => { setEngagementFilter("Follow-ups"); changeWorkspaceTab("engagement") }}><CalendarClock /><span>Follow-ups due<strong>{followUpsDue.length}</strong></span></button><button onClick={() => { setEngagementFilter("Needs Action"); changeWorkspaceTab("engagement") }}><BellRing /><span>Needs action<strong>{visibleEngagements.filter(event => !isCompletedEngagement(event.status)).length}</strong></span></button><button onClick={() => changeWorkspaceTab("opportunities")}><BriefcaseBusiness /><span>My opportunities<strong>{opportunitySummary.assignedToMe}</strong></span></button></div>
             </section>}
 
             <section className="overview-grid">
@@ -2450,7 +2483,7 @@ export default function Home() {
           </TabsContent>
 
           <TabsContent value="companies" className="tab-panel">
-            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div>{companies.length > 0 ? <div className="company-actions"><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>{session.canOperate && <Button onClick={() => findMoreForCompany(activeTargetCompany)} disabled={discovering}><Search /> Discover More Alumni</Button>}</div> : session.canOperate ? <Button onClick={() => changeWorkspaceTab("directory")}><Search /> Discover alumni</Button> : null}</section>
+            <section className="company-toolbar"><div><p className="eyebrow">Company intelligence</p><h2>Map the strongest route into a target firm.</h2></div>{companies.length > 0 ? <div className="company-actions"><Select value={activeTargetCompany} onValueChange={changeTargetCompany}><SelectTrigger className="company-select"><Building2 /><SelectValue /></SelectTrigger><SelectContent>{companies.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>{session.canOperate && <><Button variant="outline" onClick={() => viewOpportunities(activeTargetCompany)}><Eye /> View opportunities</Button><Button variant="outline" onClick={() => createOpportunity(activeTargetCompany)}><BriefcaseBusiness /> Create opportunity</Button><Button onClick={() => findMoreForCompany(activeTargetCompany)} disabled={discovering}><Search /> Discover More Alumni</Button></>}</div> : session.canOperate ? <Button onClick={() => changeWorkspaceTab("directory")}><Search /> Discover alumni</Button> : null}</section>
             {companies.length === 0 ? <section className="panel empty-state"><Building2 /><h3>No companies are mapped yet</h3><p>Approve a reviewed external profile or import approved alumni data to create company intelligence.</p></section> : <section className="company-grid">
               <article className="panel company-summary">
                 <div className="company-title"><div className="company-logo">{activeTargetCompany.slice(0, 1)}</div><div><h2>{activeTargetCompany}</h2><span>Target company · Priority inherited by all mapped alumni</span></div></div>
@@ -2539,6 +2572,8 @@ export default function Home() {
             </section>
           </TabsContent>
 
+          {session.canOperate && <TabsContent value="opportunities" className="tab-panel"><OpportunitiesWorkspace currentUserName={currentDemoUser} initialCompany={opportunityContext.company} initialAlumnusId={opportunityContext.alumnusId} contextKey={opportunityContext.key} contextMode={opportunityContext.mode} defaultToMyWork={session.role === "PCOM"} /></TabsContent>}
+
           <TabsContent value="data-import" className="tab-panel">
             <section className="import-layout">
               <article className="panel import-panel">
@@ -2623,6 +2658,7 @@ export default function Home() {
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company] || "Secondary Target"}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></details>
             <section className="profile-section profile-order-professional"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
             <ProfileIntelligencePanel alumnusId={selected.id} canOperate={session.canOperate} onOpenIntelligence={view => { closeAlumnusProfile(); window.setTimeout(() => changeIntelligenceView(view), 0) }} />
+            {session.canOperate && <section className="profile-section profile-opportunities"><div><h3>Corporate opportunities</h3><p className="section-help">Create or review accountable opportunities linked to this alumnus and company.</p></div><div className="profile-opportunity-actions"><Button variant="outline" onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => viewOpportunities(company, id), 0) }}><Eye /> View linked opportunities</Button><Button onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => createOpportunity(company, id), 0) }}><BriefcaseBusiness /> Create opportunity</Button></div></section>}
             <section className="profile-section profile-order-iiml"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{alumniEducationLabel(selected)}</strong></span></div><div><Network /><span>Placement Committee relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior Placement Committee engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{placementContext(selected)}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
             {session.canOperate && <section className="profile-section privacy-section profile-order-permissions"><h3>Contact permissions</h3><p className="section-help">Unknown is not permission. The server checks the overall ceiling and the purpose-specific permission before every send.</p><div className="assessment-grid"><label><span>Overall contact permission</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional outreach</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday outreach</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Permission source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><details className="permission-details"><summary>More details</summary><label><span>Permission note</span><Textarea value={privacyNoteDrafts[selected.id] ?? selected.privacy?.notes ?? ""} onChange={event => setPrivacyNoteDrafts(current => ({ ...current, [selected.id]: event.target.value }))} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></details></section>}
             {session.canOperate && <section className="profile-section profile-order-engagement"><div className="profile-engagement-heading"><div><h3>Needs attention</h3><small>{selectedUpcomingEngagements.length} open item{selectedUpcomingEngagements.length === 1 ? "" : "s"}</small></div><Button size="sm" variant="ghost" onClick={() => { setEngagementFilter("Needs Action"); changeWorkspaceTab("engagement") }}>Open queue</Button></div>{selectedUpcomingEngagements.length ? <><div className="profile-event-list">{profileOpenEngagementPagination.items.map(event => <button key={event.id} onClick={() => { changeWorkspaceTab("engagement"); void openEngagement(event) }}><span>{event.eventType === "Birthday" ? <Cake /> : <BellRing />}</span><div><strong>{event.eventTitle}</strong><small>{displayEventDate(event.eventDate)} · {event.status}</small></div><ChevronRight /></button>)}</div><PaginationFooter model={profileOpenEngagementPagination} label="Profile open engagement pagination" /></> : <p className="section-help profile-empty-copy">No open engagement items need attention.</p>}<h3 className="history-title">Engagement history</h3><div className="profile-timeline">{profileEngagementHistoryPagination.items.map(event => <div key={event.id}><span>{event.eventType === "Birthday" ? <Cake /> : <MessageSquare />}</span><p><strong>{displayEventDate(event.actionTakenAt || event.eventDate)}</strong>{event.eventTitle}<small>{event.actionType || event.status}{event.actionTakenBy ? ` · by ${event.actionTakenBy}` : ""}</small></p></div>)}{session.canAdminister && providerHistory.filter(item => item.alumnusName === selected.name).slice(0, 3).map(item => { const usage = providerUsageLabel(item); return <div key={`provider-${item.id}`}><span><Cloud /></span><p><strong>{new Date(item.createdAt).toLocaleDateString()}</strong>{item.provider.toUpperCase()} {item.operation}<small>{item.status} · {usage.label}{item.provider === "coresignal" ? ` · ${item.applicationUnits ?? 0} application units` : ""}</small></p></div> })}{!selectedCompletedEngagements.length && (!session.canAdminister || !providerHistory.some(item => item.alumnusName === selected.name)) && <p className="section-help">No completed operational engagement history recorded.</p>}</div>{selectedCompletedEngagements.length > 0 && <PaginationFooter model={profileEngagementHistoryPagination} label="Profile engagement history pagination" />}</section>}

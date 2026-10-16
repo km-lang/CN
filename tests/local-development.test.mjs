@@ -23,6 +23,15 @@ test("local authentication accepts loopback hosts only", () => {
   assert.equal(localDevelopment.isLoopbackHost("localhost.attacker.example"), false)
 })
 
+test("local acceptance can select PCOM while invalid local roles fail back to Admin", () => {
+  assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "PCOM" }).role, "PCOM")
+  assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "PCOM" }).userId, 2)
+  assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "ADMIN" }).role, "ADMIN")
+  assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "DEVELOPER" }).role, "ADMIN")
+  assert.match(viteConfig, /LOCAL_DEV_AUTH_ROLE/)
+  assert.match(viteConfig, /LOCAL_DEV_D1_PERSIST_PATH/)
+})
+
 test("local scripts hard-disable every live provider and mail gate", () => {
   const command = packageJson.scripts["dev:local"]
   assert.match(command, /NODE_ENV=development/)
@@ -45,6 +54,7 @@ test("local scripts hard-disable every live provider and mail gate", () => {
 })
 
 test("local fixture contains alumnus 15, a recipient, and completed email history", () => {
+  assert.match(fixture, /2, 'local-development-pcom', 'Local Development PCOM'/)
   assert.match(fixture, /15, 'local-fixture-sahil-bansal', 'Sahil Bansal'/)
   assert.match(fixture, /sahil\.bansal@example\.test/)
   assert.match(fixture, /'Completed'/)

@@ -22,6 +22,30 @@ ON CONFLICT(`id`) DO UPDATE SET
   `verified_email` = excluded.`verified_email`,
   `email_verified` = excluded.`email_verified`;
 
+INSERT INTO `application_users` (
+  `id`, `external_identity`, `display_name`, `email`, `role`, `enabled`, `last_login_at`
+) VALUES (
+  2, 'local-development-pcom', 'Local Development PCOM', 'local.pcom@example.test', 'PCOM', 1, CURRENT_TIMESTAMP
+)
+ON CONFLICT(`id`) DO UPDATE SET
+  `external_identity` = excluded.`external_identity`,
+  `display_name` = excluded.`display_name`,
+  `email` = excluded.`email`,
+  `role` = excluded.`role`,
+  `enabled` = excluded.`enabled`;
+
+INSERT INTO `application_identities` (
+  `id`, `application_user_id`, `provider`, `provider_subject_id`, `verified_email`, `email_verified`, `provider_domain`, `last_authenticated_at`
+) VALUES (
+  2, 2, 'chatgpt', 'local-development-pcom', 'local.pcom@example.test', 1, 'example.test', CURRENT_TIMESTAMP
+)
+ON CONFLICT(`id`) DO UPDATE SET
+  `application_user_id` = excluded.`application_user_id`,
+  `provider` = excluded.`provider`,
+  `provider_subject_id` = excluded.`provider_subject_id`,
+  `verified_email` = excluded.`verified_email`,
+  `email_verified` = excluded.`email_verified`;
+
 INSERT INTO `alumni` (
   `id`, `profile_key`, `name`, `initials`, `batch`, `graduation_year`, `programme`,
   `company`, `title`, `function`, `seniority`, `location`, `email`, `email_source`, `phone`, `phone_source`,
