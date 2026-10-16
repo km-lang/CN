@@ -5,6 +5,7 @@ import test from "node:test"
 const localDevelopment = await import("../lib/local-development.ts")
 const loginEntry = await readFile(new URL("../lib/login-entry.ts", import.meta.url), "utf8")
 const localLogin = await readFile(new URL("../app/auth/local/start/route.ts", import.meta.url), "utf8")
+const sessionRecovery = await readFile(new URL("../app/auth/session/recover/route.ts", import.meta.url), "utf8")
 const authLanding = await readFile(new URL("../app/auth/landing/route.ts", import.meta.url), "utf8")
 const security = await readFile(new URL("../lib/security.ts", import.meta.url), "utf8")
 const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8")
@@ -36,6 +37,21 @@ test("Admin and PCOM entry points use server-selected fixture identities and pre
   assert.match(authLanding, /localDevelopmentAuthEnabled\(\) && isLoopbackHost\(requestUrl\.host\)/)
   assert.match(authLanding, /new URL\(landing\.destination, requestUrl\)/)
   assert.match(authLanding, /: absoluteAppUrl\(landing\.destination\)/)
+})
+
+test("rejected sessions fail closed, clear only the application cookie, and return to a fixed login entry", () => {
+  assert.match(layout, /sessionRejected = true/)
+  assert.match(layout, /auth\/session\/recover\?intent=\$\{intent\}/)
+  assert.match(sessionRecovery, /parseLoginIntent/)
+  assert.match(sessionRecovery, /clearSessionCookie/)
+  assert.match(sessionRecovery, /isLoopbackHost/)
+  assert.doesNotMatch(sessionRecovery, /return_to|safeReturnPath/)
+  assert.match(localLogin, /authenticationErrorResponse\("Local sign-in unavailable"/)
+  assert.match(localLogin, /clearSessionCookie\(\{ secure: false \}\)/)
+  assert.match(localLogin, /error\.code === "invalid_session_identity"/)
+  assert.match(localLogin, /Complete the supported local setup/)
+  assert.match(localLogin, /resolveSessionIdentity/)
+  assert.doesNotMatch(localLogin, /insert\(|applicationUsers|applicationIdentities/)
 })
 
 test("Directory filters have intentional rows, an aligned programme field, and functional Clear", () => {

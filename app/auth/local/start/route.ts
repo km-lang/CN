@@ -1,11 +1,14 @@
 import { safeReturnPath } from "@/lib/auth-config"
-import { createAppSessionToken, sessionCookie } from "@/lib/auth-session"
+import { authenticationErrorResponse } from "@/lib/auth-responses"
+import { clearSessionCookie, createAppSessionToken, sessionCookie } from "@/lib/auth-session"
 import { landingForRole, parseLoginIntent } from "@/lib/login-intent"
 import { isLoopbackHost, localDevelopmentAuthEnabled, localDevelopmentSecurityContextForRole } from "@/lib/local-development"
 import { AccessError, resolveSessionIdentity } from "@/lib/security"
 
 function unavailable(message: string, status: 401 | 403 = 403) {
-  return new Response(message, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } })
+  const response = authenticationErrorResponse("Local sign-in unavailable", message, status)
+  response.headers.append("set-cookie", clearSessionCookie({ secure: false }))
+  return response
 }
 
 export async function GET(request: Request) {
@@ -39,6 +42,10 @@ export async function GET(request: Request) {
     const destination = returnTo === "/" ? landing.destination : returnTo
     return new Response(null, { status: 302, headers: { location: new URL(destination, request.url).toString(), "set-cookie": sessionCookie(session, { secure: false }), "cache-control": "no-store" } })
   } catch (error) {
-    return unavailable(error instanceof AccessError ? error.message : "The local fixture identity could not be verified.", error instanceof AccessError ? error.status : 401)
+    const missingFixture = error instanceof AccessError && error.code === "invalid_session_identity"
+    const message = missingFixture
+      ? "The selected local development identity is unavailable. Complete the supported local setup, restart the application, and try again."
+      : error instanceof AccessError ? error.message : "The local fixture identity could not be verified."
+    return unavailable(message, error instanceof AccessError ? error.status : 401)
   }
 }

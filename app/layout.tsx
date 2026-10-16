@@ -28,6 +28,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   const token = cookieValue(requestHeaders.get("cookie"), APP_SESSION_COOKIE)
   let session: AccessSession | null = null
   let accessMessage = ""
+  let sessionRejected = false
   if (!session && token) {
     try {
       const claims = await verifyAppSessionToken(token)
@@ -36,6 +37,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
       const localFixture = context.externalIdentity.startsWith("local-development-")
       session = toAccessSession(context, withBasePath(`/auth/signout?provider=${localFixture ? "local" : context.provider}`))
     } catch (error) {
+      sessionRejected = true
       accessMessage = error instanceof AccessError ? error.message : "Corporate Network access could not be verified. Please sign in again."
     }
   }
@@ -48,7 +50,8 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     redirect(withBasePath(`/auth/chatgpt/session?return_to=${encodeURIComponent(returnTo)}`))
   }
   const message = accessMessage || "Authenticate with your approved institutional identity. Application access is granted separately by an administrator and denied by default."
-  return <html lang="en"><body><AccessPage title="Sign in to Corporate Network" message={message} primaryHref={withBasePath("/login/pcom")} primaryLabel="PCOM sign in" secondaryHref={withBasePath("/login/admin")} secondaryLabel="Admin sign in" /></body></html>
+  const loginPath = (intent: "pcom" | "admin") => withBasePath(sessionRejected ? `/auth/session/recover?intent=${intent}` : `/login/${intent}`)
+  return <html lang="en"><body><AccessPage title="Sign in to Corporate Network" message={message} primaryHref={loginPath("pcom")} primaryLabel="PCOM sign in" secondaryHref={loginPath("admin")} secondaryLabel="Admin sign in" /></body></html>
 }
 
 function AccessPage({ title, message, primaryHref, primaryLabel, secondaryHref, secondaryLabel }: { title: string; message: string; primaryHref: string; primaryLabel: string; secondaryHref: string; secondaryLabel: string }) {
