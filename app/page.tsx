@@ -49,7 +49,7 @@ import { initializeControlledEmail } from "@/lib/controlled-email-initialization
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 import { programmeFilterOptions, programmeSelectionSummary, type ProgrammeOption } from "@/lib/programme-options"
 import { contactReadiness, isActiveOutreach } from "@/lib/alumni-metrics"
-import { parseCsv, parseXlsx, validateImport, type ImportReviewRow } from "@/lib/alumni-import"
+import { importReviewCsv, parseCsv, parseXlsx, templateCsv, type ImportReview } from "@/lib/alumni-import"
 import { contactEnrichmentPlan, eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment"
 import { engagementMatches } from "@/lib/engagement-filters"
 import { groupEngagementsByAlumnus } from "@/lib/engagement-presentation"
@@ -66,6 +66,7 @@ import {
 
 const API_ROUTES = Object.freeze({
   workspace: apiPath("/api/workspace"),
+  imports: apiPath("/api/imports"),
   enrichment: apiPath("/api/enrichment"),
   engagements: apiPath("/api/engagements"),
   discovery: apiPath("/api/discovery"),
@@ -646,8 +647,9 @@ export default function Home() {
   const [latestImport, setLatestImport] = useState<LatestImport | null>(null)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
-  const [importReview, setImportReview] = useState<{ rows: ImportReviewRow[]; counts: { detected: number; newRecords: number; existingMatches: number; needsAttention: number; duplicates: number }; blocking: boolean; sheetName?: string } | null>(null)
+  const [importReview, setImportReview] = useState<(ImportReview & { previewId: string; sheetName?: string }) | null>(null)
   const [approvedImportUpdates, setApprovedImportUpdates] = useState<string[]>([])
+  const [importConfirmed, setImportConfirmed] = useState(false)
   const [importMessage, setImportMessage] = useState("")
   const [providerModes, setProviderModes] = useState<Record<Provider, ProviderMode>>({ coresignal: "mock", lusha: "mock" })
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ coresignal: { used: 0, limit: 25, remaining: 25, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
@@ -1329,14 +1331,21 @@ export default function Home() {
   }
 
   function downloadTemplate() {
-    const content = [
-      "name,batch,graduation_year,programme,education,company,title,function,seniority,location,previous_companies,experience_years,email,phone,linkedin_url,confidence,status,note",
-      'Demo Alumnus,2018,2018,PGP,Indian Institute of Management Lucknow,Example Company,"Senior Manager, Talent Acquisition",HR,Senior Manager,Bengaluru,Example Consulting,8,demo@example.com,+910000000000,,70,Not contacted,"Demonstration record only"',
-    ].join("\n")
+    const content = templateCsv()
     const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }))
     const link = document.createElement("a")
     link.href = url
     link.download = "corporate-network-alumni-template.csv"
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function downloadImportReport() {
+    if (!importReview) return
+    const url = URL.createObjectURL(new Blob([importReviewCsv(importReview)], { type: "text/csv;charset=utf-8" }))
+    const link = document.createElement("a")
+    link.href = url
+    link.download = "corporate-network-import-review.csv"
     link.click()
     URL.revokeObjectURL(url)
   }
@@ -1354,10 +1363,13 @@ export default function Home() {
     setImportMessage("")
     try {
       const parsed = await readImportFile()
-      const review = validateImport(parsed.records, alumni, programmeChoices.map(option => option.value))
-      setImportReview({ ...review, sheetName: parsed.sheetName })
+      const response = await fetch(API_ROUTES.imports, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "preview", filename: importFile?.name, records: parsed.records }) })
+      const review = await response.json() as ImportReview & { previewId?: string; error?: string }
+      if (!response.ok || !review.previewId) throw new Error(review.error || "Unable to preview the selected file.")
+      setImportReview({ ...review, previewId: review.previewId, sheetName: parsed.sheetName })
       setApprovedImportUpdates([])
-      setImportMessage(review.blocking ? "Resolve the blocking rows before importing." : "Validation complete. Review new records and any existing-record differences before importing.")
+      setImportConfirmed(false)
+      setImportMessage(review.blocking ? "No valid records are available to import." : "Dry-run complete. Invalid, duplicate and conflicted rows will remain excluded.")
     } catch (error) {
       setImportReview(null)
       setImportMessage(error instanceof Error ? error.message : "Unable to validate the selected file.")
@@ -1368,17 +1380,19 @@ export default function Home() {
 
   async function importAlumni() {
     if (!importFile || !importReview) { setImportMessage("Validate and review the selected file first."); return }
-    if (importReview.blocking) { setImportMessage("Resolve the blocking rows before importing."); return }
+    if (importReview.blocking) { setImportMessage("No valid records are available to import."); return }
+    if (!importConfirmed) { setImportMessage("Confirm that you reviewed the dry-run before importing."); return }
     setImporting(true)
     try {
       const parsed = await readImportFile()
-      const response = await fetch(API_ROUTES.workspace, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "import", filename: importFile.name, records: parsed.records, approvedUpdateKeys: approvedImportUpdates }) })
-      const data = await response.json() as { imported?: number; updated?: number; protectedFields?: number; error?: string }
+      const response = await fetch(API_ROUTES.imports, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "execute", filename: importFile.name, records: parsed.records, previewId: importReview.previewId, approvedUpdateKeys: approvedImportUpdates, confirmed: true }) })
+      const data = await response.json() as { imported?: number; updated?: number; excluded?: number; protectedFields?: number; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
-      setImportMessage(`${data.imported ?? 0} new alumni added${data.updated ? ` · ${data.updated} existing records safely updated` : ""}${data.protectedFields ? ` · ${data.protectedFields} verified fields preserved` : ""}.`)
+      setImportMessage(`${data.imported ?? 0} new alumni added${data.updated ? ` · ${data.updated} existing records safely updated` : ""}${data.excluded ? ` · ${data.excluded} unresolved rows excluded` : ""}${data.protectedFields ? ` · ${data.protectedFields} verified fields preserved` : ""}.`)
       setImportFile(null)
       setImportReview(null)
       setApprovedImportUpdates([])
+      setImportConfirmed(false)
       await loadWorkspace()
     } catch (error) {
       setImportMessage(error instanceof Error ? error.message : "Unable to import the selected file.")
@@ -2290,7 +2304,7 @@ export default function Home() {
     if (outreachRelevance === "Below 50" && relevance >= 50) return false
     return true
   }).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
-  const importReviewRows = importReview?.rows.filter(row => row.kind !== "new" || row.issues.length) ?? []
+  const importReviewRows = importReview?.rows ?? []
 
   const directoryPagination = usePagination(filtered, JSON.stringify(filters))
   const companyContactsPagination = usePagination(targetAlumni, activeTargetCompany)
@@ -2347,7 +2361,7 @@ export default function Home() {
             {session.canOperate && <TabsTrigger value="engagement">Engagement</TabsTrigger>}
             {session.canOperate && <TabsTrigger value="outreach">Outreach</TabsTrigger>}
             {session.canOperate && <TabsTrigger value="opportunities">Opportunities</TabsTrigger>}
-            {session.canOperate && <TabsTrigger value="data-import">Data import</TabsTrigger>}
+            {session.canAdminister && <TabsTrigger value="data-import">Data import</TabsTrigger>}
             <TabsTrigger value="enrichment">Enrichment</TabsTrigger>
             <TabsTrigger value="intelligence">Intelligence</TabsTrigger>
           </TabsList>
@@ -2611,18 +2625,18 @@ export default function Home() {
 
           {session.canOperate && <TabsContent value="opportunities" className="tab-panel"><OpportunitiesWorkspace currentUserName={currentDemoUser} initialCompany={opportunityContext.company} initialAlumnusId={opportunityContext.alumnusId} contextKey={opportunityContext.key} contextMode={opportunityContext.mode} defaultToMyWork={session.role === "PCOM"} /></TabsContent>}
 
-          <TabsContent value="data-import" className="tab-panel">
+          {session.canAdminister && <TabsContent value="data-import" className="tab-panel">
             <section className="import-layout">
               <article className="panel import-panel">
                 <div className="panel-heading"><div><p className="eyebrow">Bulk import</p><h2>Upload alumni file</h2><span>Validate and review CSV or Excel data before anything is saved.</span></div><div className="database-badge"><Database /> Shared database</div></div>
                 <div className="import-body">
                   <div className="upload-zone">
                     <FileSpreadsheet />
-                    <div><strong>{importFile ? importFile.name : "Choose a CSV or Excel file"}</strong><span>Required: name, graduation year / batch and company. Excel uses the first worksheet and reads cell values only.</span></div>
-                    <input className="file-input" aria-label="Choose CSV or Excel alumni file" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => { setImportFile(event.target.files?.[0] ?? null); setImportReview(null); setApprovedImportUpdates([]); setImportMessage("") }} />
+                    <div><strong>{importFile ? importFile.name : "Choose a CSV or Excel file"}</strong><span>Required: source ID, source system, name, programme, graduation year and company. Excel uses the first worksheet and cached cell values only.</span></div>
+                    <input className="file-input" aria-label="Choose CSV or Excel alumni file" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => { setImportFile(event.target.files?.[0] ?? null); setImportReview(null); setApprovedImportUpdates([]); setImportConfirmed(false); setImportMessage("") }} />
                   </div>
-                  <div className="import-actions"><Button variant="outline" onClick={downloadTemplate}><Download /> Download CSV template</Button><span><Button title={!importFile ? "Choose a CSV or Excel file first." : undefined} variant="outline" onClick={() => void validateImportFile()} disabled={!importFile || importing}>{importing && !importReview ? <LoaderCircle className="spin" /> : <CheckCircle2 />} Validate</Button><Button title={!importReview ? "Validate and review the file first." : importReview.blocking ? "Resolve blocking validation errors first." : undefined} onClick={() => void importAlumni()} disabled={!importReview || importReview.blocking || importing}>{importing && importReview ? <LoaderCircle className="spin" /> : <Upload />} Import reviewed records</Button></span></div>
-                  {importReview && <div className="import-review"><div className="import-review-summary"><span><strong>{importReview.counts.detected}</strong> rows detected</span><span><strong>{importReview.counts.newRecords}</strong> new alumni</span><span><strong>{importReview.counts.existingMatches}</strong> existing matches</span><span><strong>{importReview.counts.needsAttention}</strong> need attention</span><span><strong>{importReview.counts.duplicates}</strong> duplicates in file</span></div>{importReview.sheetName && <p>Excel worksheet used: <strong>{importReview.sheetName}</strong>. Other worksheets are not imported.</p>}<div className="import-review-rows">{importPagination.items.map(row => <div key={`${row.index}-${row.key}`} className={`import-review-row import-${row.kind}`}><span>Row {row.index}</span><strong>{row.record.name || "Unnamed row"}</strong><small>{row.kind === "duplicate" ? "Duplicate within this file" : row.issues.length ? row.issues.join(" · ") : row.kind === "existing" ? `Existing match${row.changedFields.length ? ` · changed: ${row.changedFields.join(", ")}` : " · no changes"}` : "Ready to add"}</small>{row.kind === "existing" && row.changedFields.length > 0 && <label><input type="checkbox" checked={approvedImportUpdates.includes(row.key)} onChange={() => setApprovedImportUpdates(current => current.includes(row.key) ? current.filter(key => key !== row.key) : [...current, row.key])} /> Apply safe changes; preserve verified fields</label>}</div>)}</div><PaginationFooter model={importPagination} label="Import review pagination" /></div>}
+                  <div className="import-actions"><Button variant="outline" onClick={downloadTemplate}><Download /> Download CSV template</Button><span><Button title={!importFile ? "Choose a CSV or Excel file first." : undefined} variant="outline" onClick={() => void validateImportFile()} disabled={!importFile || importing}>{importing && !importReview ? <LoaderCircle className="spin" /> : <CheckCircle2 />} Preview dry run</Button><Button title={!importReview ? "Preview and review the file first." : importReview.blocking ? "No valid records are available." : !importConfirmed ? "Confirm review before importing." : undefined} onClick={() => void importAlumni()} disabled={!importReview || importReview.blocking || !importConfirmed || importing}>{importing && importReview ? <LoaderCircle className="spin" /> : <Upload />} Import reviewed records</Button></span></div>
+                  {importReview && <div className="import-review"><div className="import-review-summary"><span><strong>{importReview.counts.detected}</strong> total rows</span><span><strong>{importReview.counts.valid}</strong> valid</span><span><strong>{importReview.counts.invalid}</strong> invalid</span><span><strong>{importReview.counts.newRecords}</strong> new</span><span><strong>{importReview.counts.supportedUpdates}</strong> update candidates</span><span><strong>{importReview.counts.unchanged}</strong> unchanged</span><span><strong>{importReview.counts.duplicates}</strong> duplicates</span><span><strong>{importReview.counts.conflicts}</strong> conflicts</span></div>{importReview.sheetName && <p>Excel worksheet used: <strong>{importReview.sheetName}</strong>. Other worksheets are not imported.</p>}<div className="import-actions"><Button variant="outline" onClick={downloadImportReport}><Download /> Download review report</Button><label><input type="checkbox" checked={importConfirmed} onChange={event => setImportConfirmed(event.target.checked)} /> I reviewed this dry run and understand unresolved rows are excluded.</label></div><div className="import-review-rows">{importPagination.items.map(row => <div key={`${row.index}-${row.key}`} className={`import-review-row import-${row.kind}`}><span>Row {row.index} · {row.disposition}</span><strong>{row.record.name || "Unnamed row"}</strong><small>{row.issues.length ? row.issues.join(" · ") : row.kind === "existing" ? `Supported identity match (${row.matchedBy.join(", ")}) · changed: ${row.changedFields.join(", ")}` : row.kind === "unchanged" ? "Supported identity match · no changes" : "Ready to add"}</small>{row.kind === "existing" && row.changedFields.length > 0 && <label><input type="checkbox" checked={approvedImportUpdates.includes(row.key)} onChange={() => setApprovedImportUpdates(current => current.includes(row.key) ? current.filter(key => key !== row.key) : [...current, row.key])} /> Apply safe changes; preserve verified fields</label>}</div>)}</div><PaginationFooter model={importPagination} label="Import review pagination" /></div>}
                   {importMessage && <div className="workspace-message" role="status"><Cloud /> <span>{importMessage}</span></div>}
                 </div>
               </article>
@@ -2631,11 +2645,11 @@ export default function Home() {
 
               <aside className="panel database-panel">
                 <div className="database-hero"><Database /><div><p className="eyebrow">Shared alumni database</p><h2>{alumni.length} alumni · {companies.length} companies</h2><span>One governed workspace</span></div></div>
-                <div className="database-facts"><div><span>Maximum import</span><strong>250 rows</strong></div><div><span>Duplicate matching</span><strong>Email, profile URL, or name + year + company</strong></div><div><span>Database</span><strong>Ready ✓</strong></div><div><span>Latest CSV/Excel import</span><strong>{latestImport?.filename ?? "None yet"}</strong></div></div>
+                <div className="database-facts"><div><span>Maximum import</span><strong>10,000 rows · 8 MB</strong></div><div><span>Identity matching</span><strong>Stable source ID, canonical ID, profile URL, or verified email</strong></div><div><span>Weak matches</span><strong>Review only · never auto-merged</strong></div><div><span>Latest CSV/Excel import</span><strong>{latestImport?.filename ?? "None yet"}</strong></div></div>
                 <div className="latest-import"><CheckCircle2 /><div><strong>{latestImport ? "Latest import completed" : "Database ready"}</strong><span>{latestImport ? `${latestImport.rowCount} records by ${latestImport.importedBy}` : "No uploaded file has been recorded yet."}</span></div></div>
               </aside>
             </section>
-          </TabsContent>
+          </TabsContent>}
 
           <TabsContent value="enrichment" className="tab-panel">
             <section className="enrichment-header">

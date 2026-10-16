@@ -11,7 +11,7 @@ Provider output is evidence, not canonical truth. Corporate Network owns its ins
 - **Responsive UI:** validated at 1440, 1280, 768, 390, and 360 pixels. Low-priority polish may remain.
 - **Release:** provider-gated staging and production release are pending. Local acceptance is not production approval.
 
-See [Architecture](docs/architecture.md), [Providers and safety](docs/providers.md), and [Local development](docs/local-development.md) for the detailed current-state contract.
+See [Architecture](docs/architecture.md), [Providers and safety](docs/providers.md), [Local development](docs/local-development.md), and [Alumni import readiness](docs/alumni-import-readiness.md) for the detailed current-state contract.
 
 ## Product areas
 
@@ -71,7 +71,7 @@ Provider provenance, field-change history, and security audit infrastructure are
 
 ## Database and migrations
 
-Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0013_cultured_james_howlett.sql`.
+Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0014_wandering_revanche.sql`.
 
 Migration 0012 adds a partial unique index so one non-empty `coresignal_employee_id` can belong to at most one CN alumnus. The empty string remains the supported unassigned value. Migration 0012 has been validated against repository-local D1 only; this README does **not** claim staging or production migration completion.
 
@@ -133,6 +133,7 @@ git diff --check
 
 ## Known non-blocking limitations
 
+- The current workspace API returns the complete alumni collection. Import correctness is validated at 10,000 rows, but interactive 10,000-row browser performance requires server-side directory pagination and bounded tab-specific payloads before production-scale acceptance.
 - A selected Intelligence detail may require reselect/reload immediately after a decision to display the persisted state.
 - During an Intelligence outage, the unavailable notice can coexist with empty-list copy.
 - Mobile navigation affordance could be stronger.

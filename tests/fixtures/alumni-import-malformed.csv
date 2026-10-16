@@ -1,0 +1,6 @@
+source_alumni_id,source_system,name,programme,graduation_year,company,title,function,seniority,industry,location,previous_companies,experience_years,linkedin_url,email,phone,general_contact_status,professional_engagement_status,birthday_engagement_status,consent_source,source_date,last_reviewed_date,note
+,cn-synthetic-validation,Synthetic Missing ID,PGP,2018,Example Enterprise 001,,,,,,,,,,,,Unknown,Unknown,Unknown,Unknown,2026-10-01,,Missing stable source ID
+SYN-BAD-YEAR,cn-synthetic-validation,Synthetic Bad Year,PGP,1800,Example Enterprise 002,,,,,,,,,,,,Unknown,Unknown,Unknown,Unknown,2026-10-01,,Invalid graduation year
+SYN-BAD-EMAIL,cn-synthetic-validation,Synthetic Bad Email,ABM,2019,Example Enterprise 003,,,,,,,,,,not-an-email,,Unknown,Unknown,Unknown,Unknown,2026-10-01,,Malformed email
+SYN-DUPLICATE,cn-synthetic-validation,Synthetic Duplicate One,SM,2020,Example Enterprise 004,,,,,,,,,,,,Unknown,Unknown,Unknown,Unknown,2026-10-01,,Duplicate source identifier
+SYN-DUPLICATE,cn-synthetic-validation,Synthetic Duplicate Two,SM,2020,Example Enterprise 005,,,,,,,,,,,,Unknown,Unknown,Unknown,Unknown,2026-10-01,,Duplicate source identifier

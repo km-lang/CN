@@ -14,9 +14,9 @@ const styles = await readFile(new URL("../app/globals.css", import.meta.url), "u
 const api = await readFile(new URL("../app/api/workspace/route.ts", import.meta.url), "utf8")
 
 test("CSV and aliases enter the same record shape", () => {
-  const [record] = importer.parseCsv("name,graduation_year,programme,company,designation,professional_profile_url,data_confidence,outreach_status\nAsha Test,2018,PGP,Example Industries,Director,https://example.test/asha,72,Not contacted")
+  const [record] = importer.parseCsv("source_id,source,name,graduation_year,programme,company,designation,professional_profile_url,data_confidence,outreach_status\nIIML-1,iiml-master,Asha Test,2018,PGP,Example Industries,Director,https://www.linkedin.com/in/asha-test,72,Not contacted")
   assert.equal(record.title, "Director")
-  assert.equal(record.linkedin_url, "https://example.test/asha")
+  assert.equal(record.linkedin_url, "https://www.linkedin.com/in/asha-test")
   assert.equal(record.confidence, "72")
   assert.equal(record.status, "Not contacted")
 })
@@ -28,7 +28,18 @@ test("XLSX reads cached cell values from the first worksheet", () => {
   const bytes = zipSync({ "xl/workbook.xml": strToU8(workbook), "xl/_rels/workbook.xml.rels": strToU8(relationships), "xl/worksheets/sheet1.xml": strToU8(sheet) })
   const result = importer.parseXlsx(bytes)
   assert.equal(result.sheetName, "Alumni")
-  assert.deepEqual(result.records, [{ name: "Excel Alumnus", batch: "2019", company: "Example Industries" }])
+  assert.deepEqual(result.records, [{ name: "Excel Alumnus", graduation_year: "2019", company: "Example Industries" }])
+})
+
+test("published XLSX template is readable by the production parser", async () => {
+  const bytes = await readFile(new URL("../docs/import/Corporate Network Alumni Import Template.xlsx", import.meta.url))
+  const result = importer.parseXlsx(bytes)
+  assert.equal(result.sheetName, "Alumni Import")
+  assert.ok(result.records.length >= 1)
+  assert.equal(result.records[0].source_alumni_id, "IIML-TEST-0001")
+  assert.equal(result.records[0].source_system, "iiml-master")
+  assert.equal(result.records[0].programme, "PGP")
+  assert.equal(result.records[0].source_date, "2026-10-01")
 })
 
 test("encrypted Excel files fail with an actionable error", () => {
@@ -37,28 +48,29 @@ test("encrypted Excel files fail with an actionable error", () => {
 })
 
 test("validation classifies new, existing, invalid and in-file duplicate rows before mutation", () => {
-  const existing = [{ id: 15, name: "Sahil Bansal", batch: 2012, programme: "PGP", company: "Local Fixture Company", title: "Director", function: "Strategy", seniority: "Director", location: "India", email: "sahil.bansal@example.test", phone: "" }]
+  const existing = [{ id: 15, profileKey: "institutional:iiml-master:iiml-15", name: "Sahil Bansal", batch: 2012, programme: "PGP", company: "Local Fixture Company", title: "Director", function: "Strategy", seniority: "Director", location: "India", email: "sahil.bansal@example.test", emailVerification: "Verified", phone: "" }]
   const result = importer.validateImport([
-    { name: "New Person", batch: "2020", programme: "PGP", company: "Example Industries" },
-    { name: "Sahil Bansal", batch: "2012", programme: "PGP", company: "Local Fixture Company", title: "Vice President" },
-    { name: "New Person", batch: "2020", programme: "PGP", company: "Example Industries" },
-    { name: "", batch: "1900", programme: "Unknown", company: "" },
+    { source_alumni_id: "IIML-20", source_system: "iiml-master", name: "New Person", graduation_year: "2020", programme: "PGP", company: "Example Industries" },
+    { source_alumni_id: "IIML-15", source_system: "iiml-master", name: "Sahil Bansal", graduation_year: "2012", programme: "PGP", company: "Local Fixture Company", title: "Vice President" },
+    { source_alumni_id: "IIML-20", source_system: "iiml-master", name: "New Person", graduation_year: "2020", programme: "PGP", company: "Example Industries" },
+    { source_alumni_id: "", source_system: "iiml-master", name: "", graduation_year: "1900", programme: "Unknown", company: "" },
   ], existing, ["PGP", "ABM", "SM"])
   assert.deepEqual(result.rows.map(row => row.kind), ["new", "existing", "duplicate", "error"])
-  assert.equal(result.blocking, true)
+  assert.equal(result.blocking, false)
   assert.equal(result.counts.duplicates, 1)
+  assert.equal(result.counts.valid, 2)
 })
 
 test("UI hides the native file control and requires validate then review then import", () => {
   assert.match(page, /accept="\.csv,text\/csv,\.xlsx/)
-  assert.match(page, /Validate<\/Button>/)
+  assert.match(page, /Preview dry run<\/Button>/)
   assert.match(page, /Import reviewed records/)
   assert.match(page, /Apply safe changes; preserve verified fields/)
   assert.match(styles, /input\.file-input\s*\{[^}]*opacity:\s*0[^}]*appearance:\s*none/s)
 })
 
 test("server never treats imported contacts as verified or overwrites protected fields", () => {
-  assert.match(api, /emailVerification: "Unverified"/)
+  assert.match(api, /Administrator access is required for bulk alumni imports/)
   assert.match(api, /phoneVerification: "Unverified"/)
   assert.match(api, /"Excel import" : "CSV import"/)
   assert.match(api, /existing\.currentCompanyVerification === "Unverified"/)

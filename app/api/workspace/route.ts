@@ -311,6 +311,9 @@ export async function POST(request: Request) {
     }
 
     if (payload.action !== "import" || !Array.isArray(payload.records)) return Response.json({ error: "A valid alumni import is required." }, { status: 400 });
+    // Legacy clients still post here, but unrestricted bulk import is an Admin
+    // governance action. The current UI uses /api/imports for preview + execute.
+    if (!hasPermission(context.role, "MANAGE_USERS")) return Response.json({ error: "Administrator access is required for bulk alumni imports." }, { status: 403 });
     if (payload.records.length < 1 || payload.records.length > 250) {
       return Response.json({ error: "Import between 1 and 250 records at a time." }, { status: 400 });
     }
