@@ -13,6 +13,12 @@ export type DirectoryFilters = {
   linkedinUrl: string;
   programme: string;
   batch: string;
+  graduationYearMode: "exact" | "onOrBefore" | "range" | "multiple";
+  graduationYearStart: string;
+  graduationYearEnd: string;
+  graduationYears: string;
+  seniorityMode: "selected" | "minimum";
+  seniorities: string[];
   previousCompany: string;
   minRelevance: number;
   minConfidence: number;
@@ -149,7 +155,7 @@ export function normalizeSeniority(raw: string, title = "") {
   if (/manager/.test(value)) return "Manager";
   if (/associate|consultant/.test(value)) return "Associate/Consultant";
   if (/analyst|junior|executive/.test(value)) return "Analyst/Junior";
-  return clean(raw) || "Analyst/Junior";
+  return clean(raw) || "Unknown/Unclassified";
 }
 
 const seniorityRank: Record<string, number> = {
@@ -256,15 +262,31 @@ export function matchesInternalFilters(
 ) {
   const exactOrAll = (actual: string, expected: string, allLabel: string) => expected === allLabel || normalized(actual) === normalized(expected);
   const contains = (actual: string, expected: string) => !expected || normalized(actual).includes(normalized(expected));
+  const graduationYear = person.graduationYear || person.batch || 0;
+  const graduationYearMode = filters.graduationYearMode ?? "exact";
+  const selectedYears = String(filters.graduationYears ?? "").split(",").map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0);
+  const matchesGraduationYear = !filters.batch && !filters.graduationYearStart && !filters.graduationYearEnd && !selectedYears.length
+    ? true
+    : graduationYearMode === "onOrBefore"
+      ? graduationYear > 0 && graduationYear <= Number(filters.batch)
+      : graduationYearMode === "range"
+        ? graduationYear > 0 && graduationYear >= Number(filters.graduationYearStart) && graduationYear <= Number(filters.graduationYearEnd)
+        : graduationYearMode === "multiple"
+          ? selectedYears.includes(graduationYear)
+          : graduationYear > 0 && graduationYear === Number(filters.batch);
+  const selectedSeniorities = filters.seniorities?.length ? filters.seniorities : filters.seniority !== "All levels" ? [filters.seniority] : [];
+  const matchesSelectedSeniority = !selectedSeniorities.length || (filters.seniorityMode === "minimum"
+    ? matchesSeniority(person.seniority, `${selectedSeniorities[0].replace(/\+$/, "")}+`)
+    : selectedSeniorities.some(level => matchesSeniority(person.seniority, level)));
   return contains(person.name, filters.name)
     && exactOrAll(person.company, filters.company, "All companies")
     && contains(person.title, filters.role)
     && exactOrAll(normalizeFunction(person.function, person.title), filters.function, "All functions")
-    && matchesSeniority(person.seniority, filters.seniority)
+    && matchesSelectedSeniority
     && contains(person.location, filters.location)
     && matchesLinkedinProfileFilter(person.linkedinUrl, filters.linkedinUrl)
     && exactOrAll(person.programme, filters.programme, "All programmes")
-    && (!filters.batch || (person.batch || person.graduationYear) === Number(filters.batch))
+    && matchesGraduationYear
     && contains(person.previous, filters.previousCompany)
     && relevance >= filters.minRelevance
     && person.confidence >= filters.minConfidence
@@ -425,6 +447,12 @@ export function defaultDirectoryFilters(): DirectoryFilters {
     linkedinUrl: "",
     programme: "All programmes",
     batch: "",
+    graduationYearMode: "exact",
+    graduationYearStart: "",
+    graduationYearEnd: "",
+    graduationYears: "",
+    seniorityMode: "selected",
+    seniorities: [],
     previousCompany: "",
     minRelevance: 0,
     minConfidence: 0,

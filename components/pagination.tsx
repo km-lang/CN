@@ -40,7 +40,7 @@ export function usePagination<T>(items: readonly T[], resetKey = "") {
   }
 }
 
-type PaginationModel = ReturnType<typeof usePagination<unknown>>
+export type PaginationModel = ReturnType<typeof usePagination<unknown>>
 
 export function PaginationFooter({ model, label = "Pagination" }: { model: PaginationModel; label?: string }) {
   return <nav className="pagination-footer" aria-label={label}>

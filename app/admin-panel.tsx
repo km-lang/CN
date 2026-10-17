@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Activity, BookPlus, ShieldCheck, Trash2, UserPlus } from "lucide-react"
+import { Activity, BookPlus, Download, ShieldCheck, Trash2, UserPlus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { PaginationFooter, usePagination } from "@/components/pagination"
@@ -125,10 +125,24 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [auditActor, setAuditActor] = useState("All actors")
   const [auditAction, setAuditAction] = useState("All actions")
   const [auditResult, setAuditResult] = useState("All results")
+  const [exportDatasets, setExportDatasets] = useState(["alumni", "companies", "company_mappings", "priorities", "engagements", "opportunities", "opportunity_history", "professional_reviews", "programmes"])
+  const [exportFormat, setExportFormat] = useState<"csv" | "xlsx">("xlsx")
+  const [exporting, setExporting] = useState(false)
 
   function beginPersistedMutation(key: string) {
     pendingMutationCountsRef.current.set(key, (pendingMutationCountsRef.current.get(key) ?? 0) + 1)
     setPendingMutationKeys(current => new Set(current).add(key))
+  }
+
+  async function exportBusinessData() {
+    setExporting(true); setMessage("")
+    try {
+      const response = await fetch(apiPath("/api/exports"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "admin", format: exportFormat, datasets: exportDatasets }) })
+      if (!response.ok) { const result = await response.json() as { error?: string }; throw new Error(result.error || "Unable to export business data.") }
+      const blob = await response.blob(); const disposition = response.headers.get("content-disposition") ?? ""; const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? `corporate-network-business-data.${exportFormat === "xlsx" ? "xlsx" : "zip"}`
+      const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url)
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to export business data.") }
+    finally { setExporting(false) }
   }
 
   function finishPersistedMutation(key: string) {
@@ -384,6 +398,15 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   return <div className="admin-workspace">
     <section className="admin-heading"><div><p className="eyebrow">Security administration</p><h2>Users, roles and audit history</h2><span>Access is denied by default. Only active, authorized identities receive application data.</span></div><span className="security-chip"><ShieldCheck /> Server enforced</span></section>
     {message && <div className="enrichment-message"><Activity /><span>{message}</span></div>}
+
+    <section className="panel admin-section">
+      <div className="panel-heading"><div><h2>Export Data</h2><span>Download approved operational business datasets. Credentials, sessions, raw provider payloads and technical security logs are always excluded.</span></div></div>
+      <div className="export-dataset-grid">{[
+        ["alumni", "Alumni"], ["companies", "Companies"], ["company_mappings", "Verified company mappings"], ["priorities", "Priorities"], ["engagements", "Engagements"], ["opportunities", "Opportunities"], ["opportunity_history", "Opportunity history"], ["professional_reviews", "Professional review decisions"], ["programmes", "Programme reference data"],
+      ].map(([id, label]) => <label key={id}><input type="checkbox" checked={exportDatasets.includes(id)} onChange={() => setExportDatasets(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])} /><span>{label}</span></label>)}</div>
+      <div className="admin-export-actions"><Select value={exportFormat} onValueChange={value => setExportFormat(value as "csv" | "xlsx")}><SelectTrigger aria-label="Admin export format"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="xlsx">Excel workbook</SelectItem><SelectItem value="csv">CSV ZIP</SelectItem></SelectContent></Select><Button disabled={exporting || !exportDatasets.length} onClick={() => void exportBusinessData()}>{exporting ? <Activity className="spin" /> : <Download />} Export approved datasets</Button></div>
+      <p className="section-help">Excel creates one worksheet per dataset plus EXPORT_INFO. CSV creates one file per dataset plus a manifest. Exporting records does not grant consent for outreach.</p>
+    </section>
 
     <section className="panel admin-section">
       <div className="panel-heading"><div><h2>User access management</h2><span>Control who can enter Corporate Network, their role, active status, linked sign-in and permitted actions. A verified identity is linked only after successful sign-in.</span></div></div>

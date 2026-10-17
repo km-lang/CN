@@ -74,6 +74,8 @@ const API_ROUTES = Object.freeze({
   outreachRoute: apiPath("/api/outreach-route"),
   professionalVerification: apiPath("/api/professional-verification"),
   coresignalCollect: apiPath("/api/admin/coresignal-collect"),
+  directory: apiPath("/api/directory"),
+  exports: apiPath("/api/exports"),
 })
 
 const ADDED_DISCOVERY_STATUSES = new Set<string>([
@@ -693,6 +695,16 @@ export default function Home() {
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [discoveryFilters, setDiscoveryFilters] = useState<DiscoveryFilters>(defaultDiscoveryFilters)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
+  const [directoryExportOpen, setDirectoryExportOpen] = useState(false)
+  const [directoryExportFormat, setDirectoryExportFormat] = useState<"csv" | "xlsx">("csv")
+  const [directoryExportCompatible, setDirectoryExportCompatible] = useState(false)
+  const [directoryExporting, setDirectoryExporting] = useState(false)
+  const [directoryExportMessage, setDirectoryExportMessage] = useState("")
+  const [directoryRows, setDirectoryRows] = useState<Alumni[]>([])
+  const [directoryTotal, setDirectoryTotal] = useState(0)
+  const [directoryPage, setDirectoryPage] = useState(1)
+  const [directoryPageSize, setDirectoryPageSizeState] = useState<10 | 25 | 50>(10)
+  const [directoryLoading, setDirectoryLoading] = useState(false)
   const [targetCompany, setTargetCompany] = useState("")
   const [overviewCompany, setOverviewCompany] = useState("All companies")
   const [opportunityContext, setOpportunityContext] = useState<{ company: string; alumnusId: number | null; mode: "create" | "filter"; key: number }>({ company: "", alumnusId: null, mode: "create", key: 0 })
@@ -1939,6 +1951,7 @@ export default function Home() {
 
   function updateDirectoryFilter<K extends keyof DirectoryFilters>(key: K, value: DirectoryFilters[K]) {
     setFilters(current => ({ ...current, [key]: value }))
+    setDirectoryPage(1)
   }
 
   function updateDiscoveryFilter<K extends keyof DiscoveryFilters>(key: K, value: DiscoveryFilters[K]) {
@@ -1981,6 +1994,26 @@ export default function Home() {
 
   function clearDirectoryFilters() {
     setFilters(defaultDirectoryFilters())
+    setDirectoryPage(1)
+  }
+
+  function toggleDirectorySeniority(value: string) {
+    setFilters(current => ({ ...current, seniorities: current.seniorities.includes(value) ? current.seniorities.filter(item => item !== value) : [...current.seniorities, value], seniority: "All levels" }))
+    setDirectoryPage(1)
+  }
+
+  async function exportDirectory() {
+    setDirectoryExporting(true); setDirectoryExportMessage("")
+    try {
+      const response = await fetch(API_ROUTES.exports, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "directory", format: directoryExportFormat, filters, importCompatible: directoryExportCompatible }) })
+      if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error || "Unable to export Directory data.") }
+      const blob = await response.blob()
+      const disposition = response.headers.get("content-disposition") ?? ""
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? `corporate-network-alumni.${directoryExportFormat}`
+      const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url)
+      setDirectoryExportOpen(false)
+    } catch (error) { setDirectoryExportMessage(error instanceof Error ? error.message : "Unable to export Directory data.") }
+    finally { setDirectoryExporting(false) }
   }
 
   function changeDiscoveryCountPreset(value: string) {
@@ -2401,7 +2434,36 @@ export default function Home() {
   }).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
   const importReviewRows = importReview?.rows ?? []
 
-  const directoryPagination = usePagination(filtered, JSON.stringify(filters))
+  useEffect(() => {
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      setDirectoryLoading(true)
+      try {
+        const query = new URLSearchParams({ filters: JSON.stringify(filters), page: String(directoryPage), pageSize: String(directoryPageSize), sort: "relevance" })
+        const response = await fetch(`${API_ROUTES.directory}?${query}`, { cache: "no-store", signal: controller.signal })
+        const data = await response.json() as { items?: Alumni[]; total?: number; page?: number; error?: string }
+        if (!response.ok || !data.items) throw new Error(data.error || "Unable to query the Alumni Directory.")
+        setDirectoryRows(data.items); setDirectoryTotal(data.total ?? 0)
+        if (data.page && data.page !== directoryPage) setDirectoryPage(data.page)
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "AbortError")) setWorkspaceMessage(error instanceof Error ? error.message : "Unable to query the Alumni Directory.")
+      } finally { if (!controller.signal.aborted) setDirectoryLoading(false) }
+    }, 200)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [directoryPage, directoryPageSize, filters])
+
+  const directoryPageCount = Math.max(1, Math.ceil(directoryTotal / directoryPageSize))
+  const directoryPagination = {
+    items: directoryRows,
+    total: directoryTotal,
+    page: Math.min(directoryPage, directoryPageCount),
+    pageSize: directoryPageSize,
+    pageCount: directoryPageCount,
+    start: directoryTotal ? (Math.min(directoryPage, directoryPageCount) - 1) * directoryPageSize + 1 : 0,
+    end: directoryTotal ? Math.min(directoryTotal, Math.min(directoryPage, directoryPageCount) * directoryPageSize) : 0,
+    setPage: setDirectoryPage,
+    setPageSize: (size: 10 | 25 | 50) => { setDirectoryPageSizeState(size); setDirectoryPage(1) },
+  }
   const companyContactsPagination = usePagination(targetAlumni, activeTargetCompany)
   const companyHistoryPagination = usePagination(companyEngagements, activeTargetCompany)
   const visibleEngagementGroups = groupEngagementsByAlumnus(visibleEngagements)
@@ -2501,7 +2563,7 @@ export default function Home() {
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal alumni directory</p><h2>Alumni directory</h2><span>{filtered.length} alumni found in {appConfig.name}, ranked by Placement Relevance</span></div>{session.canOperate && <div className="directory-intelligence-actions"><Button variant="outline" disabled={!selectedForIntelligence.length} onClick={() => openIntelligenceFor(selectedForIntelligence)}>Refresh selected</Button><Button variant="outline" disabled={!selectedForIntelligence.length} onClick={() => openIntelligenceFor(selectedForIntelligence)}>Schedule selected</Button><Button variant="ghost" onClick={() => openIntelligenceFor(directoryPagination.items.map(person => person.id))}>Use current page</Button><Button variant="ghost" onClick={() => openIntelligenceFor(filtered.map(person => person.id))}>Use all matching</Button></div>}</div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal alumni directory</p><h2>Alumni directory</h2><span>{directoryLoading ? "Searching stored alumni…" : `${directoryTotal} alumni found in ${appConfig.name}, ranked by Placement Relevance`}</span></div>{session.canOperate && <div className="directory-intelligence-actions"><Button variant="outline" onClick={() => setDirectoryExportOpen(true)}><Download /> Export Data</Button><Button variant="outline" disabled={!selectedForIntelligence.length} onClick={() => openIntelligenceFor(selectedForIntelligence)}>Refresh selected</Button><Button variant="outline" disabled={!selectedForIntelligence.length} onClick={() => openIntelligenceFor(selectedForIntelligence)}>Schedule selected</Button><Button variant="ghost" onClick={() => openIntelligenceFor(directoryPagination.items.map(person => person.id))}>Use current page</Button><Button variant="ghost" onClick={() => openIntelligenceFor(filtered.map(person => person.id))}>Use all matching</Button></div>}</div>
               {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
                 <div className="search-field directory-filter-name"><Search /><Input value={filters.name} onChange={event => updateDirectoryFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
@@ -2509,7 +2571,7 @@ export default function Home() {
                 <datalist id="company-options">{companies.map(item => <option key={item} value={item} />)}</datalist>
                 <Input className="directory-filter-role" value={filters.role} onChange={event => updateDirectoryFilter("role", event.target.value)} placeholder="Role or designation" aria-label="Filter by role or designation" />
                 <div className="directory-filter-function"><Select value={filters.function} onValueChange={value => updateDirectoryFilter("function", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></div>
-                <div className="directory-filter-seniority"><Select value={filters.seniority} onValueChange={value => updateDirectoryFilter("seniority", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All levels">All seniority</SelectItem>{seniorityFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></div>
+                <div className="directory-filter-seniority"><Popover><PopoverTrigger asChild><Button variant="outline" role="combobox" aria-label="Directory seniority levels">{filters.seniorities.length ? filters.seniorities.join(", ") : "All seniority"}<ChevronDown /></Button></PopoverTrigger><PopoverContent className="programme-multiselect-content"><div role="group" aria-label="Directory seniority levels"><label><input type="checkbox" checked={!filters.seniorities.length} onChange={() => updateDirectoryFilter("seniorities", [])} /><span>All levels</span></label>{seniorityFilterOptions.filter(item => !item.endsWith("+")).map(item => <label key={item}><input type="checkbox" checked={filters.seniorities.includes(item)} onChange={() => toggleDirectorySeniority(item)} /><span>{item}</span></label>)}</div></PopoverContent></Popover></div>
                 <Input className="directory-filter-location" value={filters.location} onChange={event => updateDirectoryFilter("location", event.target.value)} placeholder="Location" aria-label="Filter by location" />
                 <Input className="directory-filter-linkedin" value={filters.linkedinUrl} onChange={event => updateDirectoryFilter("linkedinUrl", event.target.value)} placeholder="LinkedIn URL or profile ID" aria-label="Filter by LinkedIn profile URL" />
                 <Button className="directory-more-filters" variant="outline" onClick={() => setShowAdvancedFilters(value => !value)}><Filter /> {showAdvancedFilters ? "Hide advanced filters" : "More filters"}</Button>
@@ -2517,7 +2579,8 @@ export default function Home() {
               </div>
               {showAdvancedFilters && <div className="advanced-filters">
                 <label className="directory-filter-field"><span>Directory programme</span><Select value={filters.programme} onValueChange={value => updateDirectoryFilter("programme", value)}><SelectTrigger aria-label="Directory programme"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{programmeChoices.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select><small>Applies only to existing Corporate Network records. It does not affect external provider discovery.</small></label>
-                <label className="directory-filter-field"><span>Batch / graduation year</span><Input type="number" min="1980" max="2100" value={filters.batch} onChange={event => updateDirectoryFilter("batch", event.target.value)} placeholder="Any year" /></label>
+                <label className="directory-filter-field"><span>Graduation Year (Passing-out Batch)</span><Select value={filters.graduationYearMode} onValueChange={value => updateDirectoryFilter("graduationYearMode", value as DirectoryFilters["graduationYearMode"])}><SelectTrigger aria-label="Graduation year mode"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="exact">Exact batch</SelectItem><SelectItem value="onOrBefore">On or before</SelectItem><SelectItem value="range">Year range</SelectItem><SelectItem value="multiple">Multiple batches</SelectItem></SelectContent></Select>{filters.graduationYearMode === "range" ? <span className="year-range-fields"><Input aria-label="Graduation start year" type="number" min="1900" max="2100" value={filters.graduationYearStart} onChange={event => updateDirectoryFilter("graduationYearStart", event.target.value)} placeholder="Start" /><Input aria-label="Graduation end year" type="number" min="1900" max="2100" value={filters.graduationYearEnd} onChange={event => updateDirectoryFilter("graduationYearEnd", event.target.value)} placeholder="End" /></span> : filters.graduationYearMode === "multiple" ? <Input aria-label="Selected graduation years" value={filters.graduationYears} onChange={event => updateDirectoryFilter("graduationYears", event.target.value)} placeholder="2009, 2011, 2013" /> : <Input aria-label="Graduation year" type="number" min="1900" max="2100" value={filters.batch} onChange={event => updateDirectoryFilter("batch", event.target.value)} placeholder="Any year" />}</label>
+                <label className="directory-filter-field"><span>Seniority selection</span><Select value={filters.seniorityMode} onValueChange={value => updateDirectoryFilter("seniorityMode", value as DirectoryFilters["seniorityMode"])}><SelectTrigger aria-label="Seniority selection mode"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="selected">Exact / selected levels</SelectItem><SelectItem value="minimum">Minimum seniority</SelectItem></SelectContent></Select><small>{filters.seniorityMode === "minimum" ? "The first selected level is the minimum threshold." : "Selected levels use OR logic."}</small></label>
                 <label className="directory-filter-field"><span>Previous company</span><Input value={filters.previousCompany} onChange={event => updateDirectoryFilter("previousCompany", event.target.value)} placeholder="Any previous company" /></label>
                 <label className="directory-filter-field"><span>Placement relevance</span><Select value={String(filters.minRelevance)} onValueChange={value => updateDirectoryFilter("minRelevance", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Placement Relevance</SelectItem><SelectItem value="60">Placement Relevance 60+</SelectItem><SelectItem value="75">Placement Relevance 75+</SelectItem><SelectItem value="85">Placement Relevance 85+</SelectItem></SelectContent></Select></label>
                 <label className="directory-filter-field"><span>Data confidence</span><Select value={String(filters.minConfidence)} onValueChange={value => updateDirectoryFilter("minConfidence", Number(value))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0">Any Data Confidence</SelectItem><SelectItem value="60">Data Confidence 60+</SelectItem><SelectItem value="75">Data Confidence 75+</SelectItem><SelectItem value="90">Data Confidence 90+</SelectItem></SelectContent></Select></label>
@@ -2527,10 +2590,10 @@ export default function Home() {
               </div>}
               <Table>
                 <TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label="Select current Directory page for intelligence" checked={Boolean(directoryPagination.items.length) && directoryPagination.items.every(person => selectedForIntelligence.includes(person.id))} onChange={event => { const ids = directoryPagination.items.map(person => person.id); setSelectedForIntelligence(current => event.target.checked ? [...new Set([...current, ...ids])] : current.filter(id => !ids.includes(id))) }} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
-                <TableBody>{directoryPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name} for intelligence`} checked={selectedForIntelligence.includes(person.id)} onChange={() => setSelectedForIntelligence(current => current.includes(person.id) ? current.filter(id => id !== person.id) : [...current, person.id])} />}</TableCell><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person, "directory")}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{alumniEducationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
+                <TableBody>{directoryPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name} for intelligence`} checked={selectedForIntelligence.includes(person.id)} onChange={() => setSelectedForIntelligence(current => current.includes(person.id) ? current.filter(id => id !== person.id) : [...current, person.id])} />}</TableCell><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(alumni.find(item => item.id === person.id) ?? person, "directory")}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{alumniEducationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
               </Table>
               <PaginationFooter model={directoryPagination} label="Alumni Directory pagination" />
-              {filtered.length === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Adjust or clear the internal filters, or use the separate external discovery area below." : "No authorized records match the selected filters."}</p></div>}
+              {!directoryLoading && directoryTotal === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Adjust or clear the internal filters, or use the separate external discovery area below." : "No authorized records match the selected filters."}</p></div>}
             </section>
 
             {session.canOperate && <section className="panel directory-external-discovery">
@@ -3008,6 +3071,15 @@ export default function Home() {
             {comparisonAlumnus && <Button variant="ghost" onClick={() => { openAlumnusProfile(comparisonAlumnus); setComparisonResult(null) }}><Eye /> View existing record</Button>}
             {comparisonAlumnus ? <Button onClick={() => void applyComparison()} disabled={discovering}>{comparisonResult?.matchStatus === "Possible duplicate" ? selectedComparisonFields.length ? "Same person · Apply Updates" : "Same person · Keep Internal" : selectedComparisonFields.length ? "Apply Selected Updates" : "Keep Internal Values"}</Button> : <Button onClick={() => setComparisonResult(null)}>Keep Pending Review</Button>}
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={directoryExportOpen} onOpenChange={setDirectoryExportOpen}>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Export Data</DialogTitle><DialogDescription>Downloads all authorized alumni matching the current Directory filters, not only the visible page. No provider call is made.</DialogDescription></DialogHeader>
+          <div className="refresh-confirm-summary"><div><span>Scope</span><strong>All matching records</strong></div><div><span>Matching rows</span><strong>{directoryTotal}</strong></div><div><span>Active filters</span><strong>{Object.entries(filters).filter(([, value]) => Array.isArray(value) ? value.length : value && value !== "All companies" && value !== "All levels" && value !== "All programmes" && value !== "All functions" && !String(value).startsWith("All ")).map(([key]) => key).join(", ") || "None"}</strong></div><div><span>Authorized columns</span><strong>Identity, programme, current professional context, verification, relevance and outreach state</strong></div></div>
+          <label className="dialog-field"><span>Format</span><Select value={directoryExportFormat} onValueChange={value => setDirectoryExportFormat(value as "csv" | "xlsx")}><SelectTrigger aria-label="Directory export format"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="csv">CSV</SelectItem><SelectItem value="xlsx">Excel (.xlsx)</SelectItem></SelectContent></Select></label>
+          <label className="dialog-check"><input type="checkbox" checked={directoryExportCompatible} onChange={event => setDirectoryExportCompatible(event.target.checked)} /> Import-compatible alumni columns (stable Corporate Network source IDs)</label>
+          <p className="section-help">Contact details, credentials, sessions, raw provider evidence and security logs are excluded. Export does not grant consent for outreach.</p>{directoryExportMessage && <p role="alert" className="field-error">{directoryExportMessage}</p>}
+          <DialogFooter><Button variant="outline" onClick={() => setDirectoryExportOpen(false)}>Cancel</Button><Button disabled={directoryExporting} onClick={() => void exportDirectory()}>{directoryExporting ? <LoaderCircle className="spin" /> : <Download />} Download {directoryExportFormat.toUpperCase()}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </main>

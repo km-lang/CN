@@ -119,7 +119,7 @@ test("Flow A: ordinary Directory selection opens only the profile route", () => 
   assert.equal(url, "/?tab=directory&profileAlumnusId=15")
   assert.equal(navigation.parseControlledEmailIntent(new URL(url, "https://network.example").search), null)
   assert.deepEqual(navigation.profileRouteState(new URL(url, "https://network.example").search), { profileAlumnusId: 15, tab: "directory" })
-  assert.match(page, /openAlumnusProfile\(person, "directory"\)/)
+  assert.match(page, /openAlumnusProfile\(alumni\.find\(item => item\.id === person\.id\) \?\? person, "directory"\)/)
 })
 
 test("Flow B: Draft Email alone creates the Engagement compose route", () => {
@@ -161,6 +161,6 @@ test("critical browser contract: Cancel is one atomic URL navigation with the dr
 
 test("direct Engagement email controls remain separate from profile navigation", () => {
   assert.match(page, /previewEngagement\(event\)/)
-  assert.match(page, /openAlumnusProfile\(person, "directory"\)/)
+  assert.match(page, /openAlumnusProfile\(alumni\.find\(item => item\.id === person\.id\) \?\? person, "directory"\)/)
   assert.doesNotMatch(page.match(/function openAlumnusProfile[\s\S]*?\n  \}/)?.[0] ?? "", /previewEngagement|create_manual_email_event/)
 })

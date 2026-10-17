@@ -13,6 +13,9 @@ const paginationSource = await readFile(new URL("../lib/pagination.ts", import.m
 const component = await readFile(new URL("../components/pagination.tsx", import.meta.url), "utf8")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
 const admin = await readFile(new URL("../app/admin-panel.tsx", import.meta.url), "utf8")
+const directoryRoute = await readFile(new URL("../app/api/directory/route.ts", import.meta.url), "utf8")
+const directoryData = await readFile(new URL("../lib/directory-data.ts", import.meta.url), "utf8")
+const directoryQuery = await readFile(new URL("../lib/directory-query.ts", import.meta.url), "utf8")
 
 test("pagination defaults to 10 rows and offers only 10, 25, and 50", () => {
   assert.deepEqual(pagination.PAGE_SIZE_OPTIONS, [10, 25, 50])
@@ -38,8 +41,10 @@ test("Previous and Next are disabled at their boundaries", () => {
 })
 
 test("filter and ranking pipelines run before directory and outreach pagination", () => {
-  assert.ok(page.indexOf("const filtered = useMemo") < page.indexOf("usePagination(filtered"))
-  assert.match(page, /matchesInternalFilters[\s\S]*?\.sort\(\(a, b\) => relevanceBreakdown\(b/)
+  assert.match(page, /new URLSearchParams\(\{ filters: JSON\.stringify\(filters\), page: String\(directoryPage\), pageSize: String\(directoryPageSize\), sort: "relevance" \}\)/)
+  assert.match(directoryRoute, /normalizeDirectoryQuery[\s\S]*runDirectoryQuery/)
+  assert.match(directoryData, /applyDirectoryQuery\(searchableRows, query, relevance, directoryContactStatus\)/)
+  assert.match(directoryQuery, /const matched = items\.filter[\s\S]*matched\.sort[\s\S]*const pageCount[\s\S]*items: matched\.slice/)
   assert.ok(page.indexOf("const visibleOutreach = alumni.filter") < page.indexOf("usePagination(visibleOutreach"))
   assert.match(page, /const visibleOutreach = alumni\.filter[\s\S]*?\.sort\(\(a, b\) => relevanceBreakdown\(b/)
 })
@@ -48,7 +53,9 @@ test("filter and page-size changes reset to page one", () => {
   assert.match(component, /activeResetKey !== resetKey/)
   assert.match(component, /setPage\(1\)/)
   assert.match(component, /function setPageSize[\s\S]*?setPageSizeState\(next\)[\s\S]*?setPage\(1\)/)
-  assert.match(page, /usePagination\(filtered, JSON\.stringify\(filters\)\)/)
+  assert.match(page, /function updateDirectoryFilter[\s\S]*setFilters[\s\S]*setDirectoryPage\(1\)/)
+  assert.match(page, /function clearDirectoryFilters[\s\S]*setFilters\(defaultDirectoryFilters\(\)\)[\s\S]*setDirectoryPage\(1\)/)
+  assert.match(page, /setPageSize: \(size: 10 \| 25 \| 50\) => \{ setDirectoryPageSizeState\(size\); setDirectoryPage\(1\) \}/)
   assert.match(page, /usePagination\(visibleEngagementGroups, JSON\.stringify/)
   assert.match(page, /usePagination\(visibleOutreach, JSON\.stringify/)
   assert.match(admin, /usePagination\(visibleLifecycle, JSON\.stringify/)
@@ -58,13 +65,17 @@ test("filter and page-size changes reset to page one", () => {
 test("stored-record paging is local and cannot trigger providers or mail", () => {
   assert.doesNotMatch(component, /fetch\(|CORESIGNAL|LUSHA|SIGNALS|GMAIL|MAIL/)
   assert.doesNotMatch(paginationSource, /fetch\(|CORESIGNAL|LUSHA|SIGNALS|GMAIL|MAIL/)
+  assert.match(page, /API_ROUTES\.directory/)
+  assert.doesNotMatch(directoryRoute, /CORESIGNAL|LUSHA|SIGNALS|GMAIL|fetch\(/)
+  assert.doesNotMatch(directoryData, /CORESIGNAL|LUSHA|SIGNALS|GMAIL|fetch\(/)
   assert.match(page, /const providerHistoryPagination = usePagination\(providerHistory\)/)
   assert.match(page, /discoveryResults\.map\(result =>/)
   assert.doesNotMatch(page, /usePagination\(discoveryResults/)
 })
 
 test("product sections retain independent pagination state", () => {
-  for (const name of ["directoryPagination", "companyContactsPagination", "companyHistoryPagination", "engagementPagination", "outreachPagination", "importPagination", "enrichmentPagination", "providerHistoryPagination", "profileOpenEngagementPagination", "profileEngagementHistoryPagination", "eventActivityPagination"]) {
+  assert.match(page, /const directoryPagination = \{/)
+  for (const name of ["companyContactsPagination", "companyHistoryPagination", "engagementPagination", "outreachPagination", "importPagination", "enrichmentPagination", "providerHistoryPagination", "profileOpenEngagementPagination", "profileEngagementHistoryPagination", "eventActivityPagination"]) {
     assert.match(page, new RegExp(`const ${name} = usePagination`))
   }
   for (const name of ["usersPagination", "lifecyclePagination", "auditPagination"]) assert.match(admin, new RegExp(`const ${name} = usePagination`))
