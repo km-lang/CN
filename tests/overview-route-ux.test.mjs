@@ -63,6 +63,6 @@ test("route explanation and profile actions use business language and stored evi
 test("KPI help reflects the shared implemented definitions", () => {
   assert.match(page, /Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone/)
   assert.match(page, /Includes shared outreach states Contacted, Responded, and Meeting set/)
-  assert.match(page, /const activeOutreach = alumni\.filter\(person => isActiveOutreach\(person\.status\)\)/)
+  assert.match(page, /const activeOutreach = alumniSummary\.activeOutreach/)
   assert.match(page, /<TooltipTrigger asChild>/)
 })

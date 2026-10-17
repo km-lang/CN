@@ -54,13 +54,13 @@ function safeSheetName(value: string, used: Set<string>) {
   return name
 }
 
-export function datasetsXlsx(datasets: readonly ExportDataset[], info: Record<string, string | number> = {}) {
+export function datasetsXlsx(datasets: readonly ExportDataset[], info: Record<string, string | number> = {}, options: { dataFirst?: boolean } = {}) {
   const used = new Set<string>()
   const infoDataset: ExportDataset = {
     id: "export_info", label: "EXPORT_INFO", columns: [{ key: "field", label: "Field" }, { key: "value", label: "Value" }],
     rows: Object.entries(info).map(([field, value]) => ({ field, value })),
   }
-  const all = [infoDataset, ...datasets]
+  const all = options.dataFirst ? [...datasets, infoDataset] : [infoDataset, ...datasets]
   const names = all.map(dataset => safeSheetName(dataset.label, used))
   const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((name, index) => `<sheet name="${xml(name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("")}</sheets></workbook>`
   const relationships = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${all.map((_dataset, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("")}<Relationship Id="rId${all.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`

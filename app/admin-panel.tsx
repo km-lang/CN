@@ -17,13 +17,14 @@ type AdminIdentity = { id: number; provider: "google_workspace" | "chatgpt"; ver
 type AdminUser = { id: number; externalIdentity: string; displayName: string; email: string; role: ApplicationRole; enabled: boolean; createdAt: string; updatedAt: string; lastLoginAt: string; identities: AdminIdentity[] }
 type AuditEvent = { id: number; actorName: string; actorRole: string; action: string; entityType: string; entityId: string; result: string; createdAt: string }
 type ProviderCompanyMapping = { id: number; normalizedCompanyKey: string; displayName: string; provider: string; providerCompanyId: string; status: "VERIFIED" | "UNVERIFIED" | "CONFLICT"; mappingSource: string; evidenceReference: string; providerSourceId: string; providerCompanyUrl: string; verifiedBy: string; verifiedAt: string; updatedAt: string }
+type ProviderCompanyAlias = { id: number; mappingId: number; displayAlias: string; normalizedAlias: string; status: "VERIFIED" | "CONFLICT" }
 type OperationalReadiness = {
   coresignal: { mode: string; configured: boolean; searchMaximum: number; refreshMaximum: number }
   lushaContacts: { mode: string; configured: boolean }
   signals: { implementationStatus: string; liveEnabled: boolean; entitlement: "unknown" | "confirmed" | "not_entitled"; lastVerifiedAt: string; verificationSource: string }
   mail: { mode: string; liveEnabled: boolean; provider: string; senderConfigured: boolean; oauthConfigured: boolean; sendPermissionConfigured: boolean; lastValidationStatus: string; lastValidatedAt: string; validationSource: string; validationReason?: string; scopeVerified?: boolean | null }
 }
-type AdminData = { users: AdminUser[]; audit: AuditEvent[]; programmeOptions?: ProgrammeOption[]; providerCompanyMappings?: ProviderCompanyMapping[]; operationalReadiness?: OperationalReadiness }
+type AdminData = { users: AdminUser[]; audit: AuditEvent[]; programmeOptions?: ProgrammeOption[]; providerCompanyMappings?: ProviderCompanyMapping[]; providerCompanyAliases?: ProviderCompanyAlias[]; operationalReadiness?: OperationalReadiness }
 type SignalsEntitlementValidation = {
   entitlement: "confirmed" | "not_entitled" | "unknown"
   outcome: string
@@ -97,11 +98,13 @@ function friendlyAuditLabel(value: string) {
   return AUDIT_LABELS[value] ?? value.replaceAll("_", " ").replace(/^./, letter => letter.toUpperCase())
 }
 
-export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: string; programme: string; lifecycle?: string }> }) {
+type LifecycleAlumnus = { id: number; name: string; programme: string; lifecycle?: string }
+
+export function AdminPanel() {
   const [data, setData] = useState<AdminData>({ users: [], audit: [] })
   const [form, setForm] = useState({ displayName: "", email: "", role: "PCOM" as ApplicationRole })
   const [programmeForm, setProgrammeForm] = useState({ code: "", name: "" })
-  const emptyCompanyMappingForm = { mappingId: undefined as number | undefined, displayName: "", provider: "coresignal", providerCompanyId: "", status: "UNVERIFIED" as ProviderCompanyMapping["status"], mappingSource: "", evidenceReference: "", providerSourceId: "", providerCompanyUrl: "" }
+  const emptyCompanyMappingForm = { mappingId: undefined as number | undefined, displayName: "", provider: "coresignal", providerCompanyId: "", status: "UNVERIFIED" as ProviderCompanyMapping["status"], mappingSource: "", evidenceReference: "", providerSourceId: "", providerCompanyUrl: "", aliasText: "" }
   const [companyMappingForm, setCompanyMappingForm] = useState(emptyCompanyMappingForm)
   const [programmeNameDrafts, setProgrammeNameDrafts] = useState<Record<number, string>>({})
   const [message, setMessage] = useState("")
@@ -122,6 +125,11 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
   const [lifecycleSearch, setLifecycleSearch] = useState("")
   const [lifecycleStateFilter, setLifecycleStateFilter] = useState("All lifecycle states")
   const [lifecycleProgramme, setLifecycleProgramme] = useState("All programmes")
+  const [lifecycleRows, setLifecycleRows] = useState<LifecycleAlumnus[]>([])
+  const [lifecycleProgrammes, setLifecycleProgrammes] = useState<string[]>([])
+  const [lifecycleTotal, setLifecycleTotal] = useState(0)
+  const [lifecyclePage, setLifecyclePage] = useState(1)
+  const [lifecyclePageSize, setLifecyclePageSize] = useState<10 | 25 | 50>(10)
   const [auditActor, setAuditActor] = useState("All actors")
   const [auditAction, setAuditAction] = useState("All actions")
   const [auditResult, setAuditResult] = useState("All results")
@@ -167,6 +175,20 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
     const timer = window.setTimeout(() => void load().catch(error => setMessage(error instanceof Error ? error.message : "Unable to load administration data.")), 0)
     return () => window.clearTimeout(timer)
   }, [load])
+
+  const loadLifecycle = useCallback(async () => {
+    const query = new URLSearchParams({ search: lifecycleSearch, lifecycle: lifecycleStateFilter, programme: lifecycleProgramme, page: String(lifecyclePage), pageSize: String(lifecyclePageSize) })
+    const response = await fetch(`${apiPath("/api/admin/lifecycle")}?${query}`, { cache: "no-store" })
+    const result = await response.json() as { items?: LifecycleAlumnus[]; programmes?: string[]; total?: number; page?: number; error?: string }
+    if (!response.ok || !result.items) throw new Error(result.error || "Unable to load lifecycle records.")
+    setLifecycleRows(result.items); setLifecycleProgrammes(result.programmes ?? []); setLifecycleTotal(result.total ?? 0)
+    if (result.page && result.page !== lifecyclePage) setLifecyclePage(result.page)
+  }, [lifecyclePage, lifecyclePageSize, lifecycleProgramme, lifecycleSearch, lifecycleStateFilter])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadLifecycle().catch(error => setMessage(error instanceof Error ? error.message : "Unable to load lifecycle records.")), 150)
+    return () => window.clearTimeout(timer)
+  }, [loadLifecycle])
 
   async function validateSignalsEntitlement() {
     setLoading(true)
@@ -247,7 +269,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
 
   async function saveCompanyMapping() {
     if (companyMappingForm.status === "VERIFIED" && !window.confirm(`Verify the ${companyMappingForm.provider} identity for ${companyMappingForm.displayName}?\n\nOnly verified mappings can constrain provider Search.`)) return
-    if (await action({ action: "upsert_provider_company_mapping", ...companyMappingForm })) setCompanyMappingForm(emptyCompanyMappingForm)
+    if (await action({ action: "upsert_provider_company_mapping", ...companyMappingForm, aliases: companyMappingForm.aliasText.split(/[;,]/).map(value => value.trim()).filter(Boolean) })) setCompanyMappingForm(emptyCompanyMappingForm)
   }
 
   function editCompanyMapping(mapping: ProviderCompanyMapping) {
@@ -261,6 +283,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       evidenceReference: mapping.evidenceReference,
       providerSourceId: mapping.providerSourceId,
       providerCompanyUrl: mapping.providerCompanyUrl,
+      aliasText: (data.providerCompanyAliases ?? []).filter(alias => alias.mappingId === mapping.id).map(alias => alias.displayAlias).join(", "),
     })
   }
 
@@ -308,6 +331,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
       setMessage(result.ok ? "Lifecycle state saved and audited." : result.error instanceof Error ? result.error.message : "Unable to update the lifecycle state.")
     }
     finishPersistedMutation(mutationKey)
+    if (result.ok && result.latest) await loadLifecycle()
   }
 
   async function authorizeUser(confirmSimilarEmail = false) {
@@ -380,19 +404,13 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
     }
   }
 
-  const lifecycleProgrammes = [...new Set(alumni.map(person => person.programme))].sort()
-  const visibleLifecycle = alumni.filter(person => {
-    if (lifecycleSearch && !person.name.toLowerCase().includes(lifecycleSearch.toLowerCase())) return false
-    if (lifecycleStateFilter !== "All lifecycle states" && (person.lifecycle ?? "Active") !== lifecycleStateFilter) return false
-    if (lifecycleProgramme !== "All programmes" && person.programme !== lifecycleProgramme) return false
-    return true
-  })
   const auditActors = [...new Set(data.audit.map(event => event.actorName))].sort()
   const auditActions = [...new Set(data.audit.map(event => event.action))].sort()
   const auditResults = [...new Set(data.audit.map(event => event.result))].sort()
   const visibleAudit = data.audit.filter(event => (auditActor === "All actors" || event.actorName === auditActor) && (auditAction === "All actions" || event.action === auditAction) && (auditResult === "All results" || event.result === auditResult))
   const usersPagination = usePagination(data.users)
-  const lifecyclePagination = usePagination(visibleLifecycle, JSON.stringify([lifecycleSearch, lifecycleStateFilter, lifecycleProgramme]))
+  const lifecyclePageCount = Math.max(1, Math.ceil(lifecycleTotal / lifecyclePageSize))
+  const lifecyclePagination = { items: lifecycleRows, total: lifecycleTotal, page: lifecyclePage, pageSize: lifecyclePageSize, pageCount: lifecyclePageCount, start: lifecycleTotal ? (lifecyclePage - 1) * lifecyclePageSize + 1 : 0, end: lifecycleTotal ? Math.min(lifecycleTotal, lifecyclePage * lifecyclePageSize) : 0, setPage: setLifecyclePage, setPageSize: (size: 10 | 25 | 50) => { setLifecyclePageSize(size); setLifecyclePage(1) } }
   const auditPagination = usePagination(visibleAudit, JSON.stringify([auditActor, auditAction, auditResult]))
 
   return <div className="admin-workspace">
@@ -434,6 +452,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
         <Input aria-label="Evidence reference" placeholder="Evidence reference" value={companyMappingForm.evidenceReference} onChange={event => setCompanyMappingForm(current => ({ ...current, evidenceReference: event.target.value }))} />
         <Input aria-label="Provider source ID" placeholder="Optional provider source ID" value={companyMappingForm.providerSourceId} onChange={event => setCompanyMappingForm(current => ({ ...current, providerSourceId: event.target.value }))} />
         <Input aria-label="Provider company URL" placeholder="Optional provider company URL" value={companyMappingForm.providerCompanyUrl} onChange={event => setCompanyMappingForm(current => ({ ...current, providerCompanyUrl: event.target.value }))} />
+        <Input aria-label="Approved company aliases" placeholder="Approved aliases, separated by commas" value={companyMappingForm.aliasText} onChange={event => setCompanyMappingForm(current => ({ ...current, aliasText: event.target.value }))} />
         <Button disabled={loading || !companyMappingForm.displayName.trim() || (companyMappingForm.status === "VERIFIED" && !companyMappingForm.providerCompanyId.trim())} onClick={() => void saveCompanyMapping()}><ShieldCheck /> {companyMappingForm.mappingId ? "Update mapping" : "Add mapping"}</Button>
         {companyMappingForm.mappingId && <Button variant="ghost" onClick={() => setCompanyMappingForm(emptyCompanyMappingForm)}>Cancel edit</Button>}
       </div>
@@ -478,7 +497,7 @@ export function AdminPanel({ alumni }: { alumni: Array<{ id: number; name: strin
     <section className="panel admin-section">
       <div className="panel-heading"><div><h2>Data lifecycle</h2><span>Archive or request deletion without removing historical audit references.</span></div></div>
       <p className="section-help"><strong>Archive:</strong> removes an alumnus from normal operational workflows while retaining the record and historical references. <strong>Anonymize:</strong> irreversibly removes identifying personal data while preserving necessary audit references.</p>
-      <div className="outreach-filters"><Input aria-label="Search lifecycle alumni" placeholder="Search alumnus" value={lifecycleSearch} onChange={event => setLifecycleSearch(event.target.value)} /><Select value={lifecycleStateFilter} onValueChange={setLifecycleStateFilter}><SelectTrigger aria-label="Lifecycle state"><SelectValue /></SelectTrigger><SelectContent>{["All lifecycle states", "Active", "Archived", "Deletion requested", "Anonymized"].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={lifecycleProgramme} onValueChange={setLifecycleProgramme}><SelectTrigger aria-label="Lifecycle programme"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{lifecycleProgrammes.map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={() => { setLifecycleSearch(""); setLifecycleStateFilter("All lifecycle states"); setLifecycleProgramme("All programmes") }}>Clear</Button></div>
+      <div className="outreach-filters"><Input aria-label="Search lifecycle alumni" placeholder="Search alumnus" value={lifecycleSearch} onChange={event => { setLifecycleSearch(event.target.value); setLifecyclePage(1) }} /><Select value={lifecycleStateFilter} onValueChange={value => { setLifecycleStateFilter(value); setLifecyclePage(1) }}><SelectTrigger aria-label="Lifecycle state"><SelectValue /></SelectTrigger><SelectContent>{["All lifecycle states", "Active", "Archived", "Deletion requested", "Anonymized"].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={lifecycleProgramme} onValueChange={value => { setLifecycleProgramme(value); setLifecyclePage(1) }}><SelectTrigger aria-label="Lifecycle programme"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All programmes">All programmes</SelectItem>{lifecycleProgrammes.map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={() => { setLifecycleSearch(""); setLifecycleStateFilter("All lifecycle states"); setLifecycleProgramme("All programmes"); setLifecyclePage(1) }}>Clear</Button></div>
       <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Lifecycle state</TableHead><TableHead>Protected anonymization</TableHead></TableRow></TableHeader><TableBody>{lifecyclePagination.items.map(person => { const lifecycleMutationKey = `alumnus:${person.id}:lifecycle`; return <TableRow key={person.id}><TableCell>{person.name}<small className="review-status">Record #{person.id}</small></TableCell><TableCell><Select value={lifecycleDrafts[person.id] ?? person.lifecycle ?? "Active"} onValueChange={status => void updateLifecycle(person, status)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Active">Active</SelectItem><SelectItem value="Archived">Archived</SelectItem><SelectItem value="Deletion requested">Deletion requested</SelectItem>{person.lifecycle === "Anonymized" && <SelectItem value="Anonymized">Anonymized</SelectItem>}</SelectContent></Select>{pendingMutationKeys.has(lifecycleMutationKey) && <small className="review-status">Saving latest lifecycle state…</small>}</TableCell><TableCell>{anonymizeId === person.id ? <div className="anonymize-confirm"><small>Personal identity, contact details, provider identifiers, profile URL, notes and relationship assessment will be irreversibly removed.</small><Input value={confirmation} onChange={event => setConfirmation(event.target.value)} placeholder={`ANONYMIZE ${person.id}`} /><Button title={confirmation !== `ANONYMIZE ${person.id}` ? `Type ANONYMIZE ${person.id} to confirm.` : loading ? "Another administration change is still saving." : undefined} variant="outline" disabled={confirmation !== `ANONYMIZE ${person.id}` || loading} onClick={() => void action({ action: "anonymize_alumnus", alumnusId: person.id, confirmation }).then(() => { setAnonymizeId(null); setConfirmation("") })}>Confirm anonymization</Button><Button variant="ghost" onClick={() => { setAnonymizeId(null); setConfirmation("") }}>Cancel</Button></div> : <Button title={person.lifecycle === "Anonymized" ? "This record is already anonymized and cannot be anonymized again." : undefined} size="sm" variant="ghost" disabled={person.lifecycle === "Anonymized"} onClick={() => setAnonymizeId(person.id)}>Anonymize…</Button>}</TableCell></TableRow> })}</TableBody></Table>
       <PaginationFooter model={lifecyclePagination} label="Data lifecycle pagination" />
     </section>

@@ -92,6 +92,16 @@ test("normal local development stays mock and the named demo command is loopback
   assert.match(demo, /GMAIL_SEND_SCOPE_CONFIRMED=false/)
   assert.match(demo, /--host 127\.0\.0\.1/)
   assert.doesNotMatch(demo, /CORESIGNAL_API_KEY=/)
+  const manual = packageJson.scripts["dev:local:coresignal-manual-live"]
+  assert.match(manual, /CORESIGNAL_SEARCH_ENABLED=true/)
+  assert.match(manual, /CORESIGNAL_COLLECT_ENABLED=true/)
+  assert.match(manual, /LOCAL_DEV_AUTH_ROLE=ADMIN/)
+  assert.match(manual, /CORESIGNAL_LIVE_SEARCH_MAX_RESULTS=1/)
+  assert.match(manual, /LUSHA_LIVE_ENABLED=false/)
+  assert.match(manual, /LUSHA_SIGNALS_LIVE_ENABLED=false/)
+  assert.match(manual, /MAIL_LIVE_ENABLED=false/)
+  assert.match(manual, /--host 127\.0\.0\.1/)
+  assert.doesNotMatch(manual, /CORESIGNAL_API_KEY=/)
 })
 
 test("the local key stays in ignored server-only configuration", () => {

@@ -1,9 +1,11 @@
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns, programmeOptions } from "@/db/schema";
 import type { ApplicationRole } from "@/lib/access-types";
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { validateManualAlumnusInput } from "@/lib/manual-alumnus";
+import { defaultDirectoryFilters } from "@/lib/alumni-search";
+import { runDirectoryQuery } from "@/lib/directory-data";
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
 
 const allowedStatuses = new Set(["Not contacted", "Contacted", "Responded", "Meeting set"]);
@@ -260,19 +262,33 @@ export async function GET(request: Request) {
   try {
     const context = await authorizeRequest(request, "VIEW_ALUMNI");
     const db = getDb();
-    const [alumniRows, priorityRows, latestImports, privacyRows, lifecycleRows, programmeRows] = await Promise.all([
-      db.select().from(alumni).orderBy(alumni.name),
+    const url = new URL(request.url);
+    const includeAlumni = url.searchParams.get("includeAlumni") === "true";
+    const [alumniRows, priorityRows, latestImports, privacyRows, lifecycleRows, programmeRows, companyRows, countRows, activeOutreachRows, contactReadyRows, outreachStatusRows, topResult] = await Promise.all([
+      includeAlumni ? db.select().from(alumni).orderBy(alumni.name).limit(500) : Promise.resolve([]),
       db.select().from(companyPriorities).orderBy(companyPriorities.company),
       db.select().from(importRuns).orderBy(desc(importRuns.createdAt), desc(importRuns.id)).limit(1),
-      db.select().from(alumniPrivacyControls),
-      db.select().from(alumniDataLifecycle),
+      includeAlumni ? db.select().from(alumniPrivacyControls) : Promise.resolve([]),
+      includeAlumni ? db.select().from(alumniDataLifecycle) : Promise.resolve([]),
       db.select().from(programmeOptions).orderBy(programmeOptions.sortOrder, programmeOptions.name),
+      db.selectDistinct({ company: alumni.company }).from(alumni).where(sql`trim(${alumni.company}) != ''`).orderBy(asc(alumni.company)).limit(1000),
+      db.select({ count: sql<number>`count(*)` }).from(alumni),
+      db.select({ count: sql<number>`count(*)` }).from(alumni).where(sql`${alumni.status} in ('Contacted','Responded','Meeting set')`),
+      db.select({ count: sql<number>`count(*)` }).from(alumni).where(sql`${alumni.profileMatch} = 'Confirmed' and ${alumni.currentCompanyVerification} = 'Verified' and ${alumni.designationVerification} in ('Verified','Likely') and (${alumni.emailVerification} = 'Verified' or ${alumni.phoneVerification} = 'Verified')`),
+      db.select({ status: alumni.status, count: sql<number>`count(*)` }).from(alumni).groupBy(alumni.status),
+      runDirectoryQuery({ filters: defaultDirectoryFilters(), page: 1, pageSize: 10, sort: "relevance" }),
     ]);
     const privacyByAlumnus = new Map(privacyRows.map(row => [row.alumnusId, row]));
     const lifecycleByAlumnus = new Map(lifecycleRows.map(row => [row.alumnusId, row]));
     return Response.json({
       alumni: alumniRows.map(row => toApiAlumnus(row, context.role, privacyByAlumnus.get(row.id), lifecycleByAlumnus.get(row.id))),
       companyPriorities: Object.fromEntries(priorityRows.map(row => [row.company, row.priority])),
+      companyOptions: companyRows.map(row => row.company),
+      alumniCount: Number(countRows[0]?.count ?? 0),
+      alumniSummary: { total: Number(countRows[0]?.count ?? 0), activeOutreach: Number(activeOutreachRows[0]?.count ?? 0), contactReady: Number(contactReadyRows[0]?.count ?? 0) },
+      outreachStatusCounts: Object.fromEntries(outreachStatusRows.map(item => [item.status, Number(item.count)])),
+      topAlumni: topResult.items.slice(0, 5),
+      alumniIncluded: includeAlumni,
       latestImport: latestImports[0] ?? null,
       programmeOptions: programmeRows,
       access: { role: context.role, contactsMasked: !hasPermission(context.role, "VIEW_CONTACTS") },

@@ -301,6 +301,13 @@ button { cursor: pointer; }
 .import-review-row.import-error, .import-review-row.import-duplicate { background: #fff7f8; }
 .import-review-row.import-error > small, .import-review-row.import-duplicate > small { color: #8c1d2c; }
 .workspace-message { display: flex; align-items: flex-start; gap: .55rem; margin-top: 1rem; padding: .75rem .85rem; border-radius: 10px; background: #edf2f5; color: #405a6c; font-size: .78rem; line-height: 1.45; }
+.profile-edit-dialog { width: min(760px, calc(100vw - 2rem)); max-width: 760px; }
+.profile-edit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem; max-height: min(60vh, 620px); overflow: auto; padding: .15rem; }
+.profile-edit-grid label { display: grid; gap: .3rem; min-width: 0; }
+.profile-edit-grid label > span { font-size: .78rem; font-weight: 700; color: #31495a; }
+.profile-edit-grid label > small { color: #687c8b; overflow-wrap: anywhere; }
+.profile-edit-grid .profile-edit-note { grid-column: 1 / -1; }
+@media (max-width: 640px) { .profile-edit-grid { grid-template-columns: 1fr; } .profile-edit-grid .profile-edit-note { grid-column: auto; } }
 .workspace-message svg { width: 16px; flex: 0 0 auto; }
 .database-panel { overflow: hidden; }
 .database-hero { display: flex; align-items: center; gap: .85rem; padding: 1.25rem; background: #0b2235; color: white; }

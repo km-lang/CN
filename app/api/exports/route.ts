@@ -1,7 +1,7 @@
 import { getDb } from "@/db"
 import { alumni, companyPriorities, corporateOpportunities, corporateOpportunityHistory, engagementEvents, programmeOptions, providerCompanyMappings, providerRefreshReviews } from "@/db/schema"
 import { normalizeDirectoryQuery } from "@/lib/directory-query"
-import { runDirectoryQuery } from "@/lib/directory-data"
+import { runDirectoryExportQuery } from "@/lib/directory-data"
 import { datasetCsv, datasetsCsvZip, datasetsXlsx, type ExportDataset } from "@/lib/export-files"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
 
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       datasets = await adminDatasets(Array.isArray(payload.datasets) ? payload.datasets.map(String) : [])
     } else {
       const query = normalizeDirectoryQuery({ ...(payload.filters && typeof payload.filters === "object" ? payload.filters as object : {}), page: 1, pageSize: 50, sort: "relevance" })
-      const result = await runDirectoryQuery(query)
+      const result = await runDirectoryExportQuery(query, MAX_EXPORT_ROWS)
       if (result.total > MAX_EXPORT_ROWS) throw new Error(`This export has ${result.total.toLocaleString()} rows; narrow the filters to ${MAX_EXPORT_ROWS.toLocaleString()} or fewer.`)
       datasets = [directoryDataset(result.all as unknown as Record<string, unknown>[], Boolean(payload.importCompatible))]
     }
@@ -92,7 +92,7 @@ export async function POST(request: Request) {
     const info = { "Generated UTC": generatedAt, "Export type": payload.scope === "admin" ? "Approved business data" : payload.importCompatible ? "Import-compatible alumni" : "Filtered Directory report", "Datasets": datasets.map(dataset => dataset.id).join(", "), "Row count": rowCount, "Schema version": 1, "Excluded": "Credentials, sessions, raw provider payloads, technical security logs", "Consent warning": "This export does not grant consent for outreach." }
     await writeSecurityAudit(context, { action: "business_data_exported", entityType: "export", metadata: { scope: payload.scope === "admin" ? "admin" : "directory", format, datasets: datasets.map(dataset => dataset.id), rowCount } })
     const stamp = generatedAt.slice(0, 10)
-    if (format === "xlsx") return download(datasetsXlsx(datasets, info), `corporate-network-${payload.scope === "admin" ? "business-data" : "alumni"}-${stamp}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if (format === "xlsx") return download(datasetsXlsx(datasets, info, { dataFirst: payload.scope === "directory" && Boolean(payload.importCompatible) }), `corporate-network-${payload.scope === "admin" ? "business-data" : "alumni"}-${stamp}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if (datasets.length === 1) return download(datasetCsv(datasets[0]), `corporate-network-${datasets[0].id}-${stamp}.csv`, "text/csv; charset=utf-8")
     return download(datasetsCsvZip(datasets, info), `corporate-network-business-data-${stamp}.zip`, "application/zip")
   } catch (error) {

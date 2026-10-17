@@ -23,6 +23,7 @@ import {
   importRuns,
   providerRefreshReviews,
   providerCompanyMappings,
+  providerCompanyAliases,
   providerResponseHistory,
   providerSettings,
   programmeOptions,
@@ -144,6 +145,7 @@ export async function GET(request: Request) {
       providerLimits,
       programmeOptions: programmes,
       providerCompanyMappings: companyMappings,
+      providerCompanyAliases: await db.select().from(providerCompanyAliases).orderBy(providerCompanyAliases.displayAlias),
       operationalReadiness: {
         coresignal: {
           mode: providerMode("coresignal"),
@@ -166,7 +168,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_USERS")
-    const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean; programmeId?: number; code?: string; name?: string; active?: boolean; mappingId?: number; provider?: string; providerCompanyId?: string; mappingSource?: string; evidenceReference?: string; providerSourceId?: string; providerCompanyUrl?: string }
+    const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean; programmeId?: number; code?: string; name?: string; active?: boolean; mappingId?: number; provider?: string; providerCompanyId?: string; mappingSource?: string; evidenceReference?: string; providerSourceId?: string; providerCompanyUrl?: string; aliases?: string[] }
     const db = getDb()
     const now = new Date().toISOString()
 
@@ -222,6 +224,12 @@ export async function POST(request: Request) {
       })
       const [mappingRows] = await db.batch([mappingMutation, auditMutation])
       const mapping = mappingRows[0]
+      if (mapping.status === "VERIFIED") for (const aliasValue of payload.aliases ?? []) {
+        const displayAlias = clean(aliasValue, 240).replace(/\s+/g, " ")
+        const normalizedAlias = displayAlias.toLowerCase()
+        if (!displayAlias || normalizedAlias === mapping.normalizedCompanyKey) continue
+        await db.insert(providerCompanyAliases).values({ mappingId: mapping.id, displayAlias, normalizedAlias, status: "VERIFIED", verifiedBy: context.displayName, verifiedAt: now }).onConflictDoUpdate({ target: providerCompanyAliases.normalizedAlias, set: { mappingId: mapping.id, displayAlias, status: "VERIFIED", verifiedBy: context.displayName, verifiedAt: now } })
+      }
       return Response.json({ mapping }, { status: existing ? 200 : 201 })
     }
 

@@ -41,7 +41,7 @@ test("completed is terminal on both client and server", () => {
 
 test("Outreach counters and filters share the displayed result set", () => {
   assert.match(page, /setOutreachStatus\(status\)/)
-  assert.match(page, /const visibleOutreach = alumni\.filter/)
+  assert.match(page, /const visibleOutreach = outreachRows/)
   assert.match(page, /75–100/)
   assert.match(page, /50–74/)
   assert.match(page, /Below 50/)

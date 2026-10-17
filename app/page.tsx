@@ -6,7 +6,7 @@ import {
   CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, Cloud, ContactRound,
   Database, Download, Eye, FileSpreadsheet, Filter, GitCompare, History, LoaderCircle,
   Mail, MapPin, MessageSquare, Network, Plus, Search, Send, ShieldCheck, Sparkles, Target, Upload,
-  Info, UserPlus, UserRoundCheck, UsersRound, XCircle, Zap,
+  Info, Pencil, UserPlus, UserRoundCheck, UsersRound, XCircle, Zap,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -48,7 +48,7 @@ import { intelligenceView, intelligenceViewUrl, type IntelligenceView } from "@/
 import { initializeControlledEmail } from "@/lib/controlled-email-initialization"
 import { PersistedMutationCoordinator } from "@/lib/persisted-mutation"
 import { programmeFilterOptions, programmeSelectionSummary, type ProgrammeOption } from "@/lib/programme-options"
-import { contactReadiness, isActiveOutreach } from "@/lib/alumni-metrics"
+import { contactReadiness } from "@/lib/alumni-metrics"
 import { importReviewCsv, parseCsv, parseXlsx, templateCsv, type ImportReview } from "@/lib/alumni-import"
 import { contactEnrichmentPlan, eligibleContactChannels, type ContactChannel } from "@/lib/contact-enrichment"
 import { engagementMatches } from "@/lib/engagement-filters"
@@ -75,6 +75,7 @@ const API_ROUTES = Object.freeze({
   professionalVerification: apiPath("/api/professional-verification"),
   coresignalCollect: apiPath("/api/admin/coresignal-collect"),
   directory: apiPath("/api/directory"),
+  alumniCollection: apiPath("/api/alumni-collection"),
   exports: apiPath("/api/exports"),
 })
 
@@ -172,6 +173,9 @@ type Alumni = {
   source?: string
   updatedBy?: string
   updatedAt?: string
+  recordVersion?: number
+  employmentHistory?: Array<{ id: number; originalCompanyName: string; originalJobTitle: string; normalizedJobTitle: string; startDate: string; endDate: string; isCurrent: boolean; isDeleted: boolean; observedAt: string; evidenceSource: string; verificationStatus: string; reviewerStatus: string }>
+  profileProposals?: Array<{ id: number; field: string; oldValue: string; proposedValue: string; source: string; status: string; proposedBy: string; createdAt: string }>
   privacy?: {
     generalContactStatus: string
     professionalEngagementStatus: string
@@ -686,11 +690,24 @@ function StatCard({ icon: Icon, label, value, delta, help }: { icon: typeof User
   return <article className="stat-card"><div className="stat-icon"><Icon aria-hidden="true" /></div><div><p>{label}</p><strong>{value}</strong><span>{delta}{help && <TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" className="kpi-help" aria-label={`What ${label} means`}><Info aria-hidden="true" /></button></TooltipTrigger><TooltipContent side="bottom" className="kpi-help-content">{help}</TooltipContent></Tooltip></TooltipProvider>}</span></div></article>
 }
 
+function serverPaginationModel<T>(items: T[], total: number, page: number, pageSize: 10 | 25 | 50, setPage: React.Dispatch<React.SetStateAction<number>>, setPageSize: (value: 10 | 25 | 50) => void) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const currentPage = Math.min(page, pageCount)
+  return { items, total, page: currentPage, pageSize, pageCount, start: total ? (currentPage - 1) * pageSize + 1 : 0, end: total ? Math.min(total, currentPage * pageSize) : 0, setPage, setPageSize: (size: 10 | 25 | 50) => { setPageSize(size); setPage(1) } }
+}
+
+async function clientMutationKey(prefix: string, payload: unknown) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)))
+  const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("")
+  return `${prefix}:${hash}`
+}
+
 export default function Home() {
   const session = useAccessSession()
   const currentDemoUser = session.displayName
   const [alumni, setAlumni] = useState<Alumni[]>([])
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>({})
+  const [workspaceCompanyOptions, setWorkspaceCompanyOptions] = useState<string[]>([])
   const [configuredProgrammes, setConfiguredProgrammes] = useState<ProgrammeOption[]>([])
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [discoveryFilters, setDiscoveryFilters] = useState<DiscoveryFilters>(defaultDiscoveryFilters)
@@ -705,6 +722,26 @@ export default function Home() {
   const [directoryPage, setDirectoryPage] = useState(1)
   const [directoryPageSize, setDirectoryPageSizeState] = useState<10 | 25 | 50>(10)
   const [directoryLoading, setDirectoryLoading] = useState(false)
+  const [alumniSummary, setAlumniSummary] = useState({ total: 0, activeOutreach: 0, contactReady: 0 })
+  const [overviewTopAlumni, setOverviewTopAlumni] = useState<Alumni[]>([])
+  const [companyRows, setCompanyRows] = useState<Alumni[]>([])
+  const [companyTotal, setCompanyTotal] = useState(0)
+  const [companyPage, setCompanyPage] = useState(1)
+  const [companyPageSize, setCompanyPageSize] = useState<10 | 25 | 50>(10)
+  const [companyFunctionCounts, setCompanyFunctionCounts] = useState<Record<string, number>>({})
+  const [companyAggregate, setCompanyAggregate] = useState({ seniorLeaders: 0, contactReady: 0 })
+  const [outreachRows, setOutreachRows] = useState<Alumni[]>([])
+  const [outreachTotal, setOutreachTotal] = useState(0)
+  const [outreachPage, setOutreachPage] = useState(1)
+  const [outreachPageSize, setOutreachPageSize] = useState<10 | 25 | 50>(10)
+  const [outreachStatusCounts, setOutreachStatusCounts] = useState<Record<string, number>>({})
+  const [enrichmentRows, setEnrichmentRows] = useState<Alumni[]>([])
+  const [selectorAlumni, setSelectorAlumni] = useState<Alumni[]>([])
+  const [selectorSearching, setSelectorSearching] = useState(false)
+  const selectorSearchRef = useRef<AbortController | null>(null)
+  const [enrichmentTotal, setEnrichmentTotal] = useState(0)
+  const [enrichmentPage, setEnrichmentPage] = useState(1)
+  const [enrichmentPageSize, setEnrichmentPageSize] = useState<10 | 25 | 50>(10)
   const [targetCompany, setTargetCompany] = useState("")
   const [overviewCompany, setOverviewCompany] = useState("All companies")
   const [opportunityContext, setOpportunityContext] = useState<{ company: string; alumnusId: number | null; mode: "create" | "filter"; key: number }>({ company: "", alumnusId: null, mode: "create", key: 0 })
@@ -720,6 +757,7 @@ export default function Home() {
   const [approvedImportUpdates, setApprovedImportUpdates] = useState<string[]>([])
   const [importConfirmed, setImportConfirmed] = useState(false)
   const [importMessage, setImportMessage] = useState("")
+  const [importMode, setImportMode] = useState<"update_only" | "upsert">("update_only")
   const [providerModes, setProviderModes] = useState<Record<Provider, ProviderMode>>({ coresignal: "mock", lusha: "mock" })
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ coresignal: { used: 0, limit: 25, remaining: 25, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
   const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
@@ -807,6 +845,11 @@ export default function Home() {
   const [manualSaved, setManualSaved] = useState<Alumni | null>(null)
   const [manualLoading, setManualLoading] = useState(false)
   const [manualMessage, setManualMessage] = useState("")
+  const [profileEditTarget, setProfileEditTarget] = useState<Alumni | null>(null)
+  const [profileEditForm, setProfileEditForm] = useState<Record<string, string>>({})
+  const [profileEditSaving, setProfileEditSaving] = useState(false)
+  const [profileEditMessage, setProfileEditMessage] = useState("")
+  const [profileClearFields, setProfileClearFields] = useState<string[]>([])
   const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false)
   const [contactConfirm, setContactConfirm] = useState<{ ids: number[]; channels: ContactChannel[]; operation: "manual" | "batch" } | null>(null)
   const [refreshResults, setRefreshResults] = useState<RefreshResult[]>([])
@@ -834,13 +877,16 @@ export default function Home() {
   const loadWorkspace = useCallback(async () => {
     try {
       setWorkspaceLoading(true)
-      const response = await fetch(API_ROUTES.workspace, { cache: "no-store" })
-      const data = await response.json() as { alumni?: Alumni[]; companyPriorities?: Record<string, string>; programmeOptions?: ProgrammeOption[]; latestImport?: LatestImport | null; error?: string }
+      const response = await fetch(`${API_ROUTES.workspace}?includeAlumni=false`, { cache: "no-store" })
+      const data = await response.json() as { companyPriorities?: Record<string, string>; companyOptions?: string[]; programmeOptions?: ProgrammeOption[]; latestImport?: LatestImport | null; alumniSummary?: { total: number; activeOutreach: number; contactReady: number }; outreachStatusCounts?: Record<string, number>; topAlumni?: Alumni[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load the shared workspace.")
-      setAlumni(data.alumni ?? [])
       setCompanyPriorities(data.companyPriorities ?? {})
+      setWorkspaceCompanyOptions(data.companyOptions ?? [])
       setConfiguredProgrammes(data.programmeOptions ?? [])
       setLatestImport(data.latestImport ?? null)
+      setAlumniSummary(data.alumniSummary ?? { total: 0, activeOutreach: 0, contactReady: 0 })
+      setOverviewTopAlumni(data.topAlumni ?? [])
+      setOutreachStatusCounts(data.outreachStatusCounts ?? {})
       setWorkspaceMessage("")
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Unable to connect to the shared database.")
@@ -848,11 +894,6 @@ export default function Home() {
       setWorkspaceLoading(false)
     }
   }, [])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => void loadWorkspace(), 0)
-    return () => window.clearTimeout(timer)
-  }, [loadWorkspace, session.canOperate])
 
   const loadOpportunitySummary = useCallback(async () => {
     if (!session.canOperate) return
@@ -901,11 +942,23 @@ export default function Home() {
     : null
 
   useEffect(() => {
-    if (workspaceLoading || activeTab !== "directory" || !routeState.profileAlumnusId || selected) return
-    const destination = workspaceTabUrl(window.location.href, "directory")
-    window.history.replaceState({}, "", destination)
-    const timer = window.setTimeout(() => setRouteSearch(window.location.search), 0)
+    const timer = window.setTimeout(() => {
+      if (activeTab === "directory" && !routeState.profileAlumnusId) setAlumni([])
+      void loadWorkspace()
+    }, 0)
     return () => window.clearTimeout(timer)
+  }, [activeTab]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (workspaceLoading || activeTab !== "directory" || !routeState.profileAlumnusId || selected) return
+    const controller = new AbortController()
+    void fetch(apiPath(`/api/alumni/${routeState.profileAlumnusId}`), { cache: "no-store", signal: controller.signal }).then(async response => {
+      const data = await response.json() as { alumnus?: Alumni; employmentHistory?: Alumni["employmentHistory"]; proposals?: Alumni["profileProposals"]; error?: string }
+      if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to load the alumnus profile.")
+      const loaded = { ...data.alumnus, employmentHistory: data.employmentHistory ?? [], profileProposals: data.proposals ?? [] }
+      setAlumni(current => current.some(item => item.id === loaded.id) ? current.map(item => item.id === loaded.id ? loaded : item) : [...current, loaded])
+    }).catch(error => { if (error instanceof DOMException && error.name === "AbortError") return; setWorkspaceMessage(error instanceof Error ? error.message : "Unable to load the alumnus profile.") })
+    return () => controller.abort()
   }, [activeTab, routeState.profileAlumnusId, selected, workspaceLoading])
 
   function navigateWorkspace(destination: string, mode: "push" | "replace" = "push") {
@@ -1109,7 +1162,7 @@ export default function Home() {
     }
   }
 
-  const companies = useMemo(() => normalizeCompanyOptions(alumni.filter(person => (person.lifecycle ?? "Active") === "Active").map(person => person.company)), [alumni])
+  const companies = useMemo(() => normalizeCompanyOptions(workspaceCompanyOptions.length ? workspaceCompanyOptions : alumni.filter(person => (person.lifecycle ?? "Active") === "Active").map(person => person.company)), [alumni, workspaceCompanyOptions])
   const programmeChoices = useMemo(() => programmeFilterOptions(configuredProgrammes, alumni.map(person => person.programme)), [alumni, configuredProgrammes])
   const activeProgrammeChoices = useMemo(() => programmeChoices.filter(option => option.active), [programmeChoices])
   useEffect(() => {
@@ -1122,23 +1175,76 @@ export default function Home() {
     return () => window.clearTimeout(timer)
   }, [activeProgrammeChoices, configuredProgrammes.length])
   const activeTargetCompany = companies.includes(targetCompany) ? targetCompany : companies[0] ?? ""
-  const routeEligibleAlumni = useMemo(() => alumni.filter(person => (person.lifecycle ?? "Active") === "Active").sort((a, b) => a.name.localeCompare(b.name)), [alumni])
+
+  const searchAlumniOptions = useCallback(async (search: string, company = "All companies") => {
+    selectorSearchRef.current?.abort()
+    const controller = new AbortController()
+    selectorSearchRef.current = controller
+    setSelectorSearching(true)
+    try {
+      const filters = { ...defaultDirectoryFilters(), search, company }
+      const query = new URLSearchParams({ filters: JSON.stringify(filters), page: "1", pageSize: "25", sort: "name" })
+      const response = await fetch(`${API_ROUTES.alumniCollection}?${query}`, { cache: "no-store", signal: controller.signal })
+      const data = await response.json() as { items?: Alumni[]; error?: string }
+      if (!response.ok || !data.items) throw new Error(data.error || "Unable to search alumni.")
+      setSelectorAlumni(current => {
+        const selectedIds = new Set([targetAlumnusId, signalsAlumnusId].filter((value): value is number => value !== null))
+        const retained = current.filter(person => selectedIds.has(person.id))
+        return [...new Map([...retained, ...data.items!].map(person => [person.id, person])).values()]
+      })
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "AbortError")) setWorkspaceMessage(error instanceof Error ? error.message : "Unable to search alumni.")
+    } finally {
+      if (!controller.signal.aborted) setSelectorSearching(false)
+    }
+  }, [signalsAlumnusId, targetAlumnusId])
+
+  useEffect(() => {
+    if (!["companies", "outreach", "enrichment"].includes(activeTab)) return
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      const defaults = defaultDirectoryFilters()
+      const filters: DirectoryFilters = activeTab === "companies"
+        ? { ...defaults, company: activeTargetCompany || "All companies" }
+        : activeTab === "outreach"
+          ? { ...defaults, name: outreachSearch, company: outreachCompany, outreachStatus: outreachStatus === "All alumni" ? defaults.outreachStatus : outreachStatus, minRelevance: outreachRelevance === "75–100" ? 75 : outreachRelevance === "50–74" ? 50 : 0, maxRelevance: outreachRelevance === "50–74" ? 74 : outreachRelevance === "Below 50" ? 49 : 100 }
+          : defaults
+      const page = activeTab === "companies" ? companyPage : activeTab === "outreach" ? outreachPage : enrichmentPage
+      const pageSize = activeTab === "companies" ? companyPageSize : activeTab === "outreach" ? outreachPageSize : enrichmentPageSize
+      const query = new URLSearchParams({ filters: JSON.stringify(filters), page: String(page), pageSize: String(pageSize), sort: "relevance" })
+      try {
+        const response = await fetch(`${API_ROUTES.alumniCollection}?${query}`, { cache: "no-store", signal: controller.signal })
+        const data = await response.json() as { items?: Alumni[]; total?: number; page?: number; facets?: { functions?: Record<string, number>; seniorLeaders?: number; contactReady?: number }; error?: string }
+        if (!response.ok || !data.items) throw new Error(data.error || "Unable to load alumni for this workspace.")
+        setAlumni(data.items)
+        if (activeTab === "companies") { setCompanyRows(data.items); setCompanyTotal(data.total ?? 0); setCompanyFunctionCounts(data.facets?.functions ?? {}); setCompanyAggregate({ seniorLeaders: data.facets?.seniorLeaders ?? 0, contactReady: data.facets?.contactReady ?? 0 }); if (data.page && data.page !== companyPage) setCompanyPage(data.page) }
+        if (activeTab === "outreach") { setOutreachRows(data.items); setOutreachTotal(data.total ?? 0); if (data.page && data.page !== outreachPage) setOutreachPage(data.page) }
+        if (activeTab === "enrichment") { setEnrichmentRows(data.items); setEnrichmentTotal(data.total ?? 0); if (data.page && data.page !== enrichmentPage) setEnrichmentPage(data.page) }
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "AbortError")) setWorkspaceMessage(error instanceof Error ? error.message : "Unable to load alumni for this workspace.")
+      }
+    }, 150)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [activeTab, activeTargetCompany, companyPage, companyPageSize, enrichmentPage, enrichmentPageSize, outreachCompany, outreachPage, outreachPageSize, outreachRelevance, outreachSearch, outreachStatus])
+
+  const selectorPool = useMemo(() => [...new Map([...alumni, ...companyRows, ...overviewTopAlumni, ...selectorAlumni].map(person => [person.id, person])).values()], [alumni, companyRows, overviewTopAlumni, selectorAlumni])
+  const routeEligibleAlumni = useMemo(() => selectorPool.filter(person => (person.lifecycle ?? "Active") === "Active").sort((a, b) => a.name.localeCompare(b.name)), [selectorPool])
   const filtered = useMemo(() => alumni.filter(person => {
     const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
     return matchesInternalFilters(person, filters, relevance, operationalStatus(person))
   }).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score), [alumni, companyPriorities, engagements, filters])
 
-  const topLeads = [...alumni].sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score || a.name.localeCompare(b.name)).slice(0, 5)
-  const targetAlumni = alumni.filter(person => person.company === activeTargetCompany).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
-  const activeOutreach = alumni.filter(person => isActiveOutreach(person.status)).length
-  const contactReadyCount = alumni.filter(person => operationalStatus(person) === "Contact-ready").length
+  const topLeads = overviewTopAlumni
+  const targetAlumni = companyRows
+  const activeOutreach = alumniSummary.activeOutreach
+  const contactReadyCount = alumniSummary.contactReady
   const today = new Date().toISOString().slice(0, 10)
   const nextWeekDate = new Date(); nextWeekDate.setUTCDate(nextWeekDate.getUTCDate() + 7)
   const nextWeek = nextWeekDate.toISOString().slice(0, 10)
   const birthdayEvents = engagements.filter(event => event.eventType === "Birthday")
   const professionalEvents = engagements.filter(event => event.eventType === "Professional Signal")
   const actionableProfessionalEvents = professionalEvents.filter(event => !isCompletedEngagement(event.status))
-  const signalsTarget = alumni.find(person => person.id === signalsAlumnusId) ?? null
+  const signalsTarget = selectorPool.find(person => person.id === signalsAlumnusId) ?? null
   const localDevelopment = process.env.NODE_ENV === "development"
   const signalsUi = signalsPresentation({ development: localDevelopment, liveEnabled: Boolean(signalsStatus?.liveEnabled), entitlement: signalsStatus?.entitlement ?? "unknown", configured: Boolean(signalsStatus?.configured) })
   const signalsActive = signalsUi.available
@@ -1176,6 +1282,7 @@ export default function Home() {
 
   function changeTargetCompany(company: string) {
     setTargetCompany(company)
+    setCompanyPage(1)
     setTargetAlumnusId(null)
     setRouteRecommendation(null)
     setRouteMessage("")
@@ -1470,7 +1577,7 @@ export default function Home() {
     setImportMessage("")
     try {
       const parsed = await readImportFile()
-      const response = await fetch(API_ROUTES.imports, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "preview", filename: importFile?.name, records: parsed.records }) })
+      const response = await fetch(API_ROUTES.imports, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "preview", mode: importMode, filename: importFile?.name, records: parsed.records }) })
       const review = await response.json() as ImportReview & { previewId?: string; error?: string }
       if (!response.ok || !review.previewId) throw new Error(review.error || "Unable to preview the selected file.")
       setImportReview({ ...review, previewId: review.previewId, sheetName: parsed.sheetName })
@@ -1492,7 +1599,7 @@ export default function Home() {
     setImporting(true)
     try {
       const parsed = await readImportFile()
-      const response = await fetch(API_ROUTES.imports, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "execute", filename: importFile.name, records: parsed.records, previewId: importReview.previewId, approvedUpdateKeys: approvedImportUpdates, confirmed: true }) })
+      const response = await fetch(API_ROUTES.imports, { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": `import:${importReview.previewId}` }, body: JSON.stringify({ action: "execute", mode: importMode, filename: importFile.name, records: parsed.records, previewId: importReview.previewId, approvedUpdateKeys: approvedImportUpdates, confirmed: true }) })
       const data = await response.json() as { imported?: number; updated?: number; excluded?: number; protectedFields?: number; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to import the selected file.")
       setImportMessage(`${data.imported ?? 0} new alumni added${data.updated ? ` · ${data.updated} existing records safely updated` : ""}${data.excluded ? ` · ${data.excluded} unresolved rows excluded` : ""}${data.protectedFields ? ` · ${data.protectedFields} verified fields preserved` : ""}.`)
@@ -1794,10 +1901,49 @@ export default function Home() {
   }
 
   function openAlumnusProfile(person: Alumni, tab = "directory") {
+    setAlumni(current => current.some(item => item.id === person.id) ? current.map(item => item.id === person.id ? { ...item, ...person } : item) : [...current, person])
     const destinationTab = tab === "engagement" ? "directory" : tab
     navigateWorkspace(alumnusProfileUrl(window.location.href, person.id, destinationTab))
     setMailPreview(null)
     setMailSendConfirmOpen(false)
+    void fetch(apiPath(`/api/alumni/${person.id}`), { cache: "no-store" }).then(async response => {
+      const data = await response.json() as { alumnus?: Alumni; employmentHistory?: Alumni["employmentHistory"]; proposals?: Alumni["profileProposals"] }
+      if (response.ok && data.alumnus) setAlumni(current => current.map(item => item.id === person.id ? { ...data.alumnus!, employmentHistory: data.employmentHistory ?? [], profileProposals: data.proposals ?? [] } : item))
+    })
+  }
+
+  async function decideProfileProposal(person: Alumni, proposalId: number, action: "accept_proposal" | "reject_proposal") {
+    const verb = action === "accept_proposal" ? "accept" : "reject"
+    if (!window.confirm(`Confirm that you want to ${verb} this protected profile correction?`)) return
+    const response = await fetch(apiPath(`/api/alumni/${person.id}`), { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": `proposal:${proposalId}:${action}` }, body: JSON.stringify({ action, proposalId }) })
+    const data = await response.json() as { error?: string }
+    if (!response.ok) { window.alert(data.error || `Unable to ${verb} the proposal.`); return }
+    openAlumnusProfile(person)
+    setDirectoryPage(1)
+  }
+
+  function openProfileEdit(person: Alumni) {
+    setProfileEditTarget(person)
+    setProfileEditForm({ name: person.name, programme: person.programme, graduationYear: String(person.graduationYear || person.batch || ""), company: person.company, title: person.title, location: person.location, email: person.email, phone: person.phone, note: person.note })
+    setProfileEditMessage("")
+    setProfileClearFields([])
+  }
+
+  async function saveProfileEdit() {
+    if (!profileEditTarget) return
+    setProfileEditSaving(true); setProfileEditMessage("")
+    try {
+      const profilePayload = { expectedVersion: profileEditTarget.recordVersion ?? 1, fields: profileEditForm, clearFields: profileClearFields, source: "Manual profile edit" }
+      const idempotencyKey = await clientMutationKey(`profile:${profileEditTarget.id}:${profileEditTarget.recordVersion ?? 1}`, profilePayload)
+      const response = await fetch(apiPath(`/api/alumni/${profileEditTarget.id}`), { method: "PATCH", headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey }, body: JSON.stringify(profilePayload) })
+      const data = await response.json() as { alumnus?: Alumni; changed?: number; proposed?: number; error?: string }
+      if (!response.ok || !data.alumnus) throw new Error(data.error || "Unable to save the profile.")
+      setAlumni(current => current.map(item => item.id === data.alumnus!.id ? data.alumnus! : item))
+      setProfileEditTarget(data.alumnus)
+      setProfileEditMessage(`${data.changed ?? 0} field change${data.changed === 1 ? "" : "s"} saved${data.proposed ? ` · ${data.proposed} protected correction${data.proposed === 1 ? "" : "s"} submitted for Admin review` : ""}.`)
+      setDirectoryPage(1)
+    } catch (error) { setProfileEditMessage(error instanceof Error ? error.message : "Unable to save the profile.") }
+    finally { setProfileEditSaving(false) }
   }
 
   function closeAlumnusProfile() {
@@ -2410,10 +2556,7 @@ export default function Home() {
     }
   }
 
-  const functionCounts = targetAlumni.reduce<Record<string, number>>((acc, person) => {
-    acc[person.function] = (acc[person.function] ?? 0) + 1
-    return acc
-  }, {})
+  const functionCounts = companyFunctionCounts
   const selectedBreakdown = selected ? relevanceBreakdown(selected, companyPriorities, engagements) : null
   const selectedProfessionalProfileUrl = selected ? normalizeProfessionalProfileUrl(selected.linkedinUrl) : ""
   const selectedExperienceSummary = selected ? professionalExperienceSummary(selected.experience, selected.previous) : ""
@@ -2422,16 +2565,7 @@ export default function Home() {
   const selectedCompletedEngagements = selectedEngagementHistory.filter(event => isCompletedEngagement(event.status))
   const manualValidation = validateManualAlumnusInput(manualForm)
   const companyEngagements = engagements.filter(event => event.alumnus && event.alumnus.company === activeTargetCompany)
-  const visibleOutreach = alumni.filter(person => {
-    const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
-    if (outreachSearch && !`${person.name} ${person.title}`.toLowerCase().includes(outreachSearch.toLowerCase())) return false
-    if (outreachCompany !== "All companies" && person.company !== outreachCompany) return false
-    if (outreachStatus !== "All alumni" && person.status !== outreachStatus) return false
-    if (outreachRelevance === "75–100" && relevance < 75) return false
-    if (outreachRelevance === "50–74" && (relevance < 50 || relevance >= 75)) return false
-    if (outreachRelevance === "Below 50" && relevance >= 50) return false
-    return true
-  }).sort((a, b) => relevanceBreakdown(b, companyPriorities, engagements).score - relevanceBreakdown(a, companyPriorities, engagements).score)
+  const visibleOutreach = outreachRows
   const importReviewRows = importReview?.rows ?? []
 
   useEffect(() => {
@@ -2464,13 +2598,13 @@ export default function Home() {
     setPage: setDirectoryPage,
     setPageSize: (size: 10 | 25 | 50) => { setDirectoryPageSizeState(size); setDirectoryPage(1) },
   }
-  const companyContactsPagination = usePagination(targetAlumni, activeTargetCompany)
+  const companyContactsPagination = serverPaginationModel(targetAlumni, companyTotal, companyPage, companyPageSize, setCompanyPage, setCompanyPageSize)
   const companyHistoryPagination = usePagination(companyEngagements, activeTargetCompany)
   const visibleEngagementGroups = groupEngagementsByAlumnus(visibleEngagements)
   const engagementPagination = usePagination(visibleEngagementGroups, JSON.stringify([engagementFilter, engagementPeriod, engagementCompany, engagementAssignee, engagementActionState]))
-  const outreachPagination = usePagination(visibleOutreach, JSON.stringify([outreachSearch, outreachCompany, outreachStatus, outreachRelevance]))
+  const outreachPagination = serverPaginationModel(visibleOutreach, outreachTotal, outreachPage, outreachPageSize, setOutreachPage, setOutreachPageSize)
   const importPagination = usePagination(importReviewRows, importReviewRows.map(row => row.key).join("|"))
-  const enrichmentPagination = usePagination(alumni)
+  const enrichmentPagination = serverPaginationModel(enrichmentRows, enrichmentTotal, enrichmentPage, enrichmentPageSize, setEnrichmentPage, setEnrichmentPageSize)
   const providerHistoryPagination = usePagination(providerHistory)
   const profileOpenEngagementPagination = usePagination(selectedUpcomingEngagements, String(selected?.id ?? ""))
   const profileEngagementHistoryPagination = usePagination(selectedCompletedEngagements, String(selected?.id ?? ""))
@@ -2481,6 +2615,7 @@ export default function Home() {
     setOutreachCompany("All companies")
     setOutreachStatus("All alumni")
     setOutreachRelevance("All")
+    setOutreachPage(1)
   }
   const selectedEngagementBusy = selectedEngagement ? pendingEngagementKeys.has(`event:${selectedEngagement.id}`) : false
   const comparisonAlumnus = comparisonResult ? alumni.find(person => person.id === comparisonResult.linkedInternalAlumnusId) ?? null : null
@@ -2525,9 +2660,9 @@ export default function Home() {
 
           <TabsContent value="overview" className="tab-panel">
             <section className="stats-grid" aria-label="Key metrics">
-              <StatCard icon={UsersRound} label="Alumni mapped" value={`${alumni.length}`} delta="Shared master database" />
+              <StatCard icon={UsersRound} label="Alumni mapped" value={`${alumniSummary.total}`} delta="Shared master database" />
               <StatCard icon={Building2} label="Companies covered" value={`${companies.length}`} delta="Calculated from current records" />
-              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumni.length}`} delta="Based on field verification" help="Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone." />
+              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumniSummary.total}`} delta="Based on field verification" help="Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone." />
               <StatCard icon={Target} label="Active outreach" value={`${activeOutreach}`} delta="Visible to all committee members" help="Includes shared outreach states Contacted, Responded, and Meeting set." />
               {session.canOperate && <StatCard icon={BriefcaseBusiness} label="Active opportunities" value={`${opportunitySummary.active}`} delta={`${opportunitySummary.followUpsDue} follow-up${opportunitySummary.followUpsDue === 1 ? "" : "s"} due`} help="Persistent Corporate Opportunities that are not Confirmed or Closed Lost." />}
             </section>
@@ -2556,7 +2691,7 @@ export default function Home() {
 
             {session.canOperate && <section className="panel route-panel route-planner">
               <div className="panel-heading"><div><p className="eyebrow">Recommended outreach route</p><h2>Choose who you want to reach</h2><span>Ranking answers who to approach. Route recommendation explains how to approach the selected alumnus.</span></div></div>
-              <div className="route-controls route-controls-overview"><CompanyCombobox options={companies} value={overviewCompany} onValueChange={company => { setOverviewCompany(company); setTargetAlumnusId(null); setRouteRecommendation(null); setRouteMessage("") }} /><AlumnusCombobox options={routeEligibleAlumni} preferredCompany={overviewCompany} value={targetAlumnusId} onValueChange={selectTargetAlumnus} /><Button title={!targetAlumnusId ? "Select a target alumnus from the suggestions first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
+              <div className="route-controls route-controls-overview"><CompanyCombobox options={companies} value={overviewCompany} onValueChange={company => { setOverviewCompany(company); setTargetAlumnusId(null); setRouteRecommendation(null); setRouteMessage("") }} /><AlumnusCombobox options={routeEligibleAlumni} preferredCompany={overviewCompany} value={targetAlumnusId} onValueChange={selectTargetAlumnus} onSearchChange={query => void searchAlumniOptions(query, overviewCompany)} searching={selectorSearching} /><Button title={!targetAlumnusId ? "Select a target alumnus from the suggestions first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}>{routeLoading ? <LoaderCircle className="spin" /> : <Network />} Recommend Outreach Route</Button></div>
               {routeMessage && <p className="route-message">{routeMessage}</p>}
             </section>}
           </TabsContent>
@@ -2697,11 +2832,11 @@ export default function Home() {
               <article className="panel company-summary">
                 <div className="company-title"><div className="company-logo">{activeTargetCompany.slice(0, 1)}</div><div><h2>{activeTargetCompany}</h2><span>Target company · Priority inherited by all mapped alumni</span></div></div>
                 <div className="company-priority"><label>Company priority</label><Select value={companyPriorities[activeTargetCompany] || "Secondary Target"} disabled={!session.canAdminister} onValueChange={value => updateCompanyPriority(activeTargetCompany, value)}><SelectTrigger aria-label="Company priority"><SelectValue /></SelectTrigger><SelectContent>{companyPriorityOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select><small>Company Priority contributes to Placement Relevance for every alumnus at {activeTargetCompany}. {session.canAdminister ? "Changes apply to all mapped alumni." : "PCOM can view this value; only an Admin can change it."}</small></div>
-                <div className="company-kpis"><div><strong>{targetAlumni.length}</strong><span>Alumni mapped</span></div><div><strong>{targetAlumni.filter(p => optionScore(seniorityOptions, seniorityLabel(p)) >= 80).length}</strong><span>Senior leaders</span></div><div><strong>{targetAlumni.filter(p => p.function === "HR").length}</strong><span>HR contacts</span></div><div><strong>{targetAlumni.filter(p => operationalStatus(p) === "Contact-ready").length}</strong><span>Contact-ready</span></div></div>
-                <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(targetAlumni.length, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
+                <div className="company-kpis"><div><strong>{companyTotal}</strong><span>Alumni mapped</span></div><div><strong>{companyAggregate.seniorLeaders}</strong><span>Senior leaders</span></div><div><strong>{functionCounts.HR ?? 0}</strong><span>HR contacts</span></div><div><strong>{companyAggregate.contactReady}</strong><span>Contact-ready</span></div></div>
+                <div className="distribution"><h3>Network by function</h3>{Object.entries(functionCounts).map(([name, count]) => <div key={name} className="distribution-row"><span>{name}</span><div><i style={{ width: `${Math.max(24, count / Math.max(companyTotal, 1) * 100)}%` }} /></div><strong>{count}</strong></div>)}</div>
               </article>
-              <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{targetAlumni.length ? <>{companyContactsPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; const unknownRelationship = person.assessment.iimlRelationship === "Unknown / Not assessed"; return <button key={person.id} className="contact-card" onClick={() => openAlumnusProfile(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em className={unknownRelationship ? "relationship-neutral" : ""}>{unknownRelationship ? "IIML relationship not assessed" : `${person.assessment.iimlRelationship} IIML relationship`}</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> })}<PaginationFooter model={companyContactsPagination} label="Company contacts pagination" /></> : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
-              {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Plan outreach</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><AlumnusCombobox options={targetAlumni} value={targetAlumnusId} onValueChange={selectTargetAlumnus} /><Button title={!targetAlumnusId ? "Select a target alumnus first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {activeTargetCompany} before requesting a route.</small>}</article>}
+              <article className="panel contacts-panel"><div className="panel-heading"><div><p className="eyebrow">Recommended contacts</p><h2>Best people to approach</h2></div></div>{companyTotal ? <>{companyContactsPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; const unknownRelationship = person.assessment.iimlRelationship === "Unknown / Not assessed"; return <button key={person.id} className="contact-card" onClick={() => openAlumnusProfile(person)}><span className="avatar">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small><em className={unknownRelationship ? "relationship-neutral" : ""}>{unknownRelationship ? "IIML relationship not assessed" : `${person.assessment.iimlRelationship} IIML relationship`}</em></span><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></button> })}<PaginationFooter model={companyContactsPagination} label="Company contacts pagination" /></> : <div className="empty-state"><ContactRound /><h3>No alumni mapped yet</h3><p>This is a clear network gap for the committee.</p></div>}</article>
+              {session.canOperate && <article className="panel company-route-card"><div className="panel-heading"><div><p className="eyebrow">Plan outreach</p><h2>How should we approach?</h2><span>Selecting a company does not automatically choose the target person.</span></div></div><AlumnusCombobox options={routeEligibleAlumni} preferredCompany={activeTargetCompany} value={targetAlumnusId} onValueChange={selectTargetAlumnus} onSearchChange={query => void searchAlumniOptions(query, activeTargetCompany)} searching={selectorSearching} /><Button title={!targetAlumnusId ? "Select a target alumnus first." : routeLoading ? "The route recommendation is still being prepared." : undefined} disabled={!targetAlumnusId || routeLoading} onClick={() => void recommendRoute()}><Network /> Recommend Route</Button>{!targetAlumni.length && <small>Add or discover an alumnus at {activeTargetCompany} before requesting a route.</small>}</article>}
               <article className="panel account-history"><div className="panel-heading"><div><p className="eyebrow">Institutional memory</p><h2>Account history</h2></div></div>{companyEngagements.length ? <><div className="account-history-list">{companyHistoryPagination.items.map(event => <div key={event.id}><History /><span><strong>{event.eventTitle}</strong><small>{event.alumnus?.name} · {displayEventDate(event.actionTakenAt || event.eventDate)} · {event.status}</small></span></div>)}</div><PaginationFooter model={companyHistoryPagination} label="Company account history pagination" /></> : <div className="account-history-empty"><History /><span><strong>Account history</strong><small>No company engagement recorded yet.</small></span></div>}</article>
             </section>}
           </TabsContent>
@@ -2725,7 +2860,7 @@ export default function Home() {
                 <div className={`mail-mode mail-${mailMode}`}><Mail /> {mailUi.label}</div>
               </div>
 
-              {engagementFilter === "Professional Signals" && <><section className="signals-readiness"><div><Sparkles /><span><strong>Check Professional Signals</strong><small>Promotions and company changes only · review before profile updates</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsUi.label}</span><small>{signalsUi.reason} Selecting an alumnus never calls Lusha.</small>{session.canOperate && <div className="signals-selector"><AlumnusCombobox label="Alumnus with a verified Lusha identity" options={alumni} value={signalsAlumnusId} onValueChange={setSignalsAlumnusId} placeholder="Search or select an alumnus..." />{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}<Button title={!signalsTarget ? "Select an alumnus first." : !signalsTarget.lushaPersonId ? "Requires a stored Lusha contact ID." : signalsUi.reason} size="sm" disabled={!signalsActive || !signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check for signals</Button></div>}</section>{signalsMessage && <div className="discovery-message">{signalsMessage}</div>}</>}
+              {engagementFilter === "Professional Signals" && <><section className="signals-readiness"><div><Sparkles /><span><strong>Check Professional Signals</strong><small>Promotions and company changes only · review before profile updates</small></span></div><span className={`provider-mode mode-${signalsActive ? "live" : "mock"}`}>{signalsUi.label}</span><small>{signalsUi.reason} Selecting an alumnus never calls Lusha.</small>{session.canOperate && <div className="signals-selector"><AlumnusCombobox label="Alumnus with a verified Lusha identity" options={routeEligibleAlumni} value={signalsAlumnusId} onValueChange={setSignalsAlumnusId} onSearchChange={query => void searchAlumniOptions(query)} searching={selectorSearching} placeholder="Search or select an alumnus..." />{signalsTarget && <small>{signalsTarget.lushaPersonId ? "Eligible identity: existing stable Lusha contact ID" : "Lusha contact identity required before Professional Signals can be checked."}</small>}<Button title={!signalsTarget ? "Select an alumnus first." : !signalsTarget.lushaPersonId ? "Requires a stored Lusha contact ID." : signalsUi.reason} size="sm" disabled={!signalsActive || !signalsTarget?.lushaPersonId} onClick={() => setSignalsConfirmOpen(true)}><Sparkles /> Check for signals</Button></div>}</section>{signalsMessage && <div className="discovery-message">{signalsMessage}</div>}</>}
 
               <div className="birthday-filters" aria-label="Engagement filters">
                 <Select value={engagementPeriod} onValueChange={setEngagementPeriod}><SelectTrigger aria-label="Time period"><SelectValue /></SelectTrigger><SelectContent>{["Today", "Tomorrow", "Next 7 Days", "This Month", "All upcoming", "All dates"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
@@ -2774,8 +2909,8 @@ export default function Home() {
           <TabsContent value="outreach" className="tab-panel">
             <section className="panel outreach-panel">
               <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved centrally and shared across committee members.</span></div></div>
-              <div className="pipeline-summary"><button className={`pipeline-all ${outreachStatus === "All alumni" ? "active" : ""}`} onClick={() => setOutreachStatus("All alumni")}><span>All alumni</span><strong>{alumni.length}</strong></button>{statusOptions.map(status => <button className={outreachStatus === status ? "active" : ""} key={status} onClick={() => setOutreachStatus(status)}><StatusBadge status={status} /><strong>{alumni.filter(person => person.status === status).length}</strong></button>)}</div>
-              <div className="outreach-filters"><div className="search-field"><Search /><Input value={outreachSearch} onChange={event => setOutreachSearch(event.target.value)} placeholder="Search alumnus" aria-label="Search outreach alumni" /></div><Select value={outreachCompany} onValueChange={setOutreachCompany}><SelectTrigger aria-label="Filter outreach by company"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select><Select value={outreachStatus} onValueChange={setOutreachStatus}><SelectTrigger aria-label="Filter by outreach status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All alumni">All statuses</SelectItem>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><Select value={outreachRelevance} onValueChange={setOutreachRelevance}><SelectTrigger aria-label="Filter by Placement Relevance"><SelectValue /></SelectTrigger><SelectContent>{["All", "75–100", "50–74", "Below 50"].map(item => <SelectItem key={item} value={item}>{item === "All" ? "All Placement Relevance" : item}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={clearOutreachFilters}>Clear</Button></div>
+              <div className="pipeline-summary"><button className={`pipeline-all ${outreachStatus === "All alumni" ? "active" : ""}`} onClick={() => { setOutreachStatus("All alumni"); setOutreachPage(1) }}><span>All alumni</span><strong>{alumniSummary.total}</strong></button>{statusOptions.map(status => <button className={outreachStatus === status ? "active" : ""} key={status} onClick={() => { setOutreachStatus(status); setOutreachPage(1) }}><StatusBadge status={status} /><strong>{outreachStatusCounts[status] ?? 0}</strong></button>)}</div>
+              <div className="outreach-filters"><div className="search-field"><Search /><Input value={outreachSearch} onChange={event => { setOutreachSearch(event.target.value); setOutreachPage(1) }} placeholder="Search alumnus" aria-label="Search outreach alumni" /></div><Select value={outreachCompany} onValueChange={value => { setOutreachCompany(value); setOutreachPage(1) }}><SelectTrigger aria-label="Filter outreach by company"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select><Select value={outreachStatus} onValueChange={value => { setOutreachStatus(value); setOutreachPage(1) }}><SelectTrigger aria-label="Filter by outreach status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All alumni">All statuses</SelectItem>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><Select value={outreachRelevance} onValueChange={value => { setOutreachRelevance(value); setOutreachPage(1) }}><SelectTrigger aria-label="Filter by Placement Relevance"><SelectValue /></SelectTrigger><SelectContent>{["All", "75–100", "50–74", "Below 50"].map(item => <SelectItem key={item} value={item}>{item === "All" ? "All Placement Relevance" : item}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={clearOutreachFilters}>Clear</Button></div>
               <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this alumnus?</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{outreachPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{outreachRationale(person)}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>{!visibleOutreach.length && <div className="empty-state"><Search /><h3>No alumni match these Outreach filters</h3><p>Clear or adjust the filters to return to the full pipeline.</p></div>}
               <PaginationFooter model={outreachPagination} label="Outreach pipeline pagination" />
             </section>
@@ -2787,6 +2922,7 @@ export default function Home() {
             <section className="import-layout">
               <article className="panel import-panel">
                 <div className="panel-heading"><div><p className="eyebrow">Bulk import</p><h2>Upload alumni file</h2><span>Validate and review CSV or Excel data before anything is saved.</span></div><div className="database-badge"><Database /> Shared database</div></div>
+                <label className="dialog-field"><span>Import mode</span><Select value={importMode} onValueChange={value => { setImportMode(value as "update_only" | "upsert"); setImportReview(null); setImportConfirmed(false) }}><SelectTrigger aria-label="Import mode"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="update_only">Update existing only</SelectItem><SelectItem value="upsert">Governed new records / upsert</SelectItem></SelectContent></Select><small>{importMode === "update_only" ? "Unmatched stable identifiers are rejected; no alumnus is created." : "New records require the complete governed identity fields."}</small></label>
                 <div className="import-body">
                   <div className="upload-zone">
                     <FileSpreadsheet />
@@ -2802,7 +2938,7 @@ export default function Home() {
               <article className="panel manual-entry-card"><div className="manual-entry-icon"><UserPlus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualForm(current => ({ ...current, programme: activeProgrammeChoices.some(option => option.value === current.programme) ? current.programme : activeProgrammeChoices[0]?.value ?? "" })); setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><UserPlus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
 
               <aside className="panel database-panel">
-                <div className="database-hero"><Database /><div><p className="eyebrow">Shared alumni database</p><h2>{alumni.length} alumni · {companies.length} companies</h2><span>One governed workspace</span></div></div>
+                <div className="database-hero"><Database /><div><p className="eyebrow">Shared alumni database</p><h2>{alumniSummary.total} alumni · {companies.length} companies</h2><span>One governed workspace</span></div></div>
                 <div className="database-facts"><div><span>Maximum import</span><strong>10,000 rows · 8 MB</strong></div><div><span>Identity matching</span><strong>Stable source ID, canonical ID, profile URL, or verified email</strong></div><div><span>Weak matches</span><strong>Review only · never auto-merged</strong></div><div><span>Latest CSV/Excel import</span><strong>{latestImport?.filename ?? "None yet"}</strong></div></div>
                 <div className="latest-import"><CheckCircle2 /><div><strong>{latestImport ? "Latest import completed" : "Database ready"}</strong><span>{latestImport ? `${latestImport.rowCount} records by ${latestImport.importedBy}` : "No uploaded file has been recorded yet."}</span></div></div>
               </aside>
@@ -2854,7 +2990,7 @@ export default function Home() {
             </section> : <section className="panel history-panel"><div className="empty-state"><ShieldCheck /><h3>Administrative provider history is restricted</h3><p>Your operational actions remain available above. Provider requests, credit accounting, evidence envelopes, and technical diagnostics are available only in the Admin workspace.</p></div></section>}
           </TabsContent>
           <TabsContent value="intelligence" className="tab-panel"><IntelligenceWorkspace view={activeIntelligenceView} onViewChange={changeIntelligenceView} selectedIds={selectedForIntelligence} pageIds={directoryPagination.items.map(person => person.id)} matchingIds={filtered.map(person => person.id)} canOperate={session.canOperate} canAdminister={session.canAdminister} /></TabsContent>
-          {session.canAdminister && <TabsContent value="admin" className="tab-panel"><AdminPanel alumni={alumni} /></TabsContent>}
+          {session.canAdminister && <TabsContent value="admin" className="tab-panel"><AdminPanel /></TabsContent>}
         </Tabs>
       </section>
 
@@ -2871,7 +3007,7 @@ export default function Home() {
               <label><span>IIML relationship</span><Select disabled={!session.canOperate} value={selected.assessment.iimlRelationship} onValueChange={value => updateAssessment(selected.id, "iimlRelationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>Warm-introduction potential</span><Select disabled={!session.canOperate} value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
             </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company] || "Secondary Target"}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></details>
-            <section className="profile-section profile-order-professional"><h3>Professional profile</h3><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Function<strong>{selected.function} · {selected.seniority}</strong></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}</section>
+            <section className="profile-section profile-order-professional"><div className="profile-engagement-heading"><h3>Professional profile</h3>{session.canOperate && <Button size="sm" variant="outline" onClick={() => openProfileEdit(selected)}><Pencil /> Edit profile</Button>}</div><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Current designation<strong>{selected.title}</strong><small>Normalized seniority: {selected.seniority || "Unclassified"}</small></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}{Boolean(selected.employmentHistory?.length) && <details className="permission-details"><summary>Provider employment evidence ({selected.employmentHistory!.length})</summary><div className="verification-history">{selected.employmentHistory!.map(position => <div key={position.id}><strong>{position.originalJobTitle || "Title not returned"} · {position.originalCompanyName || "Company not returned"}</strong><span>{position.isCurrent ? "Current evidence" : "Historical evidence"}{position.startDate || position.endDate ? ` · ${position.startDate || "Unknown start"}–${position.endDate || "Present"}` : ""}</span><small>{position.evidenceSource} · {position.verificationStatus} · observed {new Date(position.observedAt).toLocaleDateString()}</small></div>)}</div></details>}{Boolean(selected.profileProposals?.filter(item => item.status === "PENDING").length) && <details className="permission-details" open><summary>Pending protected corrections ({selected.profileProposals!.filter(item => item.status === "PENDING").length})</summary><div className="verification-history">{selected.profileProposals!.filter(item => item.status === "PENDING").map(proposal => <div key={proposal.id}><strong>{proposal.field}: {proposal.oldValue || "Empty"} → {proposal.proposedValue || "Empty"}</strong><span>{proposal.source} · proposed by {proposal.proposedBy}</span>{session.canAdminister && <span className="profile-opportunity-actions"><Button size="sm" onClick={() => void decideProfileProposal(selected, proposal.id, "accept_proposal")}>Accept</Button><Button size="sm" variant="outline" onClick={() => void decideProfileProposal(selected, proposal.id, "reject_proposal")}>Reject</Button></span>}</div>)}</div></details>}</section>
             <ProfileIntelligencePanel alumnusId={selected.id} canOperate={session.canOperate} onOpenIntelligence={view => { closeAlumnusProfile(); window.setTimeout(() => changeIntelligenceView(view), 0) }} />
             {session.canOperate && <section className="profile-section profile-opportunities"><div><h3>Corporate opportunities</h3><p className="section-help">Create or review accountable opportunities linked to this alumnus and company.</p></div><div className="profile-opportunity-actions"><Button variant="outline" onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => viewOpportunities(company, id), 0) }}><Eye /> View linked opportunities</Button><Button onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => createOpportunity(company, id), 0) }}><BriefcaseBusiness /> Create opportunity</Button></div></section>}
             <section className="profile-section profile-order-iiml"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{alumniEducationLabel(selected)}</strong></span></div><div><Network /><span>Placement Committee relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior Placement Committee engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{placementContext(selected)}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
@@ -2889,6 +3025,17 @@ export default function Home() {
           </div></>}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(profileEditTarget)} onOpenChange={open => { if (!open && !profileEditSaving) setProfileEditTarget(null) }}>
+        <DialogContent className="profile-edit-dialog"><DialogHeader><DialogTitle>Edit alumni profile</DialogTitle><DialogDescription>Only changed fields are saved. Empty inputs preserve existing values; protected verified fields are submitted for Admin review.</DialogDescription></DialogHeader>
+          {profileEditTarget && <div className="profile-edit-grid">{[
+            ["name", "Name", "text"], ["programme", "Programme", "text"], ["graduationYear", "Graduation year", "number"], ["company", "Current employer", "text"], ["title", "Current designation", "text"], ["location", "Professional location", "text"], ["email", "Email", "email"], ["phone", "Phone", "text"],
+          ].map(([field, label, type]) => <label key={field}><span>{label}</span><Input type={type} disabled={profileClearFields.includes(field)} value={profileEditForm[field] ?? ""} onChange={event => setProfileEditForm(current => ({ ...current, [field]: event.target.value }))} /><small>Current: {String((profileEditTarget as unknown as Record<string, unknown>)[field] ?? "Not recorded")}</small>{["company", "title", "location", "email", "phone"].includes(field) && <span className="dialog-check"><input type="checkbox" checked={profileClearFields.includes(field)} onChange={() => setProfileClearFields(current => current.includes(field) ? current.filter(item => item !== field) : [...current, field])} /> Explicitly clear this field</span>}</label>)}<label className="profile-edit-note"><span>Operational note</span><Textarea disabled={profileClearFields.includes("note")} value={profileEditForm.note ?? ""} maxLength={1000} onChange={event => setProfileEditForm(current => ({ ...current, note: event.target.value }))} /><span className="dialog-check"><input type="checkbox" checked={profileClearFields.includes("note")} onChange={() => setProfileClearFields(current => current.includes("note") ? current.filter(item => item !== "note") : [...current, "note"])} /> Explicitly clear this field</span></label></div>}
+          {profileEditMessage && <p className="workspace-message" role="status">{profileEditMessage}</p>}
+          <p className="section-help">A blank edit never deletes data. Use an explicit clear checkbox for an authorized optional field.</p>
+          <DialogFooter><Button variant="outline" disabled={profileEditSaving} onClick={() => setProfileEditTarget(null)}>Cancel</Button><Button disabled={profileEditSaving} onClick={() => void saveProfileEdit()}>{profileEditSaving ? <LoaderCircle className="spin" /> : <Pencil />} Save changed fields</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(verificationTarget)} onOpenChange={open => { if (!open && !verificationSaving) closeProfessionalVerification() }}>
         <DialogContent className="verification-review-dialog">

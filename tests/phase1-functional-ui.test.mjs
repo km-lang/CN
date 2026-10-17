@@ -30,7 +30,7 @@ test("Overview alumnus search is exact, partial, tokenized, case-insensitive, an
   assert.deepEqual(alumniCombobox.filterAlumnusOptions(alumni, "missing alumnus"), [])
   assert.deepEqual(alumniCombobox.filterAlumnusOptions(alumni, "", "Example Company").map(person => person.id), [25])
   assert.deepEqual(alumniCombobox.filterAlumnusOptions(alumni, "Rama", "Example Company").map(person => person.id), [24])
-  assert.match(page, /routeEligibleAlumni = useMemo\(\(\) => alumni\.filter\(person => \(person\.lifecycle \?\? "Active"\) === "Active"\)/)
+  assert.match(page, /routeEligibleAlumni = useMemo\(\(\) => selectorPool\.filter\(person => \(person\.lifecycle \?\? "Active"\) === "Active"\)/)
 })
 
 test("Overview company choices normalize current values and support search plus All companies", () => {

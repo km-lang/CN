@@ -62,6 +62,8 @@ export const alumni = sqliteTable("alumni", {
   phoneVerification: text("phone_verification").notNull().default("Unverified"),
   locationVerification: text("location_verification").notNull().default("Unverified"),
   source: text("source").notNull().default("Manual import"),
+  recordVersion: integer("record_version").notNull().default(1),
+  lastMutationRequestKey: text("last_mutation_request_key").notNull().default(""),
   updatedBy: text("updated_by").notNull().default("System"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -105,6 +107,69 @@ export const providerCompanyMappings = sqliteTable("provider_company_mappings", 
   check("provider_company_mapping_verified_check", sql`${table.status} != 'VERIFIED' or (length(trim(${table.providerCompanyId})) > 0 and length(trim(${table.verifiedBy})) > 0 and length(trim(${table.verifiedAt})) > 0)`),
 ]);
 
+export const providerCompanyAliases = sqliteTable("provider_company_aliases", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  mappingId: integer("mapping_id").notNull().references(() => providerCompanyMappings.id),
+  normalizedAlias: text("normalized_alias").notNull(),
+  displayAlias: text("display_alias").notNull(),
+  status: text("status").notNull().default("VERIFIED"),
+  verifiedBy: text("verified_by").notNull(),
+  verifiedAt: text("verified_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_provider_company_alias_unique").on(table.normalizedAlias),
+  index("idx_provider_company_alias_mapping").on(table.mappingId),
+  check("provider_company_alias_status_check", sql`${table.status} in ('VERIFIED', 'CONFLICT')`),
+]);
+
+export const alumniEmploymentEvidence = sqliteTable("alumni_employment_evidence", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").references(() => alumni.id),
+  discoveryResultId: integer("discovery_result_id"),
+  evidenceSource: text("evidence_source").notNull(),
+  providerEmployeeId: text("provider_employee_id").notNull().default(""),
+  providerResponseId: integer("provider_response_id"),
+  stableCompanyId: text("stable_company_id").notNull().default(""),
+  originalCompanyName: text("original_company_name").notNull(),
+  originalJobTitle: text("original_job_title").notNull(),
+  normalizedJobTitle: text("normalized_job_title").notNull().default(""),
+  startDate: text("start_date").notNull().default(""),
+  endDate: text("end_date").notNull().default(""),
+  isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(false),
+  isDeleted: integer("is_deleted", { mode: "boolean" }).notNull().default(false),
+  observedAt: text("observed_at").notNull(),
+  evidenceVersion: text("evidence_version").notNull().default("1"),
+  verificationStatus: text("verification_status").notNull().default("UNVERIFIED"),
+  reviewerStatus: text("reviewer_status").notNull().default("PENDING"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_employment_evidence_source_position").on(table.evidenceSource, table.providerResponseId, table.providerEmployeeId, table.stableCompanyId, table.originalJobTitle, table.startDate),
+  index("idx_employment_evidence_alumnus_current").on(table.alumnusId, table.isCurrent, table.isDeleted),
+  index("idx_employment_evidence_employee").on(table.providerEmployeeId),
+]);
+
+export const alumniProfileChangeProposals = sqliteTable("alumni_profile_change_proposals", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  field: text("field").notNull(),
+  oldValue: text("old_value").notNull().default(""),
+  proposedValue: text("proposed_value").notNull().default(""),
+  source: text("source").notNull(),
+  status: text("status").notNull().default("PENDING"),
+  expectedRecordVersion: integer("expected_record_version").notNull(),
+  proposedBy: text("proposed_by").notNull(),
+  reviewedBy: text("reviewed_by").notNull().default(""),
+  reviewedAt: text("reviewed_at").notNull().default(""),
+  reviewNote: text("review_note").notNull().default(""),
+  mutationRequestKey: text("mutation_request_key").notNull().default(""),
+  decisionMutationRequestKey: text("decision_mutation_request_key").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_profile_change_proposal_alumnus_status").on(table.alumnusId, table.status),
+  uniqueIndex("idx_profile_change_proposal_mutation_field").on(table.mutationRequestKey, table.field).where(sql`${table.mutationRequestKey} != ''`),
+  check("profile_change_proposal_status_check", sql`${table.status} in ('PENDING', 'ACCEPTED', 'REJECTED')`),
+]);
+
 export const programmeOptions = sqliteTable("programme_options", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   code: text("code").notNull(),
@@ -123,8 +188,9 @@ export const importRuns = sqliteTable("import_runs", {
   filename: text("filename").notNull(),
   rowCount: integer("row_count").notNull(),
   importedBy: text("imported_by").notNull(),
+  mutationRequestKey: text("mutation_request_key").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [uniqueIndex("idx_import_run_mutation").on(table.mutationRequestKey).where(sql`${table.mutationRequestKey} != ''`)]);
 
 export const activityLog = sqliteTable("activity_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -133,8 +199,9 @@ export const activityLog = sqliteTable("activity_log", {
   entityId: text("entity_id").notNull(),
   actor: text("actor").notNull(),
   details: text("details").notNull().default(""),
+  mutationRequestKey: text("mutation_request_key").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [uniqueIndex("idx_activity_log_mutation").on(table.mutationRequestKey).where(sql`${table.mutationRequestKey} != ''`)]);
 
 export const alumniRelationships = sqliteTable("alumni_relationships", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -413,8 +480,12 @@ export const fieldChangeHistory = sqliteTable("field_change_history", {
   providerAction: text("provider_action").notNull().default(""),
   creditsCharged: integer("credits_charged").notNull().default(0),
   initiatedBy: text("initiated_by").notNull(),
+  mutationRequestKey: text("mutation_request_key").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [index("idx_field_change_alumnus").on(table.alumnusId)]);
+}, (table) => [
+  index("idx_field_change_alumnus").on(table.alumnusId),
+  uniqueIndex("idx_field_change_mutation_field").on(table.mutationRequestKey, table.field).where(sql`${table.mutationRequestKey} != ''`),
+]);
 
 export const applicationUsers = sqliteTable("application_users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -462,11 +533,59 @@ export const securityAuditEvents = sqliteTable("security_audit_events", {
   metadataJson: text("metadata_json").notNull().default("{}"),
   result: text("result").notNull().default("success"),
   source: text("source").notNull().default("application"),
+  mutationRequestKey: text("mutation_request_key").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   index("idx_security_audit_actor").on(table.actorUserId),
   index("idx_security_audit_entity").on(table.entityType, table.entityId),
   index("idx_security_audit_created_at").on(table.createdAt),
+  uniqueIndex("idx_security_audit_mutation").on(table.mutationRequestKey).where(sql`${table.mutationRequestKey} != ''`),
+]);
+
+export const mutationRequests = sqliteTable("mutation_requests", {
+  requestKey: text("request_key").primaryKey(),
+  clientKeyHash: text("client_key_hash").notNull(),
+  actorUserId: integer("actor_user_id").notNull().references(() => applicationUsers.id),
+  operationType: text("operation_type").notNull(),
+  targetKey: text("target_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  status: text("status").notNull().default("IN_PROGRESS"),
+  attemptCount: integer("attempt_count").notNull().default(1),
+  leaseExpiresAt: text("lease_expires_at").notNull().default(""),
+  httpStatus: integer("http_status").notNull().default(0),
+  responseJson: text("response_json").notNull().default(""),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_mutation_request_client_scope").on(table.actorUserId, table.operationType, table.targetKey, table.clientKeyHash),
+  index("idx_mutation_request_status_lease").on(table.status, table.leaseExpiresAt),
+  check("mutation_request_status_check", sql`${table.status} in ('IN_PROGRESS', 'COMPLETED', 'FAILED')`),
+]);
+
+export const mutationRequestItems = sqliteTable("mutation_request_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  requestKey: text("request_key").notNull().references(() => mutationRequests.requestKey),
+  itemKey: text("item_key").notNull(),
+  status: text("status").notNull().default("COMPLETED"),
+  outcomeJson: text("outcome_json").notNull().default("{}"),
+  completedAt: text("completed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_mutation_request_item_unique").on(table.requestKey, table.itemKey),
+  index("idx_mutation_request_item_request").on(table.requestKey),
+  check("mutation_request_item_status_check", sql`${table.status} in ('COMPLETED', 'FAILED')`),
+]);
+
+export const mutationCommitGuards = sqliteTable("mutation_commit_guards", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  requestKey: text("request_key").notNull().references(() => mutationRequests.requestKey),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  operation: text("operation").notNull(),
+  valid: integer("valid").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_mutation_commit_guard_request_alumnus").on(table.requestKey, table.alumnusId, table.operation),
+  check("mutation_commit_guard_valid_check", sql`${table.valid} = 1`),
 ]);
 
 export const alumniPrivacyControls = sqliteTable("alumni_privacy_controls", {

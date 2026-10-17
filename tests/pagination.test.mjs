@@ -43,10 +43,11 @@ test("Previous and Next are disabled at their boundaries", () => {
 test("filter and ranking pipelines run before directory and outreach pagination", () => {
   assert.match(page, /new URLSearchParams\(\{ filters: JSON\.stringify\(filters\), page: String\(directoryPage\), pageSize: String\(directoryPageSize\), sort: "relevance" \}\)/)
   assert.match(directoryRoute, /normalizeDirectoryQuery[\s\S]*runDirectoryQuery/)
-  assert.match(directoryData, /applyDirectoryQuery\(searchableRows, query, relevance, directoryContactStatus\)/)
+  assert.match(directoryData, /select\(\{ total: count\(\) \}\)[\s\S]*\.where\(where\)/)
+  assert.match(directoryData, /\.where\(where\)\.orderBy\(\.\.\.order\)\.limit\(query\.pageSize\)\.offset/)
   assert.match(directoryQuery, /const matched = items\.filter[\s\S]*matched\.sort[\s\S]*const pageCount[\s\S]*items: matched\.slice/)
-  assert.ok(page.indexOf("const visibleOutreach = alumni.filter") < page.indexOf("usePagination(visibleOutreach"))
-  assert.match(page, /const visibleOutreach = alumni\.filter[\s\S]*?\.sort\(\(a, b\) => relevanceBreakdown\(b/)
+  assert.match(page, /activeTab === "outreach"[\s\S]*API_ROUTES\.alumniCollection/)
+  assert.match(page, /const visibleOutreach = outreachRows/)
 })
 
 test("filter and page-size changes reset to page one", () => {
@@ -57,8 +58,8 @@ test("filter and page-size changes reset to page one", () => {
   assert.match(page, /function clearDirectoryFilters[\s\S]*setFilters\(defaultDirectoryFilters\(\)\)[\s\S]*setDirectoryPage\(1\)/)
   assert.match(page, /setPageSize: \(size: 10 \| 25 \| 50\) => \{ setDirectoryPageSizeState\(size\); setDirectoryPage\(1\) \}/)
   assert.match(page, /usePagination\(visibleEngagementGroups, JSON\.stringify/)
-  assert.match(page, /usePagination\(visibleOutreach, JSON\.stringify/)
-  assert.match(admin, /usePagination\(visibleLifecycle, JSON\.stringify/)
+  assert.match(page, /serverPaginationModel\(visibleOutreach, outreachTotal/)
+  assert.match(admin, /apiPath\("\/api\/admin\/lifecycle"\)/)
   assert.match(admin, /usePagination\(visibleAudit, JSON\.stringify/)
 })
 
@@ -75,14 +76,16 @@ test("stored-record paging is local and cannot trigger providers or mail", () =>
 
 test("product sections retain independent pagination state", () => {
   assert.match(page, /const directoryPagination = \{/)
-  for (const name of ["companyContactsPagination", "companyHistoryPagination", "engagementPagination", "outreachPagination", "importPagination", "enrichmentPagination", "providerHistoryPagination", "profileOpenEngagementPagination", "profileEngagementHistoryPagination", "eventActivityPagination"]) {
+  for (const name of ["companyContactsPagination", "outreachPagination", "enrichmentPagination"]) assert.match(page, new RegExp(`const ${name} = serverPaginationModel`))
+  for (const name of ["companyHistoryPagination", "engagementPagination", "importPagination", "providerHistoryPagination", "profileOpenEngagementPagination", "profileEngagementHistoryPagination", "eventActivityPagination"]) {
     assert.match(page, new RegExp(`const ${name} = usePagination`))
   }
-  for (const name of ["usersPagination", "lifecyclePagination", "auditPagination"]) assert.match(admin, new RegExp(`const ${name} = usePagination`))
+  for (const name of ["usersPagination", "auditPagination"]) assert.match(admin, new RegExp(`const ${name} = usePagination`))
+  assert.match(admin, /const lifecyclePagination = \{ items: lifecycleRows/)
 })
 
 test("Overview stays compact and fixed configuration collections stay unpaginated", () => {
-  assert.match(page, /const topLeads = [\s\S]*?\.slice\(0, 5\)/)
+  assert.match(page, /const topLeads = overviewTopAlumni/)
   assert.match(page, /Top alumni for outreach/)
   assert.match(page, /View all/)
   assert.match(page, /actionableProfessionalEvents\.slice\(0, 3\)/)

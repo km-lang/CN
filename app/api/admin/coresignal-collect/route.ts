@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers"
 import { and, desc, eq, gte, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
-import { alumni, providerResponseHistory, providerSettings } from "@/db/schema"
+import { alumni, alumniEmploymentEvidence, providerResponseHistory, providerSettings } from "@/db/schema"
 import { collectCoresignalEmployeeWithMetadata, safeCoresignalError } from "@/lib/coresignal-client"
 import {
   CORESIGNAL_COLLECT_OPERATION,
@@ -20,6 +20,7 @@ import {
 import { coresignalCollectEnabled, coresignalCollectEntitlement, coresignalCollectMockTransportEnabled, providerConfigured, providerMode } from "@/lib/provider-runtime"
 import { deserializeCoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
+import { classifyCurrentTitle } from "@/lib/seniority-classifier"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const REQUEST_SUMMARY_PREFIX = "Retained Search Collect-only"
@@ -144,6 +145,20 @@ export async function POST(request: Request) {
       transport: coresignalCollectMockTransportEnabled() ? async employeeId => mockCollectEvidence(employeeId) : employeeId => collectCoresignalEmployeeWithMetadata(employeeId),
     })
     if (result.state === "DUPLICATE_BLOCKED") return Response.json({ error: "A Collect attempt already exists for this retained candidate. No provider request was made.", state: result.state }, { status: 409 })
+    if (result.state === "REVIEW_REQUIRED" && result.evidence && result.claimId) {
+      const positions = result.evidence.employment.map(position => {
+        const classification = classifyCurrentTitle(position.title, position.company)
+        return getDb().insert(alumniEmploymentEvidence).values({
+          evidenceSource: "Coresignal Base Employee Collect", providerEmployeeId: result.evidence!.returnedEmployeeId,
+          providerResponseId: result.claimId, stableCompanyId: position.companyId, originalCompanyName: position.company,
+          originalJobTitle: position.title, normalizedJobTitle: classification.state === "CLASSIFIED" ? classification.level : classification.state,
+          startDate: position.startDate, endDate: position.endDate, isCurrent: position.current, isDeleted: false,
+          observedAt: result.evidence!.freshness.checkedAt || result.evidence!.audit.completedAt,
+          evidenceVersion: String(result.evidence!.schemaVersion), verificationStatus: "UNVERIFIED", reviewerStatus: "PENDING",
+        }).onConflictDoNothing()
+      })
+      if (positions.length) await getDb().batch(positions as unknown as Parameters<ReturnType<typeof getDb>["batch"]>[0])
+    }
     await writeSecurityAudit(context, { action: "coresignal_collect_only_executed", entityType: "provider_response_history", entityId: result.claimId, metadata: { sourceSearchHistoryId: resolved.candidate.searchHistoryId, employeeId: resolved.candidate.employeeId, providerCalls: 1, canonicalMutations: 0, identityAttachments: 0 } })
     return Response.json({ state: result.state, evidence: result.evidence })
   } catch (error) {

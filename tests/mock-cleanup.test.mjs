@@ -103,7 +103,7 @@ test("mock cleanup 5: production UI does not repopulate demo data after an empty
   assert.doesNotMatch(engagements, /ensureDemoEngagements|engagement-demo|mock-seeded/);
   assert.doesNotMatch(page, /useState\("Google"\)/);
   assert.doesNotMatch(page, /Two recruiter conversations recorded|Summer placement participation confirmed/);
-  assert.match(page, /setAlumni\(data\.alumni \?\? \[\]\)/);
+  assert.match(page, /if \(activeTab === "directory" && !routeState\.profileAlumnusId\) setAlumni\(\[\]\)/);
   assert.match(page, /No mapped alumni match these filters/);
   assert.match(page, /No companies are mapped yet/);
 });

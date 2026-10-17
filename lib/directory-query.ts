@@ -71,12 +71,13 @@ export function normalizeDirectoryQuery(value: unknown): DirectoryQuery {
   return {
     filters: {
       ...defaults,
-      name: text(candidate.name), company: text(candidate.company) || defaults.company, role: text(candidate.role),
+      search: text(candidate.search), name: text(candidate.name), company: text(candidate.company) || defaults.company, role: text(candidate.role),
       function: text(candidate.function) || defaults.function, seniority: text(candidate.seniority) || defaults.seniority,
       location: text(candidate.location), linkedinUrl: text(candidate.linkedinUrl, 300), programme: text(candidate.programme) || defaults.programme,
       batch, graduationYearMode: mode, graduationYearStart, graduationYearEnd, graduationYears: years.join(","),
       seniorityMode, seniorities, previousCompany: text(candidate.previousCompany),
       minRelevance: Math.max(0, Math.min(100, Number(candidate.minRelevance) || 0)),
+      maxRelevance: Math.max(0, Math.min(100, candidate.maxRelevance === undefined ? 100 : Number(candidate.maxRelevance) || 0)),
       minConfidence: Math.max(0, Math.min(100, Number(candidate.minConfidence) || 0)),
       contactStatus: text(candidate.contactStatus) || defaults.contactStatus,
       outreachStatus: text(candidate.outreachStatus) || defaults.outreachStatus,

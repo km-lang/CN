@@ -4,6 +4,7 @@ import { DEFAULT_DISCOVERY_PROGRAMMES, type AlumniStatus, type AlumniStatusFilte
 export const FIXED_ALUMNI_SCHOOL = "Indian Institute of Management Lucknow";
 
 export type DirectoryFilters = {
+  search: string;
   name: string;
   company: string;
   role: string;
@@ -21,6 +22,7 @@ export type DirectoryFilters = {
   seniorities: string[];
   previousCompany: string;
   minRelevance: number;
+  maxRelevance: number;
   minConfidence: number;
   contactStatus: string;
   outreachStatus: string;
@@ -289,6 +291,7 @@ export function matchesInternalFilters(
     && matchesGraduationYear
     && contains(person.previous, filters.previousCompany)
     && relevance >= filters.minRelevance
+    && relevance <= filters.maxRelevance
     && person.confidence >= filters.minConfidence
     && exactOrAll(contactStatus, filters.contactStatus, "All contact states")
     && exactOrAll(person.status, filters.outreachStatus, "All outreach states")
@@ -438,6 +441,7 @@ export function toDiscoveryProfile(record: Record<string, unknown>, index: numbe
 
 export function defaultDirectoryFilters(): DirectoryFilters {
   return {
+    search: "",
     name: "",
     company: "All companies",
     role: "",
@@ -455,6 +459,7 @@ export function defaultDirectoryFilters(): DirectoryFilters {
     seniorities: [],
     previousCompany: "",
     minRelevance: 0,
+    maxRelevance: 100,
     minConfidence: 0,
     contactStatus: "All contact states",
     outreachStatus: "All outreach states",

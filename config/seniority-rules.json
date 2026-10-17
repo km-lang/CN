@@ -1,0 +1,21 @@
+{
+  "version": "2026-10-17.1",
+  "levels": ["Analyst", "Associate", "Manager", "Senior Manager", "Vice President", "Director", "Managing Director", "Executive"],
+  "titleRules": [
+    { "pattern": "\\b(chief|ceo|cfo|coo|cto|cxo|president)\\b", "level": "Executive" },
+    { "pattern": "\\b(managing director|md)\\b", "level": "Managing Director" },
+    { "pattern": "\\b(director|general manager|gm)\\b", "level": "Director" },
+    { "pattern": "\\b(vice president|vp|svp|evp|partner)\\b", "level": "Vice President" },
+    { "pattern": "\\bsenior manager\\b", "level": "Senior Manager" },
+    { "pattern": "\\bmanager\\b", "level": "Manager" },
+    { "pattern": "\\b(associate|consultant)\\b", "level": "Associate" },
+    { "pattern": "\\b(analyst|executive)\\b", "level": "Analyst" }
+  ],
+  "companyOverrides": {
+    "lincoln international": [
+      { "pattern": "\\bmanaging director\\b", "level": "Managing Director" },
+      { "pattern": "\\bdirector\\b", "level": "Director" },
+      { "pattern": "\\bvice president\\b", "level": "Vice President" }
+    ]
+  }
+}

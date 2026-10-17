@@ -22,13 +22,15 @@ export function filterAlumnusOptions(options: AlumnusComboboxOption[], query: st
     : options
 }
 
-export function AlumnusCombobox({ options, value, onValueChange, label = "Target alumnus", placeholder = "Search or select an alumnus...", preferredCompany = "All companies" }: {
+export function AlumnusCombobox({ options, value, onValueChange, onSearchChange, searching = false, label = "Target alumnus", placeholder = "Search or select an alumnus...", preferredCompany = "All companies" }: {
   options: AlumnusComboboxOption[]
   value: number | null
   onValueChange: (value: number | null) => void
   label?: string
   placeholder?: string
   preferredCompany?: string
+  onSearchChange?: (query: string) => void
+  searching?: boolean
 }) {
   const selected = options.find(option => option.id === value) ?? null
   const [open, setOpen] = useState(false)
@@ -41,5 +43,5 @@ export function AlumnusCombobox({ options, value, onValueChange, label = "Target
     setOpen(false)
   }
 
-  return <label className="alumnus-combobox-field"><span>{label}</span><Popover open={open} onOpenChange={next => { setOpen(next); if (!next) setQuery("") }}><PopoverTrigger asChild><Button type="button" variant="outline" role="combobox" aria-expanded={open} className="alumnus-combobox-trigger"><span>{selected ? selected.name : placeholder}</span><ChevronsUpDown aria-hidden="true" /></Button></PopoverTrigger><PopoverContent className="alumnus-combobox-content" align="start" onOpenAutoFocus={event => event.preventDefault()}><div className="alumnus-combobox-search"><Search aria-hidden="true" /><Input autoFocus autoComplete="off" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search name, role, or company" aria-label="Search alumni" /></div><div className="alumnus-combobox-options" role="listbox" aria-label={label}>{filtered.map(option => <button type="button" role="option" aria-selected={option.id === value} key={option.id} onClick={() => choose(option.id)}><span><strong>{option.name}</strong><small>{option.title} · {option.company}</small></span>{option.id === value && <Check aria-hidden="true" />}</button>)}{!filtered.length && <p>No matching alumni</p>}</div></PopoverContent></Popover></label>
+  return <label className="alumnus-combobox-field"><span>{label}</span><Popover open={open} onOpenChange={next => { setOpen(next); if (!next) { setQuery(""); onSearchChange?.("") } }}><PopoverTrigger asChild><Button type="button" variant="outline" role="combobox" aria-expanded={open} className="alumnus-combobox-trigger"><span>{selected ? selected.name : placeholder}</span><ChevronsUpDown aria-hidden="true" /></Button></PopoverTrigger><PopoverContent className="alumnus-combobox-content" align="start" onOpenAutoFocus={event => event.preventDefault()}><div className="alumnus-combobox-search"><Search aria-hidden="true" /><Input autoFocus autoComplete="off" value={query} onChange={event => { setQuery(event.target.value); onSearchChange?.(event.target.value) }} placeholder="Search name, role, or company" aria-label="Search alumni" /></div><div className="alumnus-combobox-options" role="listbox" aria-label={label}>{filtered.map(option => <button type="button" role="option" aria-selected={option.id === value} key={option.id} onClick={() => choose(option.id)}><span><strong>{option.name}</strong><small>{option.title} · {option.company}</small></span>{option.id === value && <Check aria-hidden="true" />}</button>)}{searching && <p>Searching alumni…</p>}{!searching && !filtered.length && <p>No matching alumni</p>}</div></PopoverContent></Popover></label>
 }
