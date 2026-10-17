@@ -254,6 +254,19 @@ export function collectCoresignalEmployee(employeeId: string, options: { fetcher
   return request(contract.path, { method: contract.method }, options)
 }
 
+export async function collectCoresignalEmployeeWithMetadata(employeeId: string, options: RequestOptions = {}) {
+  if (!employeeId.trim()) throw new CoresignalProviderError("A stable Coresignal employee ID is required.", "invalid_request", 400)
+  const contract = coresignalCollectContract(employeeId)
+  const providerResponse = await response(contract.path, { method: contract.method, redirect: "error" }, options)
+  let body: unknown
+  try { body = await providerResponse.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable response.", "invalid_response", 502) }
+  return {
+    body,
+    upstreamHttpStatus: providerResponse.status,
+    providerCreditsRemaining: optionalNonNegativeIntegerHeader(providerResponse.headers, "x-credits-remaining"),
+  }
+}
+
 function optionalNonNegativeIntegerHeader(headers: Headers, name: string) {
   const raw = headers.get(name)
   if (raw === null || !/^(0|[1-9][0-9]*)$/.test(raw)) return null

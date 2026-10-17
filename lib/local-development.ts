@@ -6,6 +6,19 @@ type LocalDevelopmentEnvironment = {
   LOCAL_CORESIGNAL_LIVE_DEMO_HOST?: string
   CORESIGNAL_LIVE_ENABLED?: string
   CORESIGNAL_API_KEY?: string
+  CORESIGNAL_COLLECT_ENABLED?: string
+  CORESIGNAL_COLLECT_ENTITLEMENT?: string
+  CORESIGNAL_COLLECT_MOCK_TRANSPORT?: string
+}
+
+export function localCoresignalCollectMockTransportEnabled(
+  values: LocalDevelopmentEnvironment = process.env,
+) {
+  return localDevelopmentAuthEnabled(values)
+    && isLoopbackHost(values.LOCAL_CORESIGNAL_LIVE_DEMO_HOST)
+    && values.CORESIGNAL_COLLECT_ENABLED === "true"
+    && values.CORESIGNAL_COLLECT_ENTITLEMENT === "confirmed"
+    && values.CORESIGNAL_COLLECT_MOCK_TRANSPORT === "true"
 }
 
 export function localDevelopmentAuthEnabled(

@@ -73,6 +73,7 @@ const API_ROUTES = Object.freeze({
   signals: apiPath("/api/signals"),
   outreachRoute: apiPath("/api/outreach-route"),
   professionalVerification: apiPath("/api/professional-verification"),
+  coresignalCollect: apiPath("/api/admin/coresignal-collect"),
 })
 
 const ADDED_DISCOVERY_STATUSES = new Set<string>([
@@ -203,6 +204,25 @@ type CoresignalSearchEvidence = {
   audit: { requestedAt: string; completedAt: string; provenance: "provider_response_history" }
 }
 type PresentedSearchEvidence = { state: "RETAINED"; evidence: CoresignalSearchEvidence } | { state: "NOT_RETAINED" | "UNAVAILABLE"; reason: string }
+type CoresignalCollectEvidence = {
+  schemaVersion: 1
+  sourceSearchHistoryId: number
+  targetEmployeeId: string
+  returnedEmployeeId: string
+  upstreamHttpStatus: 200
+  identity: { name: string; professionalProfileUrl: string; quality: string }
+  education: readonly { institutionId: string; institution: string; programme: string; startYear: number | null; endYear: number | null }[]
+  employment: readonly { companyId: string; company: string; title: string; startDate: string; endDate: string; current: boolean }[]
+  location: string
+  freshness: { checkedAt: string; updatedAt: string; quality: string }
+  quality: Record<string, string>
+  reviewState: "REVIEW_REQUIRED"
+  applicationAccounting: { applicationUnits: 1; documentedCollectCredits: 1; confirmedDebit: null }
+  providerCreditsRemaining: number | null
+  providerActions: { searchRequests: 0; previewRequests: 0; collectRequests: 1; retries: 0; pagination: false; canonicalMutations: 0; identityAttachments: 0 }
+  audit: { requestedAt: string; completedAt: string; durationMs: number; provenance: "provider_response_history" }
+}
+type PresentedCollectEvidence = { state: "RETAINED"; evidence: CoresignalCollectEvidence } | { state: "UNAVAILABLE"; reason: string }
 type ProviderHistory = {
   id: number
   provider: Provider | "pdl"
@@ -226,6 +246,27 @@ type ProviderHistory = {
   requestedBy: string
   createdAt: string
   searchEvidence?: PresentedSearchEvidence
+  collectEvidence?: PresentedCollectEvidence
+}
+
+type RetainedCollectCandidate = {
+  searchHistoryId: number
+  searchOperation: string
+  searchTimestamp: string
+  employeeId: string
+  identityResolutionStatus: string
+  institutionId: number
+  graduationYear: number | null
+  company: string | null
+  mappedCompanyId: number | null
+  priorCollectStatus: string | null
+}
+type CollectPreflightView = {
+  candidate: RetainedCollectCandidate
+  runtime: { configured: boolean; providerLiveMode: boolean; transportMode: "live" | "mock"; collectGateEnabled: boolean; entitlement: "unknown" | "confirmed" | "not_entitled"; applicationUnitsRemaining: number; maximumRequests: 1 }
+  allowed: boolean
+  blockers: string[]
+  safeguards: { searchRequests: 0; previewRequests: 0; collectRequestMaximum: 1; retries: 0; pagination: false; automaticIdentityAttachment: false; automaticCanonicalUpdate: false }
 }
 
 type DiscoveryResult = {
@@ -523,6 +564,22 @@ function CoresignalSearchEvidencePanel({ evidence, showIds = false }: { evidence
   </div>
 }
 
+function CoresignalCollectEvidencePanel({ evidence }: { evidence: CoresignalCollectEvidence }) {
+  const currentRoles = evidence.employment.filter(role => role.current)
+  return <div className="search-evidence-panel">
+    <div className="search-evidence-grid">
+      <div><span>Authorized identity</span><strong>Employee ID {evidence.targetEmployeeId}</strong><small>Returned ID {evidence.returnedEmployeeId}</small></div>
+      <div><span>Identity evidence</span><strong>{evidence.identity.name || "Name not returned"}</strong><small>{evidence.identity.professionalProfileUrl || evidence.identity.quality.replaceAll("_", " ")}</small></div>
+      <div><span>Education evidence</span><strong>{evidence.education.length} record{evidence.education.length === 1 ? "" : "s"}</strong><small>{evidence.quality.education.replaceAll("_", " ")}</small></div>
+      <div><span>Current employment</span><strong>{currentRoles.length ? currentRoles.map(role => `${role.title || "Role not returned"} at ${role.company || "company not returned"}`).join("; ") : "Not returned"}</strong><small>{evidence.quality.currentEmployer.replaceAll("_", " ")}</small></div>
+      <div><span>Location</span><strong>{evidence.location || "Not returned"}</strong><small>{evidence.quality.location.replaceAll("_", " ")}</small></div>
+      <div><span>Profile freshness</span><strong>{evidence.freshness.checkedAt || evidence.freshness.updatedAt || "Not returned"}</strong><small>{evidence.freshness.quality.replaceAll("_", " ")}</small></div>
+      <div><span>Provider actions</span><strong>Search 0 · Preview 0 · Collect 1</strong><small>No retry, identity attachment, or canonical mutation</small></div>
+      <div><span>Review state</span><strong>{evidence.reviewState.replaceAll("_", " ")}</strong><small>Provider balance {evidence.providerCreditsRemaining ?? "not supplied"}; debit not confirmed</small></div>
+    </div>
+  </div>
+}
+
 function ProviderHistoryAudit({
   items,
   usageReconciliationDrafts,
@@ -551,9 +608,9 @@ function ProviderHistoryAudit({
         </summary>
         <div className="provider-history-detail-body">
           <section><h3>Request context</h3><dl><div><dt>Provider</dt><dd>{item.provider.toUpperCase()}</dd></div><div><dt>Operation</dt><dd>{item.operation} · {item.mode}</dd></div><div><dt>Alumnus / subject</dt><dd>{item.alumnusName || "Not recorded"}</dd></div><div><dt>Requested at</dt><dd>{new Date(item.createdAt).toLocaleString()}</dd></div><div className="provider-history-wide"><dt>Search criteria / request</dt><dd>{item.requestSummary || "Request criteria were not retained for this operation."}</dd></div></dl></section>
-          <section><h3>Execution outcome</h3><dl><div><dt>Status</dt><dd>{item.status.replaceAll("_", " ")}</dd></div><div><dt>Results</dt><dd>{resultLabel}</dd></div><div className="provider-history-wide"><dt>Response summary</dt><dd>{item.errorMessage || item.responseSummary || "No response summary was retained."}</dd></div>{item.searchEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Search evidence</dt><dd><CoresignalSearchEvidencePanel evidence={item.searchEvidence.evidence} showIds /></dd></div>}{item.searchEvidence && item.searchEvidence.state !== "RETAINED" && <div className="provider-history-wide"><dt>Historical evidence</dt><dd className="history-evidence-unavailable">{item.searchEvidence.reason}</dd></div>}</dl></section>
+          <section><h3>Execution outcome</h3><dl><div><dt>Status</dt><dd>{item.status.replaceAll("_", " ")}</dd></div><div><dt>Results</dt><dd>{resultLabel}</dd></div><div className="provider-history-wide"><dt>Response summary</dt><dd>{item.errorMessage || item.responseSummary || "No response summary was retained."}</dd></div>{item.searchEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Search evidence</dt><dd><CoresignalSearchEvidencePanel evidence={item.searchEvidence.evidence} showIds /></dd></div>}{item.searchEvidence && item.searchEvidence.state !== "RETAINED" && <div className="provider-history-wide"><dt>Historical evidence</dt><dd className="history-evidence-unavailable">{item.searchEvidence.reason}</dd></div>}{item.collectEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd><CoresignalCollectEvidencePanel evidence={item.collectEvidence.evidence} /></dd></div>}{item.collectEvidence?.state === "UNAVAILABLE" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd className="history-evidence-unavailable">{item.collectEvidence.reason}</dd></div>}</dl></section>
           <section><h3>Usage and limits</h3><dl><div><dt>Usage state</dt><dd>{usage.label}</dd></div><div><dt>Application attribution</dt><dd>{item.applicationUnits ?? 0} unit{(item.applicationUnits ?? 0) === 1 ? "" : "s"}</dd></div><div className="provider-history-wide"><dt>Evidence</dt><dd>{usage.detail}</dd></div>{item.reconciliationSource && <div className="provider-history-wide"><dt>Reconciliation source</dt><dd>{item.reconciliationSource}</dd></div>}</dl>{item.provider === "lusha" && usage.label === "Reconciliation required" && <div className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => onUsageReconciliationChange(item.id, event.target.value)} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => onReconcile(item)}>Reconcile</Button></div>}</section>
-          <section><h3>Technical diagnostics</h3><p>Requested by {item.requestedBy || "Not recorded"}. Provider-reported credit balance is shown only when retained and is not treated as verified billable cost.</p>{item.searchEvidence?.state === "RETAINED" ? <details className="provider-history-json"><summary>View sanitized stored metadata</summary><pre>{JSON.stringify(item.searchEvidence.evidence, null, 2)}</pre></details> : <p className="history-evidence-unavailable">No structured diagnostic envelope was retained for this operation.</p>}</section>
+          <section><h3>Technical diagnostics</h3><p>Requested by {item.requestedBy || "Not recorded"}. Provider-reported credit balance is shown only when retained and is not treated as verified billable cost.</p>{item.searchEvidence?.state === "RETAINED" || item.collectEvidence?.state === "RETAINED" ? <details className="provider-history-json"><summary>View sanitized stored metadata</summary><pre>{JSON.stringify(item.searchEvidence?.state === "RETAINED" ? item.searchEvidence.evidence : item.collectEvidence?.state === "RETAINED" ? item.collectEvidence.evidence : null, null, 2)}</pre></details> : <p className="history-evidence-unavailable">No structured diagnostic envelope was retained for this operation.</p>}</section>
         </div>
       </details>
     })}
@@ -654,6 +711,10 @@ export default function Home() {
   const [providerModes, setProviderModes] = useState<Record<Provider, ProviderMode>>({ coresignal: "mock", lusha: "mock" })
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ coresignal: { used: 0, limit: 25, remaining: 25, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
   const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
+  const [retainedCollectCandidates, setRetainedCollectCandidates] = useState<RetainedCollectCandidate[]>([])
+  const [collectPreflightView, setCollectPreflightView] = useState<CollectPreflightView | null>(null)
+  const [collectConfirmationToken, setCollectConfirmationToken] = useState("")
+  const [collectBusy, setCollectBusy] = useState(false)
   const [contactResume, setContactResume] = useState<Record<number, { emailAvailable: boolean | null; phoneAvailable: boolean | null }>>({})
   const [usageReconciliationDrafts, setUsageReconciliationDrafts] = useState<Record<number, string>>({})
   const [creditDrafts, setCreditDrafts] = useState<Record<Provider, string>>({ coresignal: "25", lusha: "100" })
@@ -851,10 +912,15 @@ export default function Home() {
       setProviderHistory(data.history ?? [])
       setContactResume(data.contactResume ?? {})
       setCreditDrafts({ coresignal: String(data.usage.coresignal.limit), lusha: String(data.usage.lusha.limit) })
+      if (session.canAdminister) {
+        const collectResponse = await fetch(API_ROUTES.coresignalCollect, { cache: "no-store" })
+        const collectData = await collectResponse.json() as { candidates?: RetainedCollectCandidate[] }
+        if (collectResponse.ok) setRetainedCollectCandidates(collectData.candidates ?? [])
+      } else setRetainedCollectCandidates([])
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to load provider activity.")
     }
-  }, [])
+  }, [session.canAdminister])
 
   async function refreshProviderHistory() {
     setEnrichmentMessage("")
@@ -867,6 +933,35 @@ export default function Home() {
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to refresh provider history.")
     }
+  }
+
+  async function reviewCollectEligibility(candidate: RetainedCollectCandidate) {
+    setCollectBusy(true)
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.coresignalCollect, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "preflight", searchHistoryId: candidate.searchHistoryId, employeeId: candidate.employeeId }) })
+      const data = await response.json() as { preflight?: CollectPreflightView; confirmationToken?: string | null; error?: string }
+      if (!response.ok || !data.preflight) throw new Error(data.error || "Unable to validate Collect eligibility.")
+      setCollectPreflightView(data.preflight)
+      setCollectConfirmationToken(data.confirmationToken ?? "")
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to validate Collect eligibility.")
+    } finally { setCollectBusy(false) }
+  }
+
+  async function executeCollectOnly() {
+    if (!collectPreflightView || !collectConfirmationToken) return
+    setCollectBusy(true)
+    try {
+      const response = await fetch(API_ROUTES.coresignalCollect, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "execute", searchHistoryId: collectPreflightView.candidate.searchHistoryId, employeeId: collectPreflightView.candidate.employeeId, confirmed: true, confirmationToken: collectConfirmationToken }) })
+      const data = await response.json() as { state?: string; error?: string }
+      if (!response.ok) throw new Error(data.error || "Collect execution failed.")
+      setCollectPreflightView(null); setCollectConfirmationToken("")
+      setEnrichmentMessage("Collect evidence was retained for human review. No identity or canonical alumnus field was changed.")
+      await loadEnrichment()
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Collect execution failed.")
+    } finally { setCollectBusy(false) }
   }
 
   useEffect(() => {
@@ -2674,6 +2769,12 @@ export default function Home() {
               })}
             </section>
 
+            {session.canAdminister && <section className="panel collect-candidate-panel">
+              <div className="panel-heading"><div><p className="eyebrow">Retained Search Candidates</p><h2>Controlled Coresignal Collect</h2><span>Review unresolved Employee IDs retained by an authorized Search. Eligibility review is provider-free; Collect remains independently gated.</span></div><ShieldCheck /></div>
+              {retainedCollectCandidates.length ? <div className="collect-candidate-list">{retainedCollectCandidates.map(candidate => <article key={`${candidate.searchHistoryId}-${candidate.employeeId}`}><div><strong>Employee ID {candidate.employeeId}</strong><span>{candidate.searchOperation} · {new Date(candidate.searchTimestamp).toLocaleString()}</span><small>Institution {candidate.institutionId} · graduation {candidate.graduationYear ?? "not constrained"} · company {candidate.company || "not constrained"}{candidate.mappedCompanyId ? ` (${candidate.mappedCompanyId})` : ""}</small><small>Identity: {candidate.identityResolutionStatus.replaceAll("_", " ")} · Collect: {candidate.priorCollectStatus || "not attempted"}</small></div><Button variant="outline" disabled={collectBusy || Boolean(candidate.priorCollectStatus)} onClick={() => void reviewCollectEligibility(candidate)}>{collectBusy ? <LoaderCircle className="spin" /> : <ShieldCheck />} Review Collect Eligibility</Button></article>)}</div> : <div className="empty-state"><Search /><h3>No eligible retained Search candidates</h3><p>Historical searches without versioned Employee ID evidence and already-associated identities are excluded.</p></div>}
+              <p className="verified-copy">Collect never runs from this list automatically. Search, Preview, retries, pagination, identity attachment and canonical updates remain disabled.</p>
+            </section>}
+
             <section className="panel batch-panel">
               <div className="panel-heading"><div><p className="eyebrow">Selected alumni actions</p><h2>{session.canOperate ? providerModes.coresignal === "live" ? "Select one approved alumnus for controlled provider actions" : "Select up to 25 approved alumni" : "Provider diagnostics"}</h2><span>{session.canOperate ? `${selectedForEnrichment.length} selected. Coresignal refresh and Lusha contact preparation remain separate. No live action runs without confirmation.` : "Developer access is read-only. Credit-consuming operations and provider history are restricted."}</span></div>{session.canOperate && <div className="batch-actions"><Button variant="outline" disabled={!professionalSelectionReady || enriching} title={!selectedForEnrichment.length ? "Select at least one alumnus" : !professionalSelectionReady ? "Coresignal is unavailable or its application limit is insufficient" : "Review and refresh professional profiles"} onClick={() => setRefreshConfirmOpen(true)}><Cloud /> Refresh Profiles</Button>{providerModes.lusha === "live" ? <><Button variant="outline" disabled={!lushaEmailReady || enriching} title={!selectedForEnrichment.length ? "Select one alumnus" : !lushaEmailReady ? "Select exactly one eligible alumnus and confirm Lusha is configured with application capacity" : "Start the controlled Lusha V3 email workflow"} onClick={() => { const person = alumni.find(item => item.id === selectedForEnrichment[0]); if (person) prepareLushaReveal(person, "email") }}><Mail /> Prepare Email Reveal</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} title={!selectedForEnrichment.length ? "Select one alumnus" : !lushaPhoneReady ? "Select exactly one eligible alumnus with a missing or unverified phone and available application capacity" : "Start the controlled Lusha V3 phone workflow"} onClick={() => { const person = alumni.find(item => item.id === selectedForEnrichment[0]); if (person) prepareLushaReveal(person, "phone") }}><ContactRound /> Prepare Phone Reveal</Button></> : <><Button variant="outline" disabled={!lushaEmailReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email"])}>Get Emails</Button><Button variant="outline" disabled={!lushaPhoneReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["phone"])}>Get Phones</Button><Button disabled={!lushaBothReady || enriching} onClick={() => void runEnrichment(selectedForEnrichment, ["lusha"], "batch", ["email", "phone"])}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div>}</div>
               <div className="selection-eligibility" role="status"><strong>{selectedForEnrichment.length} selected</strong><span>{selectedForEnrichment.length} eligible for Coresignal refresh · {emailPlan.emailOperations} eligible for email enrichment · {phonePlan.phoneOperations} eligible for phone enrichment</span><small>Refresh Profiles: Coresignal professional data is staged for review; returned changes require approval. Get Emails/Phones: only missing or unverified eligible channels are retrieved through Lusha.</small></div>
@@ -2875,6 +2976,12 @@ export default function Home() {
 
       <Dialog open={Boolean(regularSearchResultEvidence)} onOpenChange={open => { if (!open) setRegularSearchResultEvidence(null) }}>
         <DialogContent className="search-evidence-dialog"><DialogHeader><DialogTitle>Coresignal Search evidence</DialogTitle><DialogDescription>Sanitized ID-only evidence from the confirmed Search. These candidates are not verified alumni and their profiles were not collected or marked fresh.</DialogDescription></DialogHeader>{regularSearchResultEvidence && <CoresignalSearchEvidencePanel evidence={regularSearchResultEvidence} showIds />}<DialogFooter><Button onClick={() => setRegularSearchResultEvidence(null)}>Done</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(collectPreflightView)} onOpenChange={open => { if (!open) { setCollectPreflightView(null); setCollectConfirmationToken("") } }}>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Review Coresignal Collect eligibility</DialogTitle><DialogDescription>This provider-free preflight validates the retained Search evidence, exact Employee ID, Admin authorization, application allowance, independent Collect gate and account entitlement.</DialogDescription></DialogHeader>{collectPreflightView && <><div className="refresh-confirm-summary"><div><span>Employee ID</span><strong>{collectPreflightView.candidate.employeeId}</strong></div><div><span>Origin Search</span><strong>Provider History {collectPreflightView.candidate.searchHistoryId}</strong></div><div><span>Identity state</span><strong>{collectPreflightView.candidate.identityResolutionStatus.replaceAll("_", " ")}</strong></div><div><span>Collect entitlement</span><strong>{collectPreflightView.runtime.entitlement}</strong></div><div><span>Execution transport</span><strong>{collectPreflightView.runtime.transportMode === "mock" ? "Isolated local mock" : "Live provider"}</strong></div><div><span>Collect execution gate</span><strong>{collectPreflightView.runtime.collectGateEnabled ? "Enabled" : "Disabled"}</strong></div><div><span>Application capacity</span><strong>{collectPreflightView.runtime.applicationUnitsRemaining} units remaining</strong></div><div><span>Request ceiling</span><strong>1 Collect · 0 retries</strong></div><div><span>Automatic actions</span><strong>0 Search · 0 Preview · 0 attachment · 0 canonical updates</strong></div></div>{collectPreflightView.blockers.length ? <div className="enrichment-message" role="alert"><Ban /><span>{collectPreflightView.blockers.join(" ")}</span></div> : <div className="credit-notice"><Activity /><span>A successful Base Employee Collect is documented as one collection credit. Provider-account entitlement must be confirmed separately; internal application units are not the provider balance.</span></div>}</>}
+          <DialogFooter><Button variant="outline" onClick={() => { setCollectPreflightView(null); setCollectConfirmationToken("") }}>Cancel — No Provider Call</Button><Button disabled={collectBusy || !collectPreflightView?.allowed || !collectConfirmationToken} onClick={() => void executeCollectOnly()}>{collectBusy ? <LoaderCircle className="spin" /> : <Cloud />} Confirm One Collect Request</Button></DialogFooter>
+        </DialogContent>
       </Dialog>
 
       <Dialog open={refreshConfirmOpen} onOpenChange={setRefreshConfirmOpen}>

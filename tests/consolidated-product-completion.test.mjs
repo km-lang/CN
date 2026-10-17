@@ -46,7 +46,7 @@ test("PCOM intent allows operational roles without changing their persisted role
 })
 
 test("Provider History is serialized only to Admin while PCOM gets bounded resume metadata", () => {
-  assert.match(enrichment, /history: context\.role === "ADMIN" \? history\.map\(presentProviderHistorySearchEvidence\) : \[\]/)
+  assert.match(enrichment, /history: context\.role === "ADMIN" \? history\.map\(presentProviderHistorySearchEvidence\)\.map\(presentProviderHistoryCollectEvidence\) : \[\]/)
   assert.match(enrichment, /historyRestricted: context\.role !== "ADMIN"/)
   assert.match(enrichment, /contactResume/)
   assert.doesNotMatch(enrichment.match(/contactResume = [\s\S]*?return Response\.json/)?.[0] ?? "", /requestSummary|errorMessage|searchEvidence/)

@@ -2,7 +2,7 @@ import vinext from "vinext";
 import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
-import { localCoresignalLiveDemoEnabled } from "./lib/local-development";
+import { localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -59,6 +59,8 @@ export default defineConfig(async ({ command, mode }) => {
     : "";
   const localCoresignalDemo = localDevelopment
     && localCoresignalLiveDemoEnabled(localEnvironment);
+  const localCollectMock = localDevelopment
+    && localCoresignalCollectMockTransportEnabled(localEnvironment);
   const localRuntimeVariables: Record<string, string> = localDevelopment
     ? {
         NODE_ENV: "development",
@@ -69,6 +71,11 @@ export default defineConfig(async ({ command, mode }) => {
         LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
         CORESIGNAL_LIVE_ENABLED: localCoresignalDemo ? "true" : "false",
         CORESIGNAL_SEARCH_ENABLED: localCoresignalDemo && localEnvironment.CORESIGNAL_SEARCH_ENABLED === "true" ? "true" : "false",
+        CORESIGNAL_COLLECT_ENABLED: (localCoresignalDemo || localCollectMock) && localEnvironment.CORESIGNAL_COLLECT_ENABLED === "true" ? "true" : "false",
+        CORESIGNAL_COLLECT_ENTITLEMENT: localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT === "confirmed" || localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT === "not_entitled"
+          ? localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT
+          : "unknown",
+        CORESIGNAL_COLLECT_MOCK_TRANSPORT: localCollectMock ? "true" : "false",
         CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "1",
         CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
         ...(localCoresignalDemo

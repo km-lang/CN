@@ -13,6 +13,7 @@ import { accessErrorResponse, authenticatedJsonResponse, authorizeRequest, write
 import { attachCoresignalIdentity } from "@/lib/coresignal-identity";
 import { coresignalIdentityStore } from "@/lib/coresignal-identity-store";
 import { presentProviderHistorySearchEvidence } from "@/lib/coresignal-search-evidence";
+import { presentProviderHistoryCollectEvidence } from "@/lib/coresignal-collect-only";
 
 const providers: ProviderName[] = ["coresignal", "lusha"];
 const defaultLimits: Record<ProviderName, number> = { coresignal: 25, lusha: 100 };
@@ -65,7 +66,7 @@ export async function GET(request: Request) {
       modes: { coresignal: coresignalProvider.mode(), lusha: enrichmentMode("lusha") },
       usage,
       contactResume,
-      history: context.role === "ADMIN" ? history.map(presentProviderHistorySearchEvidence) : [],
+      history: context.role === "ADMIN" ? history.map(presentProviderHistorySearchEvidence).map(presentProviderHistoryCollectEvidence) : [],
       historyRestricted: context.role !== "ADMIN",
     });
   } catch (error) {

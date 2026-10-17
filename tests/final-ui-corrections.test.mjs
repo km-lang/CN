@@ -53,7 +53,7 @@ test("UI-04 preserves zero results and honest historical evidence states", () =>
 })
 
 test("UI-04 formats bounded sanitized metadata outside the main history row", () => {
-  assert.match(page, /JSON\.stringify\(item\.searchEvidence\.evidence, null, 2\)/)
+  assert.match(page, /JSON\.stringify\(item\.searchEvidence\?\.state === "RETAINED" \? item\.searchEvidence\.evidence : item\.collectEvidence\?\.state === "RETAINED" \? item\.collectEvidence\.evidence : null, null, 2\)/)
   assert.match(page, /className="provider-history-json"/)
   assert.match(styles, /\.provider-history-json pre \{ max-width: 100%; max-height: 300px;/)
   assert.match(styles, /overflow: auto;/)
@@ -61,7 +61,7 @@ test("UI-04 formats bounded sanitized metadata outside the main history row", ()
 
 test("Provider History remains server-authorized for Admin only", () => {
   assert.match(enrichment, /authorizeRequest\(request, "VIEW_PROVIDER_STATUS"\)/)
-  assert.match(enrichment, /history: context\.role === "ADMIN" \? history\.map\(presentProviderHistorySearchEvidence\) : \[\]/)
+  assert.match(enrichment, /history: context\.role === "ADMIN" \? history\.map\(presentProviderHistorySearchEvidence\)\.map\(presentProviderHistoryCollectEvidence\) : \[\]/)
   assert.match(page, /session\.canAdminister \? <section className="panel history-panel"/)
   assert.match(page, /Administrative provider history is restricted/)
 })

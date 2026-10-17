@@ -1,4 +1,4 @@
-import { localCoresignalLiveDemoEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
+import { localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
 
 export type ProviderName = "coresignal" | "lusha"
 export type ProviderMode = "mock" | "live"
@@ -7,6 +7,9 @@ type ProviderRuntimeEnvironment = {
   CORESIGNAL_API_KEY?: string
   CORESIGNAL_LIVE_ENABLED?: string
   CORESIGNAL_SEARCH_ENABLED?: string
+  CORESIGNAL_COLLECT_ENABLED?: string
+  CORESIGNAL_COLLECT_ENTITLEMENT?: string
+  CORESIGNAL_COLLECT_MOCK_TRANSPORT?: string
   CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?: string
   CORESIGNAL_LIVE_REFRESH_MAX_PROFILES?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED?: string
@@ -69,6 +72,24 @@ export function coresignalLiveRefreshMaximum() {
 export function coresignalRegularSearchEnabled() {
   const values = runtimeEnvironment()
   return providerMode("coresignal") === "live" && enabled(values.CORESIGNAL_SEARCH_ENABLED)
+}
+
+export type CoresignalCollectEntitlement = "unknown" | "confirmed" | "not_entitled"
+
+export function coresignalCollectEntitlement(): CoresignalCollectEntitlement {
+  const configured = runtimeEnvironment().CORESIGNAL_COLLECT_ENTITLEMENT?.trim().toLowerCase()
+  return configured === "confirmed" ? "confirmed" : configured === "not_entitled" ? "not_entitled" : "unknown"
+}
+
+export function coresignalCollectEnabled() {
+  const values = runtimeEnvironment()
+  return (localCoresignalCollectMockTransportEnabled(values) || localCoresignalLiveDemoEnabled(values))
+    && enabled(values.CORESIGNAL_COLLECT_ENABLED)
+    && coresignalCollectEntitlement() === "confirmed"
+}
+
+export function coresignalCollectMockTransportEnabled() {
+  return localCoresignalCollectMockTransportEnabled(runtimeEnvironment())
 }
 
 export function signalsRuntimeStatus() {
