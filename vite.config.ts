@@ -2,7 +2,7 @@ import vinext from "vinext";
 import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
-import { localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
+import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -61,6 +61,9 @@ export default defineConfig(async ({ command, mode }) => {
     && localCoresignalLiveDemoEnabled(localEnvironment);
   const localCollectMock = localDevelopment
     && localCoresignalCollectMockTransportEnabled(localEnvironment);
+  const localBrightDataDemo = localDevelopment && localBrightDataLiveDemoEnabled(localEnvironment);
+  const localBrightDataMock = localDevelopment && localBrightDataMockTransportEnabled(localEnvironment);
+  const localBrightDataEntitlement = localEnvironment.BRIGHTDATA_ACCESS_ENTITLEMENT?.trim() ?? "";
   const localRuntimeVariables: Record<string, string> = localDevelopment
     ? {
         NODE_ENV: "development",
@@ -78,6 +81,16 @@ export default defineConfig(async ({ command, mode }) => {
         CORESIGNAL_COLLECT_MOCK_TRANSPORT: localCollectMock ? "true" : "false",
         CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "1",
         CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
+        LOCAL_PROVIDER_LIVE_DEMO_ENABLED: localBrightDataDemo ? "true" : "false",
+        LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1",
+        BRIGHTDATA_LIVE_ENABLED: localBrightDataDemo ? "true" : "false",
+        BRIGHTDATA_MOCK_TRANSPORT: localBrightDataMock ? "true" : "false",
+        BRIGHTDATA_APPLICATION_REQUEST_LIMIT: localEnvironment.BRIGHTDATA_APPLICATION_REQUEST_LIMIT?.trim() || "5",
+        BRIGHTDATA_ACCESS_ENTITLEMENT: ["confirmed", "not_entitled"].includes(localBrightDataEntitlement) ? localBrightDataEntitlement : "unknown",
+        ...(localBrightDataDemo ? {
+          BRIGHTDATA_API_TOKEN: localEnvironment.BRIGHTDATA_API_TOKEN?.trim() ?? "",
+          BRIGHTDATA_DATASET_ID: localEnvironment.BRIGHTDATA_DATASET_ID?.trim() ?? "",
+        } : {}),
         ...(localCoresignalDemo
           ? { CORESIGNAL_API_KEY: localCoresignalKey }
           : {}),
@@ -99,7 +112,7 @@ export default defineConfig(async ({ command, mode }) => {
 
   return {
     server: {
-      host: localCoresignalDemo ? "127.0.0.1" : "0.0.0.0",
+      host: localCoresignalDemo || localBrightDataDemo ? "127.0.0.1" : "0.0.0.0",
       allowedHosts: ["terminal.local"],
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }

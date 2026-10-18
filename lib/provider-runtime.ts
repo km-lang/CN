@@ -1,4 +1,4 @@
-import { localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
+import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
 
 export type ProviderName = "coresignal" | "lusha"
 export type ProviderMode = "mock" | "live"
@@ -22,6 +22,12 @@ type ProviderRuntimeEnvironment = {
   LUSHA_SIGNALS_ENTITLEMENT?: string
   LUSHA_SIGNALS_ENTITLEMENT_VERIFIED_AT?: string
   LUSHA_SIGNALS_ENTITLEMENT_SOURCE?: string
+  BRIGHTDATA_API_TOKEN?: string
+  BRIGHTDATA_DATASET_ID?: string
+  BRIGHTDATA_LIVE_ENABLED?: string
+  BRIGHTDATA_MOCK_TRANSPORT?: string
+  BRIGHTDATA_APPLICATION_REQUEST_LIMIT?: string
+  BRIGHTDATA_ACCESS_ENTITLEMENT?: string
 }
 
 function runtimeEnvironment() {
@@ -104,3 +110,26 @@ export function signalsRuntimeStatus() {
     verificationSource: values.LUSHA_SIGNALS_ENTITLEMENT_SOURCE?.trim() ?? "",
   } as const
 }
+
+export function brightDataRuntimeStatus() {
+  const values = runtimeEnvironment()
+  const mock = localBrightDataMockTransportEnabled(values)
+  const live = localBrightDataLiveDemoEnabled(values)
+  const configuredEntitlement = values.BRIGHTDATA_ACCESS_ENTITLEMENT?.trim().toLowerCase()
+  const entitlement = configuredEntitlement === "confirmed" ? "confirmed" : configuredEntitlement === "not_entitled" ? "not_entitled" : "unknown"
+  return {
+    mode: mock ? "mock" as const : live ? "live" as const : "disabled" as const,
+    configured: mock || (Boolean(values.BRIGHTDATA_API_TOKEN?.trim()) && Boolean(values.BRIGHTDATA_DATASET_ID?.trim())),
+    tokenConfigured: mock || Boolean(values.BRIGHTDATA_API_TOKEN?.trim()),
+    datasetConfigured: mock || Boolean(values.BRIGHTDATA_DATASET_ID?.trim()),
+    executionGateEnabled: mock || live,
+    entitlement,
+    applicationRequestLimit: boundedInteger(values.BRIGHTDATA_APPLICATION_REQUEST_LIMIT, 5, 10),
+    billingEstimate: "unknown" as const,
+    supportedInput: "One public LinkedIn profile URL" as const,
+  }
+}
+
+export function brightDataSecret() { return runtimeEnvironment().BRIGHTDATA_API_TOKEN?.trim() ?? "" }
+export function brightDataDatasetId() { return runtimeEnvironment().BRIGHTDATA_DATASET_ID?.trim() ?? "" }
+export function brightDataMockTransportEnabled() { return localBrightDataMockTransportEnabled(runtimeEnvironment()) }

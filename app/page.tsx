@@ -24,6 +24,7 @@ import { CompanyCombobox, normalizeCompanyOptions } from "@/components/company-c
 import { PaginationFooter, usePagination } from "@/components/pagination"
 import { IntelligenceWorkspace } from "@/components/intelligence/intelligence-workspace"
 import { OpportunitiesWorkspace } from "@/components/opportunities/opportunities-workspace"
+import { BrightDataWorkflow } from "@/components/brightdata-workflow"
 import { ProfileIntelligencePanel } from "@/components/intelligence/profile-intelligence-panel"
 import { AdminPanel } from "@/app/admin-panel"
 import { useAccessSession } from "@/app/access-provider"
@@ -77,6 +78,7 @@ const API_ROUTES = Object.freeze({
   directory: apiPath("/api/directory"),
   alumniCollection: apiPath("/api/alumni-collection"),
   exports: apiPath("/api/exports"),
+  brightData: apiPath("/api/admin/bright-data"),
 })
 
 const ADDED_DISCOVERY_STATUSES = new Set<string>([
@@ -2755,6 +2757,8 @@ export default function Home() {
               {discoveryCountControl("Discover More Alumni")}
               <div className="coresignal-id-search"><div className="coresignal-id-search-copy"><strong>Find Alumni on Coresignal (ID-only)</strong><p>Discover potential IIM Lucknow alumni using education and verified company criteria. Search returns candidate Employee IDs for review, not complete professional profiles.</p><div className="coresignal-search-flow" aria-label="Coresignal Search workflow"><span><strong>Search</strong>Candidate Employee IDs</span><span><strong>Collect</strong>Separately authorized full-profile retrieval</span><span><strong>Review</strong>Human verification before canonical changes</span></div><div className="coresignal-search-safety"><span>Verified company mapping required when selected</span><span>Status: provider-free preparation available</span><span>{regularSearchStatus.enabled ? "LIVE execution gate enabled" : "LIVE execution gate disabled"}</span><span>Maximum {regularSearchStatus.maxRequests} request</span><span>Pagination {regularSearchStatus.automaticPagination ? "enabled" : "disabled"}</span><span>No automatic Collect or canonical update</span></div><small>Graduation year is optional. Programme, role, function, seniority and location remain local qualification filters. Missing, unverified, conflicting or invalid company mappings block before any provider request.</small></div><div className="coresignal-id-search-action"><Button variant="outline" title={discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear) ? "Enter an exact four-digit graduation year or leave it blank for all years." : "Prepare and inspect the Search contract without calling Coresignal."} disabled={discovering || Boolean(discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear)) || !discoveryCountValidation.ok} onClick={() => void prepareRegularSearch(discoveryFilters)}><Search /> {discovering ? "Preparing…" : "Review Search Criteria"}</Button><small>This provider-free action opens confirmation; it does not call Search, Preview or Collect.</small></div></div>
             </section>}
+
+            {session.canAdminister && <BrightDataWorkflow apiUrl={API_ROUTES.brightData} />}
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">

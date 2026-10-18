@@ -521,6 +521,40 @@ export const applicationIdentities = sqliteTable("application_identities", {
   index("idx_application_identities_verified_email").on(table.verifiedEmail),
 ]);
 
+export const providerCollectionAttempts = sqliteTable("provider_collection_attempts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  provider: text("provider").notNull(),
+  operation: text("operation").notNull(),
+  actorUserId: integer("actor_user_id").notNull().references(() => applicationUsers.id),
+  alumnusId: integer("alumnus_id").references(() => alumni.id),
+  targetReference: text("target_reference").notNull(),
+  targetFingerprint: text("target_fingerprint").notNull(),
+  requestKey: text("request_key").notNull(),
+  datasetId: text("dataset_id").notNull().default(""),
+  providerJobId: text("provider_job_id").notNull().default(""),
+  attemptCount: integer("attempt_count").notNull().default(1),
+  generation: integer("generation").notNull().default(1),
+  status: text("status").notNull().default("CLAIMED"),
+  lastStatusCheckAt: text("last_status_check_at").notNull().default(""),
+  completedAt: text("completed_at").notNull().default(""),
+  errorCategory: text("error_category").notNull().default(""),
+  resultProviderHistoryId: integer("result_provider_history_id").references(() => providerResponseHistory.id),
+  evidenceJson: text("evidence_json").notNull().default(""),
+  usageState: text("usage_state").notNull().default("not_applicable"),
+  providerReportedUsage: integer("provider_reported_usage"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_provider_collection_request_key").on(table.requestKey),
+  uniqueIndex("idx_provider_collection_job").on(table.provider, table.providerJobId).where(sql`${table.providerJobId} != ''`),
+  uniqueIndex("idx_provider_collection_active_target").on(table.provider, table.targetFingerprint).where(sql`${table.status} in ('CLAIMED', 'TRIGGER_IN_PROGRESS', 'SNAPSHOT_PENDING', 'SNAPSHOT_RUNNING', 'SNAPSHOT_READY', 'RESULT_RETRIEVED')`),
+  index("idx_provider_collection_target").on(table.provider, table.targetFingerprint, table.createdAt),
+  index("idx_provider_collection_status").on(table.provider, table.status, table.updatedAt),
+  check("provider_collection_attempt_count_check", sql`${table.attemptCount} = 1`),
+  check("provider_collection_generation_check", sql`${table.generation} > 0`),
+  check("provider_collection_status_check", sql`${table.status} in ('CLAIMED', 'TRIGGER_IN_PROGRESS', 'SNAPSHOT_PENDING', 'SNAPSHOT_RUNNING', 'SNAPSHOT_READY', 'RESULT_RETRIEVED', 'EVIDENCE_STORED', 'REVIEW_REQUIRED', 'FAILED_BEFORE_TRIGGER', 'TRIGGER_OUTCOME_UNKNOWN', 'FAILED_AFTER_TRIGGER', 'BLOCKED')`),
+]);
+
 export const securityAuditEvents = sqliteTable("security_audit_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   actorUserId: integer("actor_user_id").references(() => applicationUsers.id),

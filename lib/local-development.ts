@@ -9,6 +9,29 @@ type LocalDevelopmentEnvironment = {
   CORESIGNAL_COLLECT_ENABLED?: string
   CORESIGNAL_COLLECT_ENTITLEMENT?: string
   CORESIGNAL_COLLECT_MOCK_TRANSPORT?: string
+  LOCAL_PROVIDER_LIVE_DEMO_ENABLED?: string
+  LOCAL_PROVIDER_LIVE_DEMO_HOST?: string
+  BRIGHTDATA_LIVE_ENABLED?: string
+  BRIGHTDATA_API_TOKEN?: string
+  BRIGHTDATA_DATASET_ID?: string
+  BRIGHTDATA_MOCK_TRANSPORT?: string
+}
+
+export function localBrightDataLiveDemoEnabled(values: LocalDevelopmentEnvironment = process.env) {
+  return localDevelopmentAuthEnabled(values)
+    && values.LOCAL_DEV_AUTH_ROLE === "ADMIN"
+    && values.LOCAL_PROVIDER_LIVE_DEMO_ENABLED === "true"
+    && isLoopbackHost(values.LOCAL_PROVIDER_LIVE_DEMO_HOST)
+    && values.BRIGHTDATA_LIVE_ENABLED === "true"
+    && Boolean(values.BRIGHTDATA_API_TOKEN?.trim())
+    && Boolean(values.BRIGHTDATA_DATASET_ID?.trim())
+}
+
+export function localBrightDataMockTransportEnabled(values: LocalDevelopmentEnvironment = process.env) {
+  return localDevelopmentAuthEnabled(values)
+    && values.LOCAL_DEV_AUTH_ROLE === "ADMIN"
+    && isLoopbackHost(values.LOCAL_PROVIDER_LIVE_DEMO_HOST)
+    && values.BRIGHTDATA_MOCK_TRANSPORT === "true"
 }
 
 export function localCoresignalCollectMockTransportEnabled(
