@@ -52,14 +52,14 @@ const collected = (id, overrides = {}) => ({
   education: "Indian Institute of Management Lucknow",
   graduationYear: 2013,
   affiliationStatus: "Potential alumnus — review required",
-  educationProgramme: "",
-  normalizedProgramme: "",
-  programmeStatus: "Programme requires review",
+  educationProgramme: "Post Graduate Programme in Management (PGP)",
+  normalizedProgramme: "PGP",
+  programmeStatus: "Programme matched",
   alumniStatus: "Past alumnus",
   educationStartDate: "2011",
   educationEndDate: "2013",
   currentRoles: [{ company: "Lincoln International", title: "Vice President", seniority: "VP", startDate: "2021" }],
-  iimlEducationEvidence: [{ institution: "Indian Institute of Management Lucknow", programme: "", normalizedProgramme: "", startDate: "2011", endDate: "2013", graduationYear: 2013 }],
+  iimlEducationEvidence: [{ institution: "Indian Institute of Management Lucknow", programme: "Post Graduate Programme in Management (PGP)", normalizedProgramme: "PGP", startDate: "2011", endDate: "2013", graduationYear: 2013 }],
   ...overrides,
 })
 
@@ -116,10 +116,10 @@ test("Search #6 multi-programme evidence is not described as provider-constraine
   const item = result.candidates[0]
   assert.equal(item.qualification.company.result, "MATCH")
   assert.equal(item.qualification.seniority.result, "MISMATCH")
-  assert.equal(item.qualification.graduationYear.result, "NEEDS_COLLECT")
+  assert.equal(item.qualification.graduationYear.result, "PROVIDER_SIDE_NARROWING_ONLY")
   assert.equal(item.qualification.graduationYear.source, "PROVIDER_UPPER_BOUND")
   assert.match(item.qualification.graduationYear.evidence, /Provider narrowing 2013 or earlier/)
-  assert.match(item.qualification.graduationYear.rationale, /education-end upper bound/i)
+  assert.match(item.qualification.graduationYear.rationale, /upper bound/i)
   assert.equal(item.qualification.programme.result, "NOT_PROVIDER_VERIFIED")
   assert.match(item.qualification.programme.rationale, /programme was not used to constrain the provider search/i)
   assert.doesNotMatch(item.qualification.programme.rationale, /search was constrained to/i)
@@ -143,10 +143,9 @@ test("Shruti exact-year verification rejects active 2011 evidence despite the 20
     ],
   }, 0, { selectedProgrammes: ["PGP", "ABM", "SM"] })
   const qualified = execution.qualifyCollectedCandidate(shruti, filters({ discoveryProgrammes: ["PGP", "ABM", "SM"], seniorities: ["VP"], seniority: "VP" }))
-  assert.equal(qualified.graduationYear.result, "VERIFIED_MISMATCH")
+  assert.equal(qualified.graduationYear.result, "WRONG_YEAR")
   assert.equal(qualified.graduationYear.evidence, "IIM Lucknow · 2009–2011")
-  assert.match(qualified.graduationYear.rationale, /2013 or earlier/)
-  assert.match(qualified.graduationYear.rationale, /ends in 2011/)
+  assert.match(qualified.graduationYear.rationale, /not the requested exact year 2013/)
   assert.equal(qualified.seniority.result, "VERIFIED_MISMATCH")
   assert.match(qualified.seniority.evidence, /Director → Director/)
   assert.doesNotMatch(qualified.seniority.evidence, /Vice President/)
@@ -165,16 +164,16 @@ test("exact-year verification accepts non-deleted evidence ending in the request
   }, 0, { selectedProgrammes: ["PGP"] })
   const qualified = execution.qualifyCollectedCandidate(candidate, filters({ discoveryProgrammes: ["PGP"] }))
   assert.equal(candidate.iimlEducationEvidence.length, 1)
-  assert.equal(qualified.graduationYear.result, "VERIFIED_MATCH")
+  assert.equal(qualified.graduationYear.result, "EXACT_YEAR_VERIFIED")
   assert.equal(qualified.graduationYear.evidence, "IIM Lucknow · 2011–2013")
-  assert.match(qualified.graduationYear.rationale, /matching the requested graduation year/)
+  assert.match(qualified.graduationYear.rationale, /end year matches exactly/)
 })
 
 test("single-programme Preview rationale retains the established provider-constraint semantics", () => {
   const qualification = execution.qualifyPreviewCandidate(preview("single-programme"), filters({ discoveryProgrammes: ["PGP"] }))
   assert.equal(qualification.programme.result, "SEARCH_CONSTRAINED_NOT_VERIFIED")
   assert.match(qualification.programme.rationale, /Search was constrained to PGP/)
-  assert.equal(qualification.graduationYear.result, "NEEDS_COLLECT")
+  assert.equal(qualification.graduationYear.result, "PROVIDER_SIDE_NARROWING_ONLY")
 })
 
 test("assistant-to-VP wording is not classified as VP", async () => {
@@ -199,16 +198,16 @@ test("new qualified Preview candidate is selectively collected and year is verif
   const item = result.candidates[0]
   assert.equal(item.qualification.company.result, "VERIFIED_MATCH")
   assert.equal(item.qualification.seniority.result, "VERIFIED_MATCH")
-  assert.equal(item.qualification.graduationYear.result, "VERIFIED_MATCH")
-  assert.equal(item.qualification.programme.result, "SEARCH_CONSTRAINED_NOT_VERIFIED")
+  assert.equal(item.qualification.graduationYear.result, "EXACT_YEAR_VERIFIED")
+  assert.equal(item.qualification.programme.result, "VERIFIED_MATCH")
   assert.equal(item.finalStatus, "QUALIFIED_FOR_REVIEW")
   assert.equal(item.profile.eligibleForAddition, false)
 })
 
 test("collected IIML graduation-year mismatch becomes a filter mismatch", async () => {
-  const { result, calls } = await run([preview("wrong-year")], { collect: id => collected(id, { graduationYear: 2012, educationEndDate: "2012" }) })
+  const { result, calls } = await run([preview("wrong-year")], { collect: id => collected(id, { graduationYear: 2012, educationEndDate: "2012", iimlEducationEvidence: [{ institution: "Indian Institute of Management Lucknow", programme: "", normalizedProgramme: "", startDate: "2010", endDate: "2012", graduationYear: 2012 }] }) })
   assert.equal(calls, 1)
-  assert.equal(result.candidates[0].qualification.graduationYear.result, "VERIFIED_MISMATCH")
+  assert.equal(result.candidates[0].qualification.graduationYear.result, "WRONG_YEAR")
   assert.equal(result.candidates[0].finalStatus, "FILTER_MISMATCH")
 })
 
@@ -233,6 +232,38 @@ test("duplicate IIML education rows normalize to one strongest dated fact", () =
   assert.equal(evidence[0].graduationYear, 2013)
 })
 
+test("exact year uses the end year from the same IIML education row", () => {
+  const cases = [
+    { name: "IIML 2007–2009", education: [{ institution_id: 25919228, date_from_year: 2007, date_to_year: 2009 }], expected: "WRONG_YEAR" },
+    { name: "IIML 2009–2011", education: [{ institution_id: 25919228, date_from_year: 2009, date_to_year: "2011" }], expected: "EXACT_YEAR_VERIFIED" },
+    { name: "IIML 2010–2012", education: [{ institution_id: 25919228, date_from_year: 2010, date_to_year: 2012 }], expected: "WRONG_YEAR" },
+    { name: "IIML missing year", education: [{ institution_id: 25919228, degree_name: "PGP" }], expected: "GRADUATION_YEAR_UNVERIFIED" },
+    { name: "IIML start-only", education: [{ institution_id: 25919228, date_from_year: 2011 }], expected: "GRADUATION_YEAR_UNVERIFIED" },
+    { name: "different school 2011", education: [{ institution_id: 25919228, date_to_year: 2009 }, { institution_id: 999, institution_name: "Different School", date_to_year: 2011 }], expected: "WRONG_YEAR" },
+  ]
+  for (const item of cases) {
+    const profile = adapter.mapCoresignalPreview({ id: item.name, full_name: item.name, title: "Vice President", company_name: "Google", education: item.education }, 0)
+    const qualified = execution.qualifyPreviewCandidate(profile, filters({ company: "Google", graduationYear: "2011" }))
+    assert.equal(qualified.graduationYear.result, item.expected, item.name)
+  }
+})
+
+test("multiple IIML rows preserve distinct periods and accept any exact same-row match", () => {
+  const profile = adapter.mapCoresignalPreview({
+    id: "multiple-periods",
+    full_name: "Multiple Periods",
+    company_name: "Google",
+    title: "Vice President",
+    education: [
+      { institution_id: 25919228, degree_name: "PGP", date_from_year: 2007, date_to_year: 2009 },
+      { institution_id: 25919228, degree_name: "PGP", date_from_year: 2009, date_to_year: 2011 },
+      { institution_id: 25919228, degree_name: "PGP", date_from_year: 2009, date_to_year: 2011 },
+    ],
+  }, 0)
+  assert.equal(profile.iimlEducationEvidence.length, 2)
+  assert.equal(execution.qualifyPreviewCandidate(profile, filters({ company: "Google", graduationYear: "2011" })).graduationYear.result, "EXACT_YEAR_VERIFIED")
+})
+
 test("duplicate current-role rows collapse without hiding genuinely different roles", () => {
   const roles = adapter.normalizedCurrentRoleEvidence({ experience: [
     { company_name: "Lincoln International", title: "Vice President", is_current: 1, deleted: 0 },
@@ -243,13 +274,59 @@ test("duplicate current-role rows collapse without hiding genuinely different ro
   assert.equal(roles.find(item => item.company === "Lincoln International").startDate, "2021")
 })
 
-test("provider over-return is bounded before Collect", async () => {
+test("provider over-return is fully qualified while Collect remains independently bounded", async () => {
   const twenty = Array.from({ length: 20 }, (_, index) => preview(`person-${index + 1}`))
   const { result, calls } = await run(twenty, { requestedCount: 5, maximumCollects: 5 })
   assert.equal(result.metrics.previewCountReturned, 20)
-  assert.equal(result.metrics.previewCountConsidered, 5)
+  assert.equal(result.metrics.previewCountConsidered, 20)
   assert.equal(calls, 5)
-  assert.equal(result.candidates.length, 5)
+  assert.equal(result.candidates.length, 20)
+  assert.equal(result.selectedCandidates.length, 5)
+})
+
+test("final result selection finds a later qualified VP after earlier Preview failures", async () => {
+  const twenty = Array.from({ length: 20 }, (_, index) => preview(`ranked-${index + 1}`, {
+    role: index === 14 ? "Vice President" : index === 0 ? "India Site Lead for Privacy, Safety and Security" : "Manager",
+    rawTitle: index === 14 ? "Vice President" : index === 0 ? "India Site Lead for Privacy, Safety and Security" : "Manager",
+    seniority: index === 14 ? "VP" : index === 0 ? "Unknown/Unclassified" : "Manager",
+  }))
+  const { result, calls } = await run(twenty, { requestedCount: 1, maximumCollects: 1 })
+
+  assert.equal(result.metrics.previewCountReturned, 20)
+  assert.equal(result.metrics.previewCountConsidered, 20)
+  assert.equal(calls, 1)
+  assert.equal(result.metrics.collectExecuted, 1)
+  assert.equal(result.selectedCandidates.length, 1)
+  assert.equal(result.selectedCandidates[0].profile.providerPersonId, "ranked-15")
+  assert.equal(result.selectedCandidates[0].finalStatus, "QUALIFIED_FOR_REVIEW")
+  assert.equal(result.candidates[0].qualification.seniority.result, "INSUFFICIENT_EVIDENCE")
+  assert.notEqual(result.candidates[0].finalStatus, "QUALIFIED_FOR_REVIEW")
+})
+
+test("twenty Preview candidates select later exact-year Google VP without Collect or another Search", async () => {
+  const twenty = Array.from({ length: 20 }, (_, index) => adapter.mapCoresignalPreview({
+    id: `exact-ranked-${index + 1}`,
+    full_name: `Exact Ranked ${index + 1}`,
+    professional_network_url: `https://www.linkedin.com/in/exact-ranked-${index + 1}`,
+    company_name: index === 4 || index === 9 || index === 14 ? "Google" : "Another Company",
+    title: index === 4 ? "Director" : index === 14 ? "Vice President" : "Manager",
+    education: index === 9
+      ? [{ institution_id: 25919228, date_from_year: 2011 }]
+      : [{ institution_id: 25919228, date_from_year: index === 14 ? 2009 : 2007, date_to_year: index === 14 ? 2011 : 2009 }],
+  }, index))
+  const { result, calls } = await run(twenty, {
+    filters: filters({ company: "Google", graduationYear: "2011", seniorities: ["VP", "VP+"], seniority: "VP+", discoveryProgrammes: [] }),
+    requestedCount: 1,
+    maximumCollects: 0,
+  })
+  assert.equal(result.metrics.previewCountReturned, 20)
+  assert.equal(result.metrics.previewCountConsidered, 20)
+  assert.equal(calls, 0)
+  assert.equal(result.metrics.collectExecuted, 0)
+  assert.equal(result.selectedCandidates.length, 1)
+  assert.equal(result.selectedCandidates[0].profile.providerPersonId, "exact-ranked-15")
+  assert.equal(result.selectedCandidates[0].qualification.graduationYear.result, "EXACT_YEAR_VERIFIED")
+  assert.equal(result.selectedCandidates[0].finalStatus, "QUALIFIED_FOR_REVIEW")
 })
 
 test("mixed ten-candidate execution collects only the two genuinely new qualified candidates", async () => {
@@ -316,10 +393,10 @@ test("company/year/seniority/programme criteria retain independent evidence stat
   const candidate = preview("matrix")
   const combinations = [
     [filters({ discoveryProgrammes: [], graduationYear: "", seniority: "All levels" }), ["MATCH", "NOT_REQUESTED", "NOT_REQUESTED", "NOT_REQUESTED"]],
-    [filters({ discoveryProgrammes: [], seniority: "All levels" }), ["MATCH", "NOT_REQUESTED", "NEEDS_COLLECT", "NOT_REQUESTED"]],
+    [filters({ discoveryProgrammes: [], seniority: "All levels" }), ["MATCH", "NOT_REQUESTED", "PROVIDER_SIDE_NARROWING_ONLY", "NOT_REQUESTED"]],
     [filters({ discoveryProgrammes: [], graduationYear: "" }), ["MATCH", "MATCH", "NOT_REQUESTED", "NOT_REQUESTED"]],
-    [filters({}), ["MATCH", "MATCH", "NEEDS_COLLECT", "SEARCH_CONSTRAINED_NOT_VERIFIED"]],
-    [filters({ company: "", discoveryProgrammes: [], graduationYear: "2013" }), ["NOT_REQUESTED", "MATCH", "NEEDS_COLLECT", "NOT_REQUESTED"]],
+    [filters({}), ["MATCH", "MATCH", "PROVIDER_SIDE_NARROWING_ONLY", "SEARCH_CONSTRAINED_NOT_VERIFIED"]],
+    [filters({ company: "", discoveryProgrammes: [], graduationYear: "2013" }), ["NOT_REQUESTED", "MATCH", "PROVIDER_SIDE_NARROWING_ONLY", "NOT_REQUESTED"]],
   ]
   for (const [requested, expected] of combinations) {
     const qualified = execution.qualifyPreviewCandidate(candidate, requested)
@@ -334,4 +411,67 @@ test("selective execution is deterministic, provider-injected, and never mutates
   assert.deepEqual(people, before)
   assert.equal(result.candidates[0].profile.providerPersonId, "new-safe")
   assert.equal(result.candidates[0].profile.eligibleForAddition, false)
+})
+
+test("every optional discovery dimension is NOT_REQUESTED when omitted", () => {
+  const optional = filters({
+    alumniStatus: "All graduation statuses",
+    discoveryProgrammes: [],
+    company: "",
+    role: "",
+    function: "All functions",
+    seniorities: [],
+    seniority: "All levels",
+    location: "",
+    graduationYear: "",
+  })
+  const qualification = execution.qualifyPreviewCandidate(preview("institution-only"), optional)
+  for (const [name, value] of Object.entries(qualification)) {
+    assert.equal(value.result, "NOT_REQUESTED", `${name} must not be silently constrained`)
+  }
+})
+
+test("role, function, location and seniority use AND semantics while seniority selections use OR", () => {
+  const combined = filters({
+    alumniStatus: "All graduation statuses",
+    discoveryProgrammes: [],
+    company: "Lincoln International",
+    role: "Vice President",
+    function: "Finance",
+    seniorities: ["Director", "VP+"],
+    seniority: "All levels",
+    location: "Mumbai",
+    graduationYear: "",
+  })
+  const qualification = execution.qualifyPreviewCandidate(preview("combined", {
+    role: "Vice President, Finance",
+    rawTitle: "Vice President, Finance",
+    function: "Finance",
+    location: "Mumbai, India",
+  }), combined)
+  assert.equal(qualification.company.result, "MATCH")
+  assert.equal(qualification.role.result, "MATCH")
+  assert.equal(qualification.function.result, "MATCH")
+  assert.equal(qualification.seniority.result, "MATCH")
+  assert.equal(qualification.location.result, "MATCH")
+})
+
+test("selected programme without returned evidence remains pending; omitted programme does not restrict", () => {
+  const selected = execution.qualifyPreviewCandidate(preview("programme-pending"), filters({ discoveryProgrammes: ["PGP"] }))
+  assert.equal(selected.programme.result, "SEARCH_CONSTRAINED_NOT_VERIFIED")
+  const omitted = execution.qualifyPreviewCandidate(preview("programme-omitted"), filters({ discoveryProgrammes: [] }))
+  assert.equal(omitted.programme.result, "NOT_REQUESTED")
+})
+
+test("seniority is qualified against the selected current company when multiple current roles exist", () => {
+  const profile = collected("company-role", {
+    currentRoles: [
+      { company: "Lincoln International", title: "Director", seniority: "Director", startDate: "2021" },
+      { company: "Another Company", title: "Chief Executive Officer", seniority: "CXO", startDate: "2022" },
+    ],
+  })
+  const qualification = execution.qualifyCollectedCandidate(profile, filters({ seniorities: ["VP+"], seniority: "VP+" }))
+  assert.equal(qualification.company.result, "VERIFIED_MATCH")
+  assert.equal(qualification.seniority.result, "VERIFIED_MISMATCH")
+  assert.doesNotMatch(qualification.seniority.evidence, /Chief Executive Officer/)
 })

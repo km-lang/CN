@@ -83,6 +83,6 @@ test("profile enrollment is server-authoritative, stable-ID based, and never inv
 })
 
 test("existing Coresignal External Discovery remains independent from Bright eligibility", () => {
-  assert.match(externalDiscovery, /IIML programmes to discover/)
+  assert.match(externalDiscovery, /Programme \/ degree labels/)
   assert.doesNotMatch(externalDiscovery, /evaluateBrightEligibility|enroll_bright|\/v1\/alumni\/enroll/)
 })

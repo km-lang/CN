@@ -103,6 +103,60 @@ test("reporting-relationship titles remain insufficient rather than inheriting a
   }
 })
 
+test("provider title qualification is conservative for ambiguous and false-positive executive titles", () => {
+  const vpPlus = filters({ seniorities: ["VP+", "EVP/SVP", "CXO"] })
+  for (const title of ["Vice President", "Senior Vice President", "Chief Financial Officer"]) {
+    assert.equal(execution.qualifyPreviewCandidate(preview(title, title), vpPlus).seniority.result, "MATCH", title)
+  }
+  for (const title of ["Account Executive", "Executive Director", "Assistant Vice President", "AVP"]) {
+    assert.equal(execution.qualifyPreviewCandidate(preview(title, title), vpPlus).seniority.result, "MISMATCH", title)
+  }
+  for (const title of ["Various", "India Site Lead for Privacy, Safety and Security", ""]) {
+    assert.equal(execution.qualifyPreviewCandidate(preview(title || "missing", title), vpPlus).seniority.result, "INSUFFICIENT_EVIDENCE", title || "missing")
+  }
+})
+
+test("Search #9 retains exact-year query provenance while keeping unknown seniority unresolved", async () => {
+  const requested = filters({ company: "Google", graduationYear: "2011", discoveryProgrammes: ["PGP", "ABM", "SM"], seniorities: ["VP", "VP+", "EVP/SVP", "CXO"] })
+  const operation = [{ operation: "Exact-year ES-DSL Preview", status: "success", requestSummary: "IIM Lucknow · exact same-row IIML end-year constraint · no automatic Collect" }]
+  const constraint = execution.persistedSearchConstraintEvidence(requested, operation)
+  assert.ok(constraint)
+  const candidates = [
+    preview("rajat", "Various"),
+    preview("account-executive", "Account Executive"),
+    preview("director", "Director"),
+    preview("avp", "Assistant Vice President"),
+  ].map(item => ({ ...item, currentCompany: "Google" }))
+  const result = await execution.executeSelectiveDiscovery({
+    previewProfiles: candidates,
+    filters: requested,
+    alumni: [],
+    rejectedCandidates: [],
+    capabilities: capabilities.CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES,
+    requestedCount: 1,
+    maximumCollects: 0,
+    searchConstraint: constraint,
+    collect: async () => { throw new Error("Collect must not run") },
+  })
+  assert.equal(result.candidates[0].qualification.graduationYear.result, "EXACT_YEAR_QUERY_MATCH")
+  assert.equal(result.candidates[0].qualification.graduationYear.source, "SEARCH_CONSTRAINT")
+  assert.equal(result.candidates[0].qualification.programme.result, "SEARCH_CONSTRAINED_NOT_VERIFIED")
+  assert.equal(result.candidates[0].qualification.seniority.result, "INSUFFICIENT_EVIDENCE")
+  assert.equal(result.metrics.previewCountConsidered, 4)
+  assert.equal(result.metrics.seniorityMismatches, 3)
+  assert.equal(result.metrics.seniorityInsufficientEvidence, 1)
+  assert.equal(result.metrics.confirmedFilterMatches, 0)
+  assert.equal(result.metrics.reviewBeforeCollect, 1)
+  assert.equal(result.metrics.collectExecuted, 0)
+  assert.equal(result.selectedCandidates[0].profile.providerPersonId, "rajat")
+})
+
+test("legacy upper-bound search history is not upgraded to exact-year query evidence", () => {
+  const requested = filters({ company: "Google", graduationYear: "2011" })
+  assert.equal(execution.persistedSearchConstraintEvidence(requested, [{ operation: "Education affiliation search", status: "success", requestSummary: "Maximum requested: 1" }]), undefined)
+  assert.equal(execution.qualifyPreviewCandidate({ ...preview("legacy", "Vice President"), currentCompany: "Google" }, requested).graduationYear.result, "PROVIDER_SIDE_NARROWING_ONLY")
+})
+
 test("legacy single seniority remains exact while All levels imposes no restriction", () => {
   const legacy = filters({ seniority: "VP" })
   assert.equal(execution.qualifyPreviewCandidate(preview("vp", "Vice President"), legacy).seniority.result, "MATCH")

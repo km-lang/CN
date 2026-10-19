@@ -50,6 +50,13 @@ test("filter and ranking pipelines run before directory and outreach pagination"
   assert.match(page, /const visibleOutreach = outreachRows/)
 })
 
+test("Directory API preserves defaults when pagination or sort query parameters are omitted", () => {
+  assert.match(directoryRoute, /const query: Record<string, unknown> = \{ \.\.\.filters \}/)
+  assert.match(directoryRoute, /for \(const key of \["page", "pageSize", "sort"\] as const\)/)
+  assert.match(directoryRoute, /if \(value !== null\) query\[key\] = value/)
+  assert.doesNotMatch(directoryRoute, /sort: url\.searchParams\.get\("sort"\)/)
+})
+
 test("filter and page-size changes reset to page one", () => {
   assert.match(component, /activeResetKey !== resetKey/)
   assert.match(component, /setPage\(1\)/)

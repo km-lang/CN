@@ -1,12 +1,14 @@
-import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
+import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled, localCoresignalSearchEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
 
 export type ProviderName = "coresignal" | "lusha"
 export type ProviderMode = "mock" | "live"
 
-type ProviderRuntimeEnvironment = {
+export type ProviderRuntimeEnvironment = {
   CORESIGNAL_API_KEY?: string
   CORESIGNAL_LIVE_ENABLED?: string
   CORESIGNAL_SEARCH_ENABLED?: string
+  CORESIGNAL_ES_DSL_PREVIEW_ENABLED?: string
+  CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT?: string
   CORESIGNAL_COLLECT_ENABLED?: string
   CORESIGNAL_COLLECT_ENTITLEMENT?: string
   CORESIGNAL_COLLECT_MOCK_TRANSPORT?: string
@@ -14,6 +16,7 @@ type ProviderRuntimeEnvironment = {
   CORESIGNAL_LIVE_REFRESH_MAX_PROFILES?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_HOST?: string
+  LOCAL_CORESIGNAL_SEARCH_ENABLED?: string
   LOCAL_DEV_AUTH_ENABLED?: string
   NODE_ENV?: string
   LUSHA_API_KEY?: string
@@ -38,8 +41,7 @@ function enabled(value?: string) {
   return value?.trim().toLowerCase() === "true"
 }
 
-export function providerMode(provider: ProviderName): ProviderMode {
-  const values = runtimeEnvironment()
+export function providerMode(provider: ProviderName, values: ProviderRuntimeEnvironment = runtimeEnvironment()): ProviderMode {
   if (provider === "coresignal") {
     if (localDevelopmentAuthEnabled(values)) {
       return localCoresignalLiveDemoEnabled(values) ? "live" : "mock"
@@ -49,8 +51,7 @@ export function providerMode(provider: ProviderName): ProviderMode {
   return enabled(values.LUSHA_LIVE_ENABLED) ? "live" : "mock"
 }
 
-export function providerConfigured(provider: ProviderName) {
-  const values = runtimeEnvironment()
+export function providerConfigured(provider: ProviderName, values: ProviderRuntimeEnvironment = runtimeEnvironment()) {
   if (provider === "coresignal") return Boolean(values.CORESIGNAL_API_KEY?.trim())
   return Boolean(values.LUSHA_API_KEY?.trim())
 }
@@ -75,9 +76,22 @@ export function coresignalLiveRefreshMaximum() {
   return boundedInteger(runtimeEnvironment().CORESIGNAL_LIVE_REFRESH_MAX_PROFILES, 1, 1)
 }
 
-export function coresignalRegularSearchEnabled() {
-  const values = runtimeEnvironment()
-  return providerMode("coresignal") === "live" && enabled(values.CORESIGNAL_SEARCH_ENABLED)
+export function coresignalRegularSearchEnabled(values: ProviderRuntimeEnvironment = runtimeEnvironment()) {
+  if (localDevelopmentAuthEnabled(values)) return localCoresignalSearchEnabled(values)
+  return providerMode("coresignal", values) === "live" && enabled(values.CORESIGNAL_SEARCH_ENABLED)
+}
+
+export type CoresignalPreviewEntitlement = "unknown" | "confirmed" | "not_entitled"
+
+export function coresignalExactYearPreviewEntitlement(values: ProviderRuntimeEnvironment = runtimeEnvironment()): CoresignalPreviewEntitlement {
+  const configured = values.CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT?.trim().toLowerCase()
+  return configured === "confirmed" ? "confirmed" : configured === "not_entitled" ? "not_entitled" : "unknown"
+}
+
+export function coresignalExactYearPreviewEnabled(values: ProviderRuntimeEnvironment = runtimeEnvironment()) {
+  return coresignalRegularSearchEnabled(values)
+    && enabled(values.CORESIGNAL_ES_DSL_PREVIEW_ENABLED)
+    && coresignalExactYearPreviewEntitlement(values) === "confirmed"
 }
 
 export type CoresignalCollectEntitlement = "unknown" | "confirmed" | "not_entitled"

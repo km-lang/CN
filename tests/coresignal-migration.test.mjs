@@ -93,7 +93,8 @@ test("multiple mock search results are bounded by the application result limit",
   const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: [], alumniStatus: "All graduation statuses" }
   const result = await adapter.coresignalProvider.searchCandidates(filters, [{ id: 15, name: "Sahil Bansal", batch: 2015, company: "Google", title: "Product Leader", function: "Product", seniority: "Director", location: "Bengaluru", linkedinUrl: "https://linkedin.com/in/sahilb" }], 3)
   assert.equal(result.profiles.length, 3)
-  assert.equal(result.usage.applicationUnits, 2)
+  assert.equal(result.usage.applicationUnits, 0)
+  assert.equal(result.execution.metrics.collectExecuted, 0)
   assert.equal(result.execution.metrics.collectSkippedKnown, 1)
   assert.equal(result.usage.providerReportedUsage, null)
   assert.equal(limits.validateDiscoveryCount(4, 3, 20).ok, false)
@@ -125,7 +126,7 @@ test("documented Base Employee fields retain profile URL and scalar IIML educati
   assert.equal(mapped.educationEndDate, "2009")
   assert.equal(mapped.graduationYear, 2009)
   assert.equal(mapped.affiliationStatus, "Confirmed degree alumnus")
-  assert.equal(mapped.normalizedProgramme, "PGP")
+  assert.equal(mapped.normalizedProgramme, "PGDM")
   assert.equal(mapped.alumniStatus, "Past alumnus")
   assert.equal(mapped.eligibleForAddition, true)
 })
@@ -146,6 +147,44 @@ test("live provider query applies explicit role/function, company, and location 
   assert.match(body.experience_title, /growth/)
   assert.doesNotMatch(body.experience_title, /manager/)
   assert.equal(body.location, "Bengaluru")
+})
+
+test("optional provider filters are emitted only when selected and combine without hidden constraints", () => {
+  const base = {
+    ...search.defaultDiscoveryFilters(),
+    alumniStatus: "All graduation statuses",
+    discoveryProgrammes: [],
+    company: "",
+    role: "",
+    function: "All functions",
+    seniorities: [],
+    seniority: "All levels",
+    location: "",
+    graduationYear: "",
+  }
+  const institutionOnly = client.coresignalSearchContract(base).body
+  for (const key of ["education_date_to", "education_program_name", "experience_company_name", "experience_title", "location"]) {
+    assert.equal(key in institutionOnly, false, `${key} must be omitted when its UI dimension is omitted`)
+  }
+
+  const combinations = [
+    [{ company: "Google" }, ["experience_company_name"]],
+    [{ role: "Vice President" }, ["experience_title"]],
+    [{ function: "Finance" }, ["experience_title"]],
+    [{ location: "Mumbai" }, ["location"]],
+    [{ graduationYear: "2011" }, ["education_date_to"]],
+    [{ discoveryProgrammes: ["PGP"] }, ["education_program_name"]],
+    [{ company: "Google", role: "Vice President", function: "Finance", location: "Mumbai", graduationYear: "2011", discoveryProgrammes: ["PGP"] }, ["experience_company_name", "experience_title", "location", "education_date_to", "education_program_name"]],
+  ]
+  for (const [overrides, expected] of combinations) {
+    const body = client.coresignalSearchContract({ ...base, ...overrides }).body
+    for (const key of expected) assert.equal(key in body, true, `${key} missing for ${JSON.stringify(overrides)}`)
+  }
+})
+
+test("multi-selected programmes retain OR semantics through local qualification instead of an invented provider predicate", () => {
+  const body = client.coresignalSearchContract({ ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["PGP", "ABM"] }).body
+  assert.equal("education_program_name" in body, false)
 })
 
 test("seniority alone never becomes a provider experience-title query", () => {
@@ -225,7 +264,7 @@ test("single-programme selection reaches the provider query and is re-enforced a
     const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["ABM"], alumniStatus: "Past alumni only" }
     const result = await adapter.coresignalProvider.searchCandidates(filters, [], 3)
     assert.match(bodies[0].education_program_name, /ABM/)
-    assert.equal(result.profiles.length, 3)
+    assert.equal(result.profiles.length, 1)
     const abm = result.profiles.find(profile => profile.providerPersonId === "abm")
     assert.equal(abm.normalizedProgramme, "ABM")
     assert.equal(abm.eligibleForAddition, true)
@@ -239,10 +278,13 @@ test("single-programme selection reaches the provider query and is re-enforced a
 })
 
 test("programme normalization is explicit and keeps executive or unknown study review-only", () => {
-  for (const value of ["PGP", "Post Graduate Programme", "PGDM", "MBA", "Master of Business Administration"]) assert.equal(qualification.normalizeCoresignalProgramme(value).code, "PGP")
+  for (const value of ["PGP", "Post Graduate Programme", "Post Graduate Programme in Management"]) assert.equal(qualification.normalizeCoresignalProgramme(value).code, "PGP")
+  for (const value of ["MBA", "Master of Business Administration"]) assert.deepEqual(qualification.normalizeCoresignalProgramme(value), { code: "MBA", status: "Programme matched" })
+  assert.deepEqual(qualification.normalizeCoresignalProgramme("PGDM"), { code: "PGDM", status: "Programme matched" })
   for (const value of ["ABM", "PGP-ABM", "Post Graduate Programme in Agribusiness Management", "MBA in Agribusiness Management"]) assert.equal(qualification.normalizeCoresignalProgramme(value).code, "ABM")
   for (const value of ["SM", "PGP-SM", "Post Graduate Programme in Sustainable Management", "MBA in Sustainable Management"]) assert.equal(qualification.normalizeCoresignalProgramme(value).code, "SM")
-  for (const value of ["Executive MBA", "General Management Programme for Executives", "MBA for Working Managers"]) {
+  assert.deepEqual(qualification.normalizeCoresignalProgramme("Executive MBA"), { code: "IPMX", status: "Executive/non-regular programme" })
+  for (const value of ["General Management Programme for Executives", "MBA for Working Managers"]) {
     const mapped = qualification.normalizeCoresignalProgramme(value)
     assert.equal(mapped.code, null)
     assert.equal(mapped.status, "Executive/non-regular programme")
@@ -268,16 +310,16 @@ test("Yash-type future IIML education is a current student and cannot be added",
 
 test("Kushal-type executive study never normalizes to regular PGP", () => {
   const mapped = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "Executive MBA", date_to: "2024" })] }), 0, { now: new Date("2026-09-27T12:00:00Z"), selectedProgrammes: ["PGP"] })
-  assert.equal(mapped.normalizedProgramme, "")
+  assert.equal(mapped.normalizedProgramme, "IPMX")
   assert.equal(mapped.programmeStatus, "Executive/non-regular programme")
   assert.equal(mapped.eligibleForAddition, false)
 })
 
-test("Teginder-type completed PGDM maps to PGP and remains addable", () => {
+test("generic PGDM remains programme-ambiguous and is not automatically addable as PGP", () => {
   const mapped = adapter.mapCoresignalProfile(employee({ education: [iiml({ degree_name: "PGDM", date_from: "2007", date_to: "2009" })] }), 0, { now: new Date("2026-09-27T12:00:00Z"), selectedProgrammes: ["PGP"] })
-  assert.equal(mapped.normalizedProgramme, "PGP")
+  assert.equal(mapped.normalizedProgramme, "PGDM")
   assert.equal(mapped.alumniStatus, "Past alumnus")
-  assert.equal(mapped.eligibleForAddition, true)
+  assert.equal(mapped.eligibleForAddition, false)
 })
 
 test("externally discovered graduation evidence persists and renders consistently", () => {
@@ -417,7 +459,7 @@ test("zero results and provider failures remain explicit", async () => {
 test("review-before-add, Keep Existing, and selected-field apply remain enforced", () => {
   assert.match(discoveryRoute, /affiliationStatus !== "Confirmed degree alumnus"/)
   assert.match(discoveryRoute, /qualificationForResult[\s\S]*eligibleForAddition/)
-  assert.match(discoveryRoute, /Only provenance-consistent past alumni with a confirmed selected programme/)
+  assert.match(discoveryRoute, /Approval requires a pending result, independently supported search criteria, a verified LinkedIn profile, and a new stable identity/)
   assert.match(discoveryRoute, /action === "qualify"/)
   assert.match(enrichmentRoute, /status: applied\.length \? "Applied" : "Reviewed — kept existing"/)
   assert.match(page, /Apply Selected Updates/)

@@ -72,8 +72,16 @@ export default defineConfig(async ({ command, mode }) => {
         AUTH_SESSION_SECRET: localEnvironment.AUTH_SESSION_SECRET?.trim() || "local-development-only-session-signing-key",
         LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: localCoresignalDemo ? "true" : "false",
         LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
+        // Use a launch-scoped binding so the intentionally fail-closed
+        // CORESIGNAL_SEARCH_ENABLED value in .env.local cannot shadow this
+        // one-process manual-live opt-in inside the Cloudflare dev runtime.
+        LOCAL_CORESIGNAL_SEARCH_ENABLED: localCoresignalDemo && localEnvironment.CORESIGNAL_SEARCH_ENABLED === "true" ? "true" : "false",
         CORESIGNAL_LIVE_ENABLED: localCoresignalDemo ? "true" : "false",
         CORESIGNAL_SEARCH_ENABLED: localCoresignalDemo && localEnvironment.CORESIGNAL_SEARCH_ENABLED === "true" ? "true" : "false",
+        CORESIGNAL_ES_DSL_PREVIEW_ENABLED: localCoresignalDemo && localEnvironment.CORESIGNAL_ES_DSL_PREVIEW_ENABLED === "true" ? "true" : "false",
+        CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT: localEnvironment.CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT === "confirmed" || localEnvironment.CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT === "not_entitled"
+          ? localEnvironment.CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT
+          : "unknown",
         CORESIGNAL_COLLECT_ENABLED: (localCoresignalDemo || localCollectMock) && localEnvironment.CORESIGNAL_COLLECT_ENABLED === "true" ? "true" : "false",
         CORESIGNAL_COLLECT_ENTITLEMENT: localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT === "confirmed" || localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT === "not_entitled"
           ? localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT

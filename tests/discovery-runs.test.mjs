@@ -5,6 +5,7 @@ import test from "node:test"
 const {
   discoveryRunSummary,
   isActionableDiscoveryReview,
+  persistedDiscoveryExecutionSummary,
   previousDiscoveryRuns,
   recordedRequestedCount,
   resultProviderIntegrity,
@@ -13,6 +14,7 @@ const {
 
 const discoveryRoute = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
 
 function search(overrides = {}) {
   return {
@@ -88,6 +90,26 @@ test("ordinary pending results remain actionable", () => {
   assert.equal(isActionableDiscoveryReview(result({ reviewNote: "REVIEW_BEFORE_COLLECT: Identity evidence requires review." })), true)
 })
 
+test("persisted execution metrics do not infer missing qualification categories", () => {
+  const summary = persistedDiscoveryExecutionSummary([{ id: 17, applicationUnits: 1, providerReportedCredits: null, responseSummary: '4 exact-year candidates returned · Selective execution {"previewCountReturned":4,"previewCountConsidered":4,"seniorityMismatches":3,"collectExecuted":0,"collectSkippedKnown":0,"collectSkippedFilter":3,"collectSkippedLimit":0,"previouslyRejected":0,"potentialCollectionsAvoided":4}' }])
+  assert.equal(summary.previewCountReturned, 4)
+  assert.equal(summary.previewCountConsidered, 4)
+  assert.equal(summary.seniorityMismatches, 3)
+  assert.equal(summary.seniorityInsufficientEvidence, 0)
+  assert.equal(summary.reviewBeforeCollect, 0)
+  assert.equal(summary.confirmedFilterMatches, 0)
+})
+
+test("manually confirmed Preview pages accumulate qualification metrics", () => {
+  const first = { id: 1, applicationUnits: 1, providerReportedCredits: null, responseSummary: `page 1 · Selective execution ${JSON.stringify({ previewCountReturned: 20, previewCountConsidered: 20, companyMismatches: 4, confirmedFilterMatches: 3 })}` }
+  const second = { id: 2, applicationUnits: 1, providerReportedCredits: null, responseSummary: `page 2 · Selective execution ${JSON.stringify({ previewCountReturned: 20, previewCountConsidered: 20, companyMismatches: 2, confirmedFilterMatches: 5 })}` }
+  const summary = persistedDiscoveryExecutionSummary([first, second])
+  assert.equal(summary.previewCountReturned, 40)
+  assert.equal(summary.previewCountConsidered, 40)
+  assert.equal(summary.companyMismatches, 6)
+  assert.equal(summary.confirmedFilterMatches, 8)
+})
+
 test("historical requested count is unavailable when it was not recorded", () => {
   assert.equal(recordedRequestedCount(0), null)
   assert.equal(recordedRequestedCount(-1), null)
@@ -104,6 +126,15 @@ test("previous runs remain separate and retain provider identity", () => {
   assert.deepEqual(previous.map(item => [item.searchId, item.provider]), [[41, "pdl"], [40, "pdl"]])
 })
 
+test("the complete persisted history includes the active run and is newest first", () => {
+  const history = previousDiscoveryRuns(
+    [search({ id: 7 }), search({ id: 9 }), search({ id: 8, mode: "mock" })],
+    [result({ searchId: 9 }), result({ searchId: 8 })],
+    null,
+  )
+  assert.deepEqual(history.map(item => [item.searchId, item.mode]), [[9, "live"], [8, "mock"], [7, "live"]])
+})
+
 test("result provenance distinguishes consistent Coresignal and historical PDL data", () => {
   assert.equal(resultProviderIntegrity("coresignal", "coresignal"), "consistent")
   assert.equal(resultProviderIntegrity("PDL", "pdl"), "consistent")
@@ -116,6 +147,25 @@ test("reopening stored results is a GET-only operation scoped by searchId", () =
   assert.match(page, /No provider call was made and 0 credits were used/)
 })
 
+test("persisted discovery history loads independently on initial page load", () => {
+  assert.match(discoveryRoute, /const history = previousDiscoveryRuns\(recentSearches, historyResults, null\)/)
+  assert.match(discoveryRoute, /searches: recentSearches, history, previousSearches/)
+  assert.match(page, /setDiscoveryRunHistory\(data\.history \?\? \[\]\)/)
+  assert.match(page, /Previous discovery runs/)
+  assert.match(page, /Loading saved discovery runs/)
+  assert.match(page, /No saved discovery runs yet/)
+  assert.match(page, /Retry history/)
+  assert.ok(page.indexOf('id="discovery-history-heading"') < page.indexOf('(discoveryState !== "idle"'))
+})
+
+test("opening history preserves active search inputs and uses only the stored GET path", () => {
+  const reopen = page.match(/async function reviewPendingDiscoveryResults[\s\S]*?async function runDiscovery/)?.[0] ?? ""
+  assert.match(reopen, /setLastDiscoveryFilters\(data\.filters \?\? null\)/)
+  assert.match(reopen, /setDiscoveryRunHistory\(data\.history/)
+  assert.doesNotMatch(reopen, /setDiscoveryFilters/)
+  assert.doesNotMatch(reopen, /method:\s*"POST"/)
+})
+
 test("the active run renders its stored filters instead of the current selector state", () => {
   assert.match(discoveryRoute, /storedDiscoveryFilters\(activeSearch\.filtersJson\)/)
   assert.match(page, /setLastDiscoveryFilters\(data\.filters \?\? null\)/)
@@ -126,6 +176,8 @@ test("provider history and result rows are scoped to the active search", () => {
   assert.match(discoveryRoute, /providerResponseHistory\.searchId, activeSearch\.id/)
   assert.match(discoveryRoute, /historyResults\.filter\(result => result\.searchId === activeSearch\.id\)/)
   assert.match(discoveryRoute, /presentResult\(result, filters, new Date\(\), activeSearch\)/)
+  assert.match(discoveryRoute, /persistedSearchConstraintEvidence\(filters, activeProviderHistoryRows\)/)
+  assert.match(discoveryRoute, /persistedDiscoveryExecutionSummary\(activeProviderHistoryRows\)/)
 })
 
 test("provider mismatches are visible and block review actions", () => {
@@ -147,11 +199,53 @@ test("discovery labels distinguish identity-new, qualified-new, stored history, 
   assert.match(page, /actionable review candidate/)
   assert.match(page, /Stored history — filter mismatch/)
   assert.match(page, /status === "Needs review" \? "Filter mismatch"/)
-  assert.match(page, /Evidence: \{result\.qualification\.graduationYear\.evidence\}/)
+  assert.match(page, /Provider query evidence: \{result\.qualification\.graduationYear\.evidence\}/)
+  assert.match(page, /Underlying education record was not included in Preview/)
+  assert.match(page, /confirmed filter-qualified candidates/)
 })
 
 test("review operations resolve the owning search before changing a result", () => {
   assert.match(discoveryRoute, /externalDiscoverySearches\.id, result\.searchId/)
   assert.match(discoveryRoute, /resultProviderIntegrity\(search\.provider, result\.provider\)/)
-  assert.match(discoveryRoute, /Only provenance-consistent past alumni/)
+  assert.match(discoveryRoute, /Approval requires a pending result, independently supported search criteria, a verified LinkedIn profile, and a new stable identity/)
+})
+
+test("professional-profile review uses a viewport-bounded shell with an independent evidence scroller", () => {
+  assert.match(page, /className="comparison-dialog-body" tabIndex=\{0\} aria-label="Professional profile comparison evidence"/)
+  assert.match(page, /className="comparison-dialog-footer comparison-footer"/)
+  assert.match(styles, /\.comparison-dialog \{[^}]*max-height: calc\(100dvh - 24px\);[^}]*display: flex;[^}]*flex-direction: column;[^}]*overflow: hidden;/s)
+  assert.match(styles, /\.comparison-dialog-body \{[^}]*min-height: 0;[^}]*overflow-x: hidden;[^}]*overflow-y: auto;/s)
+  assert.match(styles, /\.comparison-dialog-footer \{[^}]*flex: none;[^}]*border-top:/s)
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.comparison-dialog \{[^}]*max-height: calc\(100dvh - max\(1rem, env\(safe-area-inset-top\) \+ env\(safe-area-inset-bottom\)\)\);[^}]*overflow: hidden;/)
+  assert.match(styles, /\.comparison-dialog-footer \{[^}]*flex-direction: column;[^}]*env\(safe-area-inset-bottom\)/s)
+})
+
+test("professional-profile review keeps its controls reachable and restores focus to its exact trigger", () => {
+  assert.match(page, /comparisonTriggerRef = useRef<HTMLButtonElement \| null>\(null\)/)
+  assert.match(page, /comparisonTriggerRef\.current = event\.currentTarget; openComparison\(result\)/)
+  assert.match(page, /onCloseAutoFocus=\{event => \{ event\.preventDefault\(\); comparisonTriggerRef\.current\?\.focus\(\) \}\}/)
+  assert.match(page, />Ignore profile<\/Button>/)
+  assert.match(page, />Keep Pending Review<\/Button>/)
+})
+
+test("historical review retains exact-year, absent-raw-evidence, and insufficient-seniority disclosures", () => {
+  for (const evidence of [
+    "Candidate summary",
+    "Education evidence",
+    "Employment and seniority evidence",
+    "Remaining details",
+    "IIM Lucknow — Exact provider query match",
+    "Underlying education evidence was not included in Preview; independent verification remains pending.",
+    "Not returned / not provider-verified",
+    "Employer identity requires verification.",
+    "Selected seniority qualification",
+    "Provider person ID",
+  ]) assert.ok(page.includes(evidence), evidence)
+})
+
+test("opening or closing the review modal has no provider execution path", () => {
+  const openBlock = page.slice(page.indexOf("function openComparison"), page.indexOf("async function saveCandidateEvidence"))
+  const dialogBlock = page.slice(page.indexOf('<Dialog open={Boolean(comparisonResult)}'), page.indexOf('<Dialog open={directoryExportOpen}'))
+  assert.doesNotMatch(openBlock, /fetch\(|runDiscovery|runProfileRefresh|executeCollectOnly/)
+  assert.doesNotMatch(dialogBlock, /executeCollectOnly|runProfileRefresh|discoverMoreAlumni/)
 })

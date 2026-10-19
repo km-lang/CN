@@ -72,21 +72,23 @@ test("Directory copy separates internal filtering from explicit external discove
 
 test("external discovery has independent multi-programme and past-alumni controls", () => {
   const defaults = search.defaultDiscoveryFilters()
-  assert.deepEqual(defaults.discoveryProgrammes, ["PGP", "ABM", "SM"])
+  assert.deepEqual(defaults.discoveryProgrammes, [])
   assert.equal(defaults.alumniStatus, "Past alumni only")
   assert.match(page, /External discovery alumni status/)
   assert.match(page, /programme-multiselect-trigger/)
   assert.match(page, /PopoverContent className="programme-multiselect-content"/)
-  assert.match(page, /activeProgrammeChoices\.map/)
+  assert.match(page, /DISCOVERY_PROGRAMME_OPTIONS\.map/)
   assert.match(page, /All graduation statuses \(review only\)/)
-  assert.match(page, /Select at least one programme for external discovery/)
+  assert.match(page, /Pending-verification candidates are saved separately/)
+  assert.doesNotMatch(page, /disabled=\{discovering \|\| !discoveryFilters\.discoveryProgrammes\.length/)
+  assert.doesNotMatch(page, /disabled=\{discovering \|\| !pendingDiscoveryFilters \|\| !pendingDiscoveryFilters\.discoveryProgrammes\.length/)
 })
 
 test("directory and external programme controls are labelled as independent scopes", () => {
   assert.match(page, />Directory programme</)
   assert.match(page, /Applies only to existing Corporate Network records\. It does not affect external provider discovery\./)
-  assert.match(page, />IIML programmes to discover</)
-  assert.match(page, /Used only for external Coresignal discovery\. Directory filters above do not affect provider searches\./)
+  assert.match(page, />Programme \/ degree labels</)
+  assert.match(page, /Multiple labels use OR inside the same IIML education entry/)
   assert.match(page, /value=\{filters\.programme\} onValueChange=\{value => updateDirectoryFilter\("programme", value\)\}/)
   assert.match(page, /checked=\{discoveryFilters\.discoveryProgrammes\.includes\(option\.value\)\}/)
   assert.match(page, /pendingDiscoveryFilters\?\.discoveryProgrammes\.join\(", "\)/)
@@ -122,7 +124,7 @@ test("internal company, role, graduation year and programme changes cannot alter
 })
 
 test("External Discovery owns every provider-search control", () => {
-  for (const label of ["Alumni status", "IIML programmes to discover", "Company", "Role / designation", "Function", "Seniority", "Location", "Graduation year", "Results to retrieve"]) assert.match(page, new RegExp(`>${label}<`))
+  for (const label of ["Alumni status", "Programme / degree labels", "Company", "Role / designation", "Function", "Seniority", "Location", "Graduation year", "Qualified candidates requested"]) assert.match(page, new RegExp(`>${label}<`))
   assert.match(page, /value=\{discoveryFilters\.company\}/)
   assert.match(page, /value=\{discoveryFilters\.role\}/)
   assert.match(page, /value=\{discoveryFilters\.graduationYear\}/)
@@ -153,10 +155,54 @@ test("ID-only Search preparation clearly confirms institution, year, and verifie
   assert.match(page, /Boolean\(discoveryFilters\.graduationYear && !\/\^\\d\{4\}\$\/\.test\(discoveryFilters\.graduationYear\)\)/)
 })
 
-test("Search confirmation remains usable at 390px and 360px breakpoints", () => {
-  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\[data-slot="dialog-content"\] \{ max-width: calc\(100vw - 1rem\) !important; max-height: calc\(100dvh - 1rem\); overflow-y: auto; \}/)
-  assert.match(styles, /@media \(max-width: 650px\)[\s\S]*?\.refresh-confirm-summary \{ grid-template-columns: 1fr; \}/)
-  assert.match(styles, /@media \(max-width: 650px\)[\s\S]*?\.refresh-confirm-dialog[\s\S]*?\{ padding: 1rem; \}/)
+test("live Search confirmation has a viewport-bound shell, scrollable body, and persistent footer", () => {
+  assert.match(page, /className="refresh-confirm-dialog discovery-confirm-dialog"/)
+  assert.match(page, /className="discovery-confirm-header"/)
+  assert.match(page, /className="discovery-confirm-body" tabIndex=\{0\} aria-label="Live Coresignal search details"/)
+  assert.match(page, /className="discovery-confirm-footer"/)
+  assert.match(page, /onCloseAutoFocus=\{event => \{ event\.preventDefault\(\); discoveryConfirmationTriggerRef\.current\?\.focus\(\) \}\}/)
+  assert.match(styles, /\.discovery-confirm-dialog \{[^}]*max-height: calc\(100dvh - 2rem\);[^}]*grid-template-rows: auto minmax\(0, 1fr\) auto;[^}]*overflow: hidden;/s)
+  assert.match(styles, /\.discovery-confirm-body \{[^}]*min-height: 0;[^}]*overflow-x: hidden;[^}]*overflow-y: auto;/s)
+  assert.match(styles, /\.discovery-confirm-footer \{[^}]*flex: none;[^}]*border-top:/s)
+})
+
+test("live Search confirmation remains responsive without horizontal overflow", () => {
+  assert.match(styles, /\.discovery-confirm-key-summary \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/s)
+  assert.match(styles, /\.discovery-confirm-detail-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(styles, /overflow-wrap: anywhere/)
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.discovery-confirm-dialog \{[^}]*max-height: calc\(100dvh - max\(1rem, env\(safe-area-inset-top\) \+ env\(safe-area-inset-bottom\)\)\);[^}]*overflow: hidden;/)
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.discovery-confirm-key-summary, \.discovery-confirm-detail-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/)
+  assert.match(styles, /@media \(max-width: 650px\)[\s\S]*?\.discovery-confirm-key-summary, \.discovery-confirm-detail-grid \{ grid-template-columns: 1fr; \}/)
+  assert.match(styles, /@media \(max-width: 650px\)[\s\S]*?\.discovery-confirm-footer \{[^}]*flex-direction: column-reverse;/)
+  assert.match(styles, /@media \(max-width: 650px\)[\s\S]*?\.discovery-confirm-footer button \{ width: 100%; white-space: normal; \}/)
+})
+
+test("live Search confirmation retains criteria, limitations, billing, and provider safeguards", () => {
+  for (const copy of [
+    "Search summary",
+    "Provider search conditions",
+    "Verification limitations",
+    "Usage and safety controls",
+    "Provider query semantics",
+    "Current-company semantics",
+    "Company identity limitation",
+    "Remaining unverified conditions",
+    "Maximum provider calls",
+    "Automatic pagination / retries",
+    "Maximum application usage",
+    "exact provider cost remains unresolved",
+    "Application usage and provider-account usage remain separate",
+  ]) assert.match(page, new RegExp(copy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+})
+
+test("opening and cancelling live Search never bind the provider request; confirm remains explicit", () => {
+  const confirmation = page.match(/<Dialog open=\{Boolean\(pendingDiscoveryFilters\)\}[\s\S]*?<\/Dialog>/)?.[0] ?? ""
+  assert.match(confirmation, /onOpenChange=\{open => \{ if \(!open\) setPendingDiscoveryFilters\(null\) \}\}/)
+  assert.match(confirmation, /onClick=\{\(\) => setPendingDiscoveryFilters\(null\)\}>Cancel — No Provider Call/)
+  assert.match(confirmation, /onClick=\{\(\) => pendingDiscoveryFilters && void runDiscovery\(pendingDiscoveryFilters\)\}/)
+  assert.match(page, /onClick=\{event => \{ discoveryConfirmationTriggerRef\.current = event\.currentTarget; discoverMoreAlumni\(\) \}\}/)
+  assert.equal((confirmation.match(/runDiscovery\(pendingDiscoveryFilters\)/g) ?? []).length, 1)
+  assert.doesNotMatch(confirmation.match(/<DialogContent[\s\S]*?<DialogFooter/)?.[0] ?? "", /runDiscovery\(/)
 })
 
 test("active Programme Reference Data supplies the scalable discovery multi-select", () => {
@@ -169,11 +215,11 @@ test("active Programme Reference Data supplies the scalable discovery multi-sele
   assert.equal(programmes.programmeSelectionSummary(["PGP"]), "PGP")
   assert.equal(programmes.programmeSelectionSummary(["PGP", "ABM"]), "PGP, ABM")
   assert.equal(programmes.programmeSelectionSummary(["PGP", "ABM", "SM", "IPMX"]), "4 programmes selected")
-  assert.match(page, /activeProgrammeChoices\.map/)
-  assert.match(page, /current\.discoveryProgrammes\.filter\(code => activeCodes\.has\(code\)\)/)
+  assert.match(page, /DISCOVERY_PROGRAMME_OPTIONS\.map/)
+  assert.match(page, /Other exact provider label/)
 })
 
-test("Rajat acceptance filters produce the provider request and confirmation model without executing it", () => {
+test("Rajat acceptance filters produce the exact-year confirmation model without executing it", () => {
   const filters = { ...search.defaultDiscoveryFilters(), discoveryProgrammes: ["PGP"], company: "Innovaccer", graduationYear: "2024" }
   const contract = coresignal.coresignalSearchContract(filters, new Date("2026-09-27T12:00:00Z"))
   assert.equal(contract.body.education_institution_professional_network_url, coresignal.CORESIGNAL_IIML_INSTITUTION_URL)
@@ -186,6 +232,16 @@ test("Rajat acceptance filters produce the provider request and confirmation mod
   assert.match(search.criteriaSummary(filters), /Company: Innovaccer/)
   assert.match(search.criteriaSummary(filters), /Graduation year: 2024/)
   for (const value of ["pendingDiscoveryFilters?.company", "pendingDiscoveryFilters?.graduationYear", "pendingDiscoveryFilters?.discoveryProgrammes.join", "discoveryMaximumApplicationUsage"]) assert.match(page, new RegExp(value.replace(/[?.]/g, match => `\\${match}`)))
+  assert.match(page, /Exact requested year/)
+  assert.match(page, /Same-row nested education · institution_id=25919228/)
+  assert.match(page, /AND date_to_year=/)
+  assert.match(page, /Verified provider company ID preferred; otherwise exact company_name\.exact=/)
+  assert.match(page, /Exact-name fallback does not establish a verified provider company ID/)
+  assert.match(page, /Maximum provider calls/)
+  assert.match(page, /1 Preview · 0 Collect/)
+  assert.match(page, /Automatic pagination \/ retries/)
+  assert.match(page, /exact provider cost remains unresolved/)
+  assert.match(page, /Degree award · identity · profile freshness/)
 })
 
 test("programme maintenance is additive, Admin-only, and code-stable", () => {

@@ -24,6 +24,11 @@ test("Overview renders distinct zero and actionable Professional Signals states"
   assert.match(fixture, /local-priya-promotion-signal/)
 })
 
+test("engagement route synchronization updates its callback ref after render", () => {
+  assert.doesNotMatch(page, /\}\s*\n\s*openEngagementRef\.current = openEngagement\s*\n\s*useEffect/)
+  assert.match(page, /useEffect\(\(\) => \{\s*openEngagementRef\.current = openEngagement\s*\}\)\s*\n\s*useEffect\(\(\) => \{\s*if \(!engagementEventId/s)
+})
+
 test("Overview birthday zero state is compact and reports ready-for-review work", () => {
   assert.match(page, /birthday-overview-empty/)
   assert.match(page, /reviewableBirthdaysNextWeek\.length} ready for review/)

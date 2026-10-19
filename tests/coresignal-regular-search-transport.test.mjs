@@ -290,6 +290,25 @@ test("a page larger than the authorized result bound is rejected before identity
 test("server gate is fail-closed and normal local development explicitly keeps Search off", async () => {
   delete process.env.CORESIGNAL_SEARCH_ENABLED
   assert.equal(providerRuntime.coresignalRegularSearchEnabled(), false)
+
+  const workerBinding = {
+    NODE_ENV: "development",
+    LOCAL_DEV_AUTH_ENABLED: "true",
+    LOCAL_DEV_AUTH_ROLE: "ADMIN",
+    LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: "true",
+    LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
+    LOCAL_CORESIGNAL_SEARCH_ENABLED: "true",
+    CORESIGNAL_LIVE_ENABLED: "true",
+    CORESIGNAL_SEARCH_ENABLED: "true",
+    CORESIGNAL_API_KEY: "worker-binding-secret",
+  }
+  assert.equal(providerRuntime.coresignalRegularSearchEnabled(workerBinding), true)
+  assert.equal(providerRuntime.providerConfigured("coresignal", workerBinding), true)
+  assert.equal(providerRuntime.coresignalRegularSearchEnabled({ ...workerBinding, CORESIGNAL_SEARCH_ENABLED: "false" }), true)
+  assert.equal(providerRuntime.coresignalRegularSearchEnabled({ ...workerBinding, LOCAL_CORESIGNAL_SEARCH_ENABLED: "false" }), false)
+  assert.equal(providerRuntime.coresignalRegularSearchEnabled({ ...workerBinding, LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "network.teamsynapse.app" }), false)
+  assert.equal(providerRuntime.coresignalRegularSearchEnabled({ ...workerBinding, LOCAL_DEV_AUTH_ROLE: "PCOM" }), false)
+  assert.equal(providerRuntime.coresignalRegularSearchEnabled({ ...workerBinding, NODE_ENV: "production", CORESIGNAL_SEARCH_ENABLED: "false" }), false)
   process.env.CORESIGNAL_SEARCH_ENABLED = "false"
   assert.equal(providerRuntime.coresignalRegularSearchEnabled(), false)
   process.env.CORESIGNAL_SEARCH_ENABLED = "true"
@@ -310,6 +329,10 @@ test("runtime and UI integration preserve canonical immutability and explicit op
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
   assert.doesNotMatch(orchestration, /\.insert\(|\.update\(|\.delete\(|attachCoresignalIdentity|fieldChangeHistory/)
   assert.match(route, /action === "regular_search"/)
+  assert.match(route, /import \{ env \} from "cloudflare:workers"/)
+  assert.match(route, /coresignalRegularSearchEnabled\(providerRuntimeEnvironment\)/)
+  assert.match(route, /providerConfigured\("coresignal", providerRuntimeEnvironment\)/)
+  assert.match(route, /searchEnabled: \(\) => coresignalRegularSearchEnabled\(providerRuntimeEnvironment\)/)
   assert.match(route, /operation: "Base Employee ES-DSL Search"/)
   assert.match(route, /institution_match=provider_institution_id/)
   assert.match(route, /provider_institution_id=\$\{CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID\}/)

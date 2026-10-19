@@ -4,6 +4,9 @@ type LocalDevelopmentEnvironment = {
   LOCAL_DEV_AUTH_ROLE?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED?: string
   LOCAL_CORESIGNAL_LIVE_DEMO_HOST?: string
+  LOCAL_CORESIGNAL_SEARCH_ENABLED?: string
+  CORESIGNAL_ES_DSL_PREVIEW_ENABLED?: string
+  CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT?: string
   CORESIGNAL_LIVE_ENABLED?: string
   CORESIGNAL_API_KEY?: string
   CORESIGNAL_COLLECT_ENABLED?: string
@@ -77,6 +80,14 @@ export function localCoresignalLiveDemoEnabled(
     && isLoopbackHost(values.LOCAL_CORESIGNAL_LIVE_DEMO_HOST)
     && values.CORESIGNAL_LIVE_ENABLED === "true"
     && Boolean(values.CORESIGNAL_API_KEY?.trim())
+}
+
+export function localCoresignalSearchEnabled(
+  values: LocalDevelopmentEnvironment = process.env,
+) {
+  return localCoresignalLiveDemoEnabled(values)
+    && values.LOCAL_DEV_AUTH_ROLE === "ADMIN"
+    && values.LOCAL_CORESIGNAL_SEARCH_ENABLED === "true"
 }
 
 export function localDevelopmentSecurityContext(

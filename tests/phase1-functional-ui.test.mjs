@@ -55,7 +55,7 @@ test("Directory LinkedIn filtering handles exact variants, partial identifiers, 
 })
 
 test("External Discovery makes result exposure visible without coupling render or changes to a provider call", () => {
-  assert.match(page, /Maximum results requested from this discovery operation/)
+  assert.match(page, /target for confirmed filter matches, not a promise of availability/)
   assert.match(page, /className="discovery-count-field"/)
   assert.match(styles, /\.discovery-count-field \[role="combobox"\]/)
   const block = page.match(/function discoveryCountControl[\s\S]*?\n  }/)?.[0] ?? ""

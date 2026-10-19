@@ -470,6 +470,39 @@ export const externalDiscoveryResults = sqliteTable("external_discovery_results"
   index("idx_external_result_match_status").on(table.matchStatus),
 ]);
 
+// A later review appends another record; provider data and earlier observations stay intact.
+export const externalDiscoveryCandidateEvidence = sqliteTable("external_discovery_candidate_evidence", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  searchId: integer("search_id").notNull().references(() => externalDiscoverySearches.id),
+  resultId: integer("result_id").notNull().references(() => externalDiscoveryResults.id),
+  provider: text("provider").notNull(),
+  providerPersonId: text("provider_person_id").notNull(),
+  sourceType: text("source_type").notNull(),
+  sourceUrl: text("source_url").notNull(),
+  sourceProvenance: text("source_provenance").notNull(),
+  profileUrl: text("profile_url").notNull().default(""),
+  observedInstitution: text("observed_institution").notNull().default(""),
+  educationStartYear: integer("education_start_year"),
+  educationEndYear: integer("education_end_year"),
+  graduationYear: integer("graduation_year"),
+  programme: text("programme").notNull().default(""),
+  currentCompany: text("current_company").notNull().default(""),
+  currentDesignation: text("current_designation").notNull().default(""),
+  seniority: text("seniority").notNull().default(""),
+  location: text("location").notNull().default(""),
+  decisionsJson: text("decisions_json").notNull(),
+  reviewerDecision: text("reviewer_decision").notNull(),
+  verificationReason: text("verification_reason").notNull(),
+  reviewerUserId: integer("reviewer_user_id").notNull().references(() => applicationUsers.id),
+  reviewerName: text("reviewer_name").notNull(),
+  requestKey: text("request_key").notNull(),
+  reviewedAt: text("reviewed_at").notNull(),
+}, (table) => [
+  index("idx_external_candidate_evidence_result").on(table.resultId, table.id),
+  uniqueIndex("idx_external_candidate_evidence_request").on(table.resultId, table.requestKey),
+  check("external_candidate_evidence_decision_check", sql`${table.reviewerDecision} in ('SUPPORTS', 'REJECTS', 'INSUFFICIENT')`),
+]);
+
 export const fieldChangeHistory = sqliteTable("field_change_history", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),

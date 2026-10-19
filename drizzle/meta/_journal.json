@@ -127,6 +127,13 @@
       "when": 1792298950804,
       "tag": "0017_bright_data_collection_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1792392713746,
+      "tag": "0018_boring_meltdown",
+      "breakpoints": true
     }
   ]
 }

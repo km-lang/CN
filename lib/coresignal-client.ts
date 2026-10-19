@@ -1,19 +1,30 @@
-import { discoveryExperienceTitleQuery, type DiscoveryFilters } from "@/lib/alumni-search"
+import { discoveryExperienceTitleQuery, selectedDiscoverySeniorities, type DiscoveryFilters } from "@/lib/alumni-search"
 import { providerSecret } from "@/lib/provider-runtime"
-import { coresignalProgrammeQuery, providerEducationDateTo } from "@/lib/discovery-qualification"
+import { coresignalProgrammeQuery, coresignalProgrammeTerms, providerEducationDateTo } from "@/lib/discovery-qualification"
 
 export const CORESIGNAL_API_BASE = "https://api.coresignal.com"
 export const CORESIGNAL_IIML_INSTITUTION_URL = "https://www.linkedin.com/school/indian-institute-of-management-lucknow"
 export const CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID = 25_919_228
 export const CORESIGNAL_SEARCH_PATH = "/cdapi/v2/employee_base/search/filter/preview"
 export const CORESIGNAL_ES_DSL_SEARCH_PATH = "/cdapi/v2/employee_base/search/es_dsl"
+export const CORESIGNAL_ES_DSL_PREVIEW_PATH = "/cdapi/v2/employee_base/search/es_dsl/preview"
 export const CORESIGNAL_COLLECT_PATH = "/cdapi/v2/employee_base/collect"
 export const CORESIGNAL_ES_DSL_DEFAULT_ITEMS_PER_PAGE = 1
 export const CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE = 1_000
+export const CORESIGNAL_ES_DSL_PREVIEW_MAX_RESULTS = 20
+export const CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES = 50
 
 export type CoresignalRegularSearchTransportResult = {
   body: unknown
   headers: Readonly<Record<"x-total-results" | "x-total-pages" | "x-next-page-after", string | null>>
+  providerCreditsRemaining: number | null
+  upstreamHttpStatus: number
+}
+
+export type CoresignalPreviewTransportResult = {
+  body: unknown
+  totalResults: number | null
+  page: number
   providerCreditsRemaining: number | null
   upstreamHttpStatus: number
 }
@@ -68,13 +79,13 @@ export function coresignalEmployeeEsDslGraduationYear(value: unknown): number | 
  * Provider-free contract for Base Employee ID discovery by the live-verified
  * IIM Lucknow institution ID, with an optional exact education end year.
  *
- * This deliberately does not support company, role, function, seniority,
- * programme, location, or deleted-record clauses. Their Base Employee ES
- * semantics have not all been established well enough to add them safely.
- * Collect remains authoritative for final education and employment evidence.
+ * The education row may also include validated education.program phrase
+ * alternatives. Company and title constraints are added by the Preview
+ * contract in a separate current, non-deleted experience row. Collect or
+ * human evidence remains authoritative for final qualification.
  */
 export function coresignalEmployeeEsDslSearchContract(
-  options: { graduationYear?: unknown; itemsPerPage?: number } = {},
+  options: { graduationYear?: unknown; itemsPerPage?: number; programmes?: readonly string[] } = {},
 ) {
   const graduationYear = coresignalEmployeeEsDslGraduationYear(options.graduationYear)
   const itemsPerPage = options.itemsPerPage ?? CORESIGNAL_ES_DSL_DEFAULT_ITEMS_PER_PAGE
@@ -84,6 +95,12 @@ export function coresignalEmployeeEsDslSearchContract(
   const educationFilters = [
     { term: { "education.institution_id": CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } },
     ...(graduationYear === undefined ? [] : [{ term: { "education.date_to_year": graduationYear } }]),
+    ...(coresignalProgrammeTerms(options.programmes ?? []).length ? [{
+      bool: {
+        minimum_should_match: 1,
+        should: coresignalProgrammeTerms(options.programmes ?? []).map(program => ({ match_phrase: { "education.program": program } })),
+      },
+    }] : []),
   ]
   return {
     searchMode: (graduationYear === undefined ? "INSTITUTION_ONLY" : "EXACT_GRADUATION_YEAR") as CoresignalEmployeeEsDslSearchMode,
@@ -113,6 +130,69 @@ export function coresignalEmployeeEsDslSearchContract(
   }
 }
 
+const CORESIGNAL_SENIORITY_TITLE_TERMS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "Analyst/Junior": ["analyst", "junior"],
+  "Associate/Consultant": ["associate", "consultant"],
+  Manager: ["manager"],
+  "Senior Manager": ["senior manager"],
+  GM: ["general manager"],
+  Director: ["director", "head of"],
+  VP: ["vice president"],
+  "EVP/SVP": ["executive vice president", "senior vice president"],
+  CXO: ["chief executive officer", "chief financial officer", "chief operating officer", "chief technology officer", "chief people officer", "managing director", "country head"],
+})
+
+export function coresignalSeniorityTitleTerms(filters: { seniorities?: readonly string[]; seniority?: string }) {
+  const rank = ["Analyst/Junior", "Associate/Consultant", "Manager", "Senior Manager", "GM", "Director", "VP", "EVP/SVP", "CXO"]
+  const levels = new Set<string>()
+  for (const selected of selectedDiscoverySeniorities({ seniorities: [...(filters.seniorities ?? [])], seniority: filters.seniority ?? "All levels" })) {
+    const base = selected.replace(/\+$/, "")
+    const start = rank.indexOf(base)
+    for (const level of selected.endsWith("+") && start >= 0 ? rank.slice(start) : [base]) levels.add(level)
+  }
+  return [...new Set([...levels].flatMap(level => CORESIGNAL_SENIORITY_TITLE_TERMS[level] ?? []))]
+}
+
+export function coresignalDiscoveryEsDslPreviewContract(options: {
+  graduationYear?: unknown
+  programmes?: readonly string[]
+  seniorities?: readonly string[]
+  seniority?: string
+  companyId?: unknown
+  companyName?: unknown
+  page?: number
+}) {
+  if (options.companyId !== undefined && options.companyName !== undefined) throw new Error("Coresignal Preview must use either a verified company ID or an exact company name, never both.")
+  const page = options.page ?? 1
+  if (!Number.isInteger(page) || page < 1 || page > CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES) throw new Error(`Coresignal Preview page must be between 1 and ${CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES}.`)
+  const graduationYear = coresignalEmployeeEsDslGraduationYear(options.graduationYear)
+  const base = coresignalEmployeeEsDslSearchContract({ graduationYear, programmes: options.programmes })
+  const companyId = options.companyId === undefined ? undefined : coresignalProviderCompanyId(options.companyId)
+  const companyName = options.companyName === undefined ? undefined : coresignalExactCompanyName(options.companyName)
+  const titleTerms = coresignalSeniorityTitleTerms({ seniorities: options.seniorities ?? [], seniority: options.seniority ?? "All levels" })
+  const experienceFilters = [
+    ...(companyId === undefined ? [] : [{ term: { "experience.company_id": companyId } }]),
+    ...(companyName === undefined ? [] : [{ term: { "experience.company_name.exact": companyName } }]),
+    ...(!titleTerms.length ? [] : [{ bool: { minimum_should_match: 1, should: titleTerms.map(title => ({ match_phrase: { "experience.title": title } })) } }]),
+    ...((companyId !== undefined || companyName !== undefined || titleTerms.length) ? [
+      { term: { "experience.is_current": 1 } },
+      { term: { "experience.deleted": 0 } },
+    ] : []),
+  ]
+  return {
+    searchMode: graduationYear === undefined ? "INSTITUTION_ONLY" as const : "EXACT_GRADUATION_YEAR" as const,
+    companyConstraintMode: companyId !== undefined ? "VERIFIED_ID" as const : companyName !== undefined ? "EXACT_NAME" as const : "NONE" as const,
+    method: "POST" as const,
+    path: CORESIGNAL_ES_DSL_PREVIEW_PATH,
+    query: { page },
+    body: { query: { bool: { filter: [
+      ...base.body.query.bool.filter,
+      ...(experienceFilters.length ? [{ nested: { path: "experience", query: { bool: { filter: experienceFilters } } } }] : []),
+    ] } } },
+    maximumResults: CORESIGNAL_ES_DSL_PREVIEW_MAX_RESULTS,
+  }
+}
+
 export function coresignalProviderCompanyId(value: unknown) {
   const companyId = typeof value === "number"
     ? value
@@ -123,6 +203,14 @@ export function coresignalProviderCompanyId(value: unknown) {
     throw new Error("Coresignal company ID must be a positive safe integer.")
   }
   return companyId
+}
+
+export function coresignalExactCompanyName(value: unknown) {
+  const companyName = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : ""
+  if (!companyName || companyName.length > 200 || /[\u0000-\u001f\u007f]/.test(companyName)) {
+    throw new Error("Coresignal exact company name must be a non-empty plain-text value of at most 200 characters.")
+  }
+  return companyName
 }
 
 /**
@@ -184,6 +272,71 @@ export function coresignalVerifiedCompanyEsDslSearchContract(options: {
       sort: base.body.sort,
     },
   }
+}
+
+export function coresignalExactCompanyNameEsDslSearchContract(options: {
+  companyName: unknown
+  graduationYear?: unknown
+  itemsPerPage?: number
+}) {
+  const companyName = coresignalExactCompanyName(options.companyName)
+  const base = coresignalEmployeeEsDslSearchContract({
+    graduationYear: options.graduationYear,
+    itemsPerPage: options.itemsPerPage,
+  })
+  return {
+    searchMode: (options.graduationYear === undefined || options.graduationYear === ""
+      ? "CURRENT_COMPANY"
+      : "CURRENT_COMPANY_EXACT_GRADUATION_YEAR") as CoresignalEmployeeEsDslSearchMode,
+    companyConstraintMode: "EXACT_NAME" as const,
+    method: base.method,
+    path: base.path,
+    query: base.query,
+    body: {
+      query: {
+        bool: {
+          filter: [
+            ...base.body.query.bool.filter,
+            {
+              nested: {
+                path: "experience",
+                query: {
+                  bool: {
+                    filter: [
+                      { term: { "experience.company_name.exact": companyName } },
+                      { term: { "experience.is_current": 1 } },
+                      { term: { "experience.deleted": 0 } },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+      sort: base.body.sort,
+    },
+  }
+}
+
+/**
+ * Dormant Base Employee Search Preview contract for exact-year discovery.
+ * Education and current-company predicates are each correlated within their
+ * own nested provider rows. Preview does not accept the regular Search sort,
+ * and the product never adds pagination or automatic Collect.
+ */
+export function coresignalExactYearEsDslPreviewContract(options: {
+  graduationYear: unknown
+  programmes?: readonly string[]
+  seniorities?: readonly string[]
+  seniority?: string
+  companyId?: unknown
+  companyName?: unknown
+  page?: number
+}) {
+  const graduationYear = coresignalEmployeeEsDslGraduationYear(options.graduationYear)
+  if (graduationYear === undefined) throw new Error("An exact four-digit graduation year is required for Coresignal ES-DSL Preview.")
+  return coresignalDiscoveryEsDslPreviewContract({ ...options, graduationYear })
 }
 
 /** Compatibility wrapper for callers that require an exact graduation year. */
@@ -306,6 +459,34 @@ export async function searchCoresignalEmployeeIds(
       "x-total-pages": providerResponse.headers.get("x-total-pages"),
       "x-next-page-after": providerResponse.headers.get("x-next-page-after"),
     },
+    providerCreditsRemaining: optionalNonNegativeIntegerHeader(providerResponse.headers, "x-credits-remaining"),
+    upstreamHttpStatus: providerResponse.status,
+  }
+}
+
+/** Exactly one bounded Preview request; no retry, pagination, or Collect. */
+export async function previewCoresignalEmployeesExactYear(
+  esDslBody: unknown,
+  options: RequestOptions & { operationContext: string; page?: number },
+): Promise<CoresignalPreviewTransportResult> {
+  if (!options.operationContext.trim()) throw new CoresignalProviderError("A Coresignal Preview operation context is required.", "invalid_request", 400)
+  if (!esDslBody || typeof esDslBody !== "object" || Array.isArray(esDslBody)) throw new CoresignalProviderError("A Coresignal ES-DSL Preview request body is required.", "invalid_request", 400)
+  const page = options.page ?? 1
+  if (!Number.isInteger(page) || page < 1 || page > CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES) throw new CoresignalProviderError(`Coresignal Preview page must be between 1 and ${CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES}.`, "invalid_request", 400)
+  const providerResponse = await response(page === 1 ? CORESIGNAL_ES_DSL_PREVIEW_PATH : `${CORESIGNAL_ES_DSL_PREVIEW_PATH}?page=${page}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(esDslBody),
+  }, options)
+  let body: unknown
+  try { body = await providerResponse.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable Preview response.", "invalid_response", 502) }
+  if (!Array.isArray(body) || body.length > CORESIGNAL_ES_DSL_PREVIEW_MAX_RESULTS) {
+    throw new CoresignalProviderError("Coresignal Preview returned an invalid or over-limit response.", "invalid_response", 502)
+  }
+  return {
+    body,
+    totalResults: optionalNonNegativeIntegerHeader(providerResponse.headers, "x-total-results"),
+    page,
     providerCreditsRemaining: optionalNonNegativeIntegerHeader(providerResponse.headers, "x-credits-remaining"),
     upstreamHttpStatus: providerResponse.status,
   }

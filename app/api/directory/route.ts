@@ -9,7 +9,12 @@ function requestQuery(request: Request) {
   if (raw) {
     try { filters = JSON.parse(raw) as Record<string, unknown> } catch { throw new Error("Directory filters are malformed.") }
   }
-  return normalizeDirectoryQuery({ ...filters, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize"), sort: url.searchParams.get("sort") })
+  const query: Record<string, unknown> = { ...filters }
+  for (const key of ["page", "pageSize", "sort"] as const) {
+    const value = url.searchParams.get(key)
+    if (value !== null) query[key] = value
+  }
+  return normalizeDirectoryQuery(query)
 }
 
 export async function GET(request: Request) {

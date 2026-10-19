@@ -133,9 +133,11 @@ test("opening live confirmation is call-free and only its explicit action execut
 test("the validated Coresignal API and review workflow remain unchanged", () => {
   assert.match(client, /https:\/\/api\.coresignal\.com/)
   assert.match(client, /\/cdapi\/v2\/employee_base\/search\/filter\/preview/)
+  assert.match(client, /\/cdapi\/v2\/employee_base\/search\/es_dsl\/preview/)
   assert.match(client, /\/cdapi\/v2\/employee_base\/collect"/)
   assert.match(client, /apikey:/)
   assert.doesNotMatch(client, /Authorization|Bearer/)
   assert.match(discoveryRoute, /action === "approve"/)
-  assert.match(page, /Maximum usage includes one Search operation plus up to one Collect operation per requested profile/)
+  assert.match(page, /The legacy Preview request does not enforce an exact graduation year/)
+  assert.match(page, /1 Preview · 0 Collect/)
 })

@@ -8,7 +8,7 @@ import {
   type DiscoveryFilters,
   type DiscoveryProfile,
 } from "@/lib/alumni-search"
-import { collectCoresignalEmployee, CORESIGNAL_IIML_INSTITUTION_URL, CoresignalProviderError, searchCoresignalIiml } from "@/lib/coresignal-client"
+import { collectCoresignalEmployee, coresignalDiscoveryEsDslPreviewContract, coresignalExactYearEsDslPreviewContract, CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID, CORESIGNAL_IIML_INSTITUTION_URL, CoresignalProviderError, previewCoresignalEmployeesExactYear, searchCoresignalIiml } from "@/lib/coresignal-client"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { DEFAULT_DISCOVERY_PROGRAMMES, discoveryQualification, normalizeCoresignalProgramme } from "@/lib/discovery-qualification"
 import { CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES } from "@/lib/discovery-provider-capabilities"
@@ -52,7 +52,8 @@ function institutionUrl(education: Row) {
 }
 
 export function iimlEducationRecords(profile: Row) {
-  return validEducationRecords(profile).filter(education => institutionUrl(education) === CORESIGNAL_IIML_INSTITUTION_URL
+  return validEducationRecords(profile).filter(education => Number(first(education, ["institution_id", "school_id"])) === CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID
+    || institutionUrl(education) === CORESIGNAL_IIML_INSTITUTION_URL
     || normalized(institutionName(education)).includes("indian institute of management lucknow"))
 }
 
@@ -66,6 +67,9 @@ export function classifyIimlAffiliation(education: Row | undefined): Affiliation
   const rawProgramme = first(education, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"])
   const programme = normalized(rawProgramme)
   if (/exchange|visiting|short term|short-term|certificate|executive education|summer school/.test(programme)) return "Short-term / exchange affiliation"
+  // Generic MBA/PGDM can support degree-level affiliation, but cannot by
+  // itself identify the specific PGP, ABM, or SM programme.
+  if (/^(?:mba|pgdm|master of business administration|post graduate diploma(?: in management)?)$/.test(programme)) return "Confirmed degree alumnus"
   if (normalizeCoresignalProgramme(rawProgramme).code) return "Confirmed degree alumnus"
   return "Potential alumnus — review required"
 }
@@ -96,7 +100,7 @@ export function normalizedCurrentRoleEvidence(profile: Row) {
 }
 
 export function normalizedIimlEducationEvidence(profile: Row) {
-  const byProgramme = new Map<string, { institution: string; programme: string; normalizedProgramme: string; startDate: string; endDate: string; graduationYear: number; source: Row }>()
+  const byEducationPeriod = new Map<string, { institution: string; programme: string; normalizedProgramme: string; startDate: string; endDate: string; graduationYear: number; source: Row }>()
   for (const education of iimlEducationRecords(profile)) {
     const programme = first(education, ["degree", "degree_name", "program", "programme", "field_of_study", "subtitle"])
     const normalizedProgramme = normalizeCoresignalProgramme(programme).code ?? ""
@@ -104,13 +108,22 @@ export function normalizedIimlEducationEvidence(profile: Row) {
     const endDate = dateValue(education.date_to) || dateValue(education.end_date) || dateValue(education.date_to_year) || dateValue(education.end_year)
     const graduationYear = Number(endDate.match(/\d{4}/)?.[0] ?? 0)
     const programmeKey = normalizedProgramme || normalized(programme) || "programme-not-returned"
+    // Collapse literal duplicates without merging distinct periods for the
+    // same programme. Exact-year qualification must be able to inspect every
+    // distinct IIML education row and find a match within that same row.
+    const educationKey = `${programmeKey}|${startDate}|${endDate}`
     const evidence = { institution: institutionName(education) || FIXED_ALUMNI_SCHOOL, programme, normalizedProgramme, startDate, endDate, graduationYear, source: education }
-    const current = byProgramme.get(programmeKey)
+    const current = byEducationPeriod.get(educationKey)
     const evidenceScore = Number(Boolean(graduationYear)) * 4 + Number(Boolean(endDate)) * 2 + Number(Boolean(startDate)) + Number(Boolean(programme))
     const currentScore = current ? Number(Boolean(current.graduationYear)) * 4 + Number(Boolean(current.endDate)) * 2 + Number(Boolean(current.startDate)) + Number(Boolean(current.programme)) : -1
-    if (!current || evidenceScore > currentScore) byProgramme.set(programmeKey, evidence)
+    if (!current || evidenceScore > currentScore) byEducationPeriod.set(educationKey, evidence)
   }
-  return [...byProgramme.values()]
+  const evidence = [...byEducationPeriod.values()]
+  return evidence.filter(item => item.startDate || item.endDate || !evidence.some(other =>
+    other !== item
+    && (other.normalizedProgramme || normalized(other.programme) || "programme-not-returned") === (item.normalizedProgramme || normalized(item.programme) || "programme-not-returned")
+    && Boolean(other.startDate || other.endDate),
+  ))
 }
 
 function mapProfile(record: Row, index: number, options: { now?: Date; selectedProgrammes?: readonly string[] } = {}): DiscoveryProfile | null {
@@ -170,46 +183,46 @@ function mapProfile(record: Row, index: number, options: { now?: Date; selectedP
 export function mapCoresignalPreview(record: Row, index: number): DiscoveryProfile | null {
   if (!notDeleted(record)) return null
   const employeeId = first(record, ["id", "employee_id", "employee_base_id"])
-  const rawTitle = first(record, ["title", "current_title", "headline"])
-  const company = first(record, ["company_name", "current_company_name"])
+  const rawTitle = first(record, ["active_experience_title", "title", "current_title", "headline"])
+  const company = first(record, ["company_name", "active_experience_company_name", "current_company_name"])
   const linkedinUrl = normalizeProfessionalProfileUrl(first(record, ["profile_url", "professional_network_url", "linkedin_url", "url"]))
+  // The documented Preview response does not promise education fields. Keep
+  // them optional, but preserve exact same-row IIML evidence if the provider
+  // returns it instead of discarding it during normalization.
+  const educationEvidence = normalizedIimlEducationEvidence(record)
+  const displayedEducation = educationEvidence[0]
   return {
     providerResultId: employeeId || `coresignal-preview-${index + 1}`,
     providerPersonId: employeeId,
     name: first(record, ["full_name", "name"]) || "Name unavailable",
-    education: "Education not returned",
+    education: displayedEducation?.institution ?? "Education not returned",
     currentCompany: company || "Company unavailable",
     role: rawTitle || "Role unavailable",
     rawTitle,
     function: normalizeFunction("", rawTitle),
     seniority: rawTitle ? normalizeSeniority("", rawTitle) : "Analyst/Junior",
-    location: first(record, ["experience_location", "location", "country"]),
-    graduationYear: 0,
+    location: first(record, ["location_full", "experience_location", "location", "location_country", "country"]),
+    graduationYear: displayedEducation?.graduationYear ?? 0,
     linkedinUrl,
     matchConfidence: [employeeId, linkedinUrl, company, rawTitle].filter(Boolean).length >= 3 ? 70 : 55,
     affiliationStatus: "Potential alumnus — review required",
-    educationProgramme: "",
-    normalizedProgramme: "",
+    educationProgramme: displayedEducation?.programme ?? "",
+    normalizedProgramme: displayedEducation?.normalizedProgramme ?? "",
     programmeStatus: "Programme requires review",
     alumniStatus: "Graduation status unknown — review required",
     eligibleForAddition: false,
-    educationStartDate: "",
-    educationEndDate: "",
-    institutionId: "",
-    institutionUrl: "",
+    educationStartDate: displayedEducation?.startDate ?? "",
+    educationEndDate: displayedEducation?.endDate ?? "",
+    institutionId: displayedEducation ? first(displayedEducation.source, ["institution_id", "school_id"]) : "",
+    institutionUrl: displayedEducation ? institutionUrl(displayedEducation.source) : "",
     currentCompanyId: first(record, ["company_id"]),
-    currentCompanyUrl: first(record, ["company_url", "company_professional_network_url"]),
+    currentCompanyUrl: first(record, ["company_url", "company_professional_network_url", "company_linkedin_url", "active_experience_company_url", "active_experience_company_professional_network_url"]),
     currentRoleStartDate: "",
     currentIndustry: first(record, ["company_industry"]),
     currentRoleAmbiguous: false,
     providerFreshnessAt: "",
+    iimlEducationEvidence: educationEvidence.map(({ institution, programme, normalizedProgramme, startDate, endDate, graduationYear }) => ({ institution, programme, normalizedProgramme, startDate, endDate, graduationYear })),
   }
-}
-
-function previewMatchesExistingReturnedFilters(profile: DiscoveryProfile, filters: DiscoveryFilters) {
-  return (!filters.role || normalized(profile.role).includes(normalized(filters.role)))
-    && (filters.function === "All functions" || profile.function === filters.function)
-    && (!filters.location || normalized(profile.location).includes(normalized(filters.location)))
 }
 
 function mockRows(filters: DiscoveryFilters, internal: InternalProfessionalPerson[]) {
@@ -250,22 +263,92 @@ async function searchCandidates(filters: DiscoveryFilters, internal: InternalPro
     const source = mockRows(filters, internal)
     const fullById = new Map(source.map((record, index) => [first(record, ["id"]), mapProfile(record, index, { now, selectedProgrammes })] as const))
     const previewProfiles = source.map((record, index) => {
+      if (filters.graduationYear) return mapCoresignalPreview(record, index)
       const full = fullById.get(first(record, ["id"]))
       return full ? mapCoresignalPreview({ id: full.providerPersonId, full_name: full.name, profile_url: full.linkedinUrl, company_name: full.currentRoleAmbiguous ? "" : full.currentCompany, title: full.currentRoleAmbiguous ? "" : full.rawTitle, location: full.location }, index) : null
     }).filter(Boolean) as DiscoveryProfile[]
-    const eligiblePreviewProfiles = previewProfiles.filter(profile => previewMatchesExistingReturnedFilters(profile, filters))
-    const execution = await executeSelectiveDiscovery({ previewProfiles: eligiblePreviewProfiles, filters, alumni: internal, rejectedCandidates: options.rejectedCandidates ?? [], capabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: safeLimit, maximumCollects: Math.min(options.maximumCollects ?? safeLimit, safeLimit), collect: async employeeId => fullById.get(employeeId) ?? null })
+    const exactYear = filters.graduationYear ? Number(filters.graduationYear) : null
+    const execution = await executeSelectiveDiscovery({
+      previewProfiles,
+      filters,
+      alumni: internal,
+      rejectedCandidates: options.rejectedCandidates ?? [],
+      capabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES,
+      requestedCount: safeLimit,
+      maximumCollects: exactYear === null ? Math.min(options.maximumCollects ?? safeLimit, safeLimit) : 0,
+      ...(exactYear === null ? {} : { searchConstraint: {
+        institutionId: CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID,
+        exactGraduationYear: exactYear,
+        providerCompanyId: options.exactYearPreview?.companyId ?? null,
+        exactCompanyName: options.exactYearPreview?.companyName ?? null,
+        companyIdentityMode: options.exactYearPreview?.companyIdentityMode ?? null,
+        expectedCompanyUrl: options.exactYearPreview?.expectedCompanyUrl ?? null,
+        semantics: "BASE_EMPLOYEE_ES_DSL_PREVIEW" as const,
+      } }),
+      collect: async employeeId => fullById.get(employeeId) ?? null,
+    })
     execution.metrics.previewCountReturned = previewProfiles.length
-    return { profiles: execution.candidates.map(item => item.profile), totalAvailable: previewProfiles.length, responseSummary: `${execution.metrics.previewCountConsidered} demonstration Preview candidates considered; ${execution.metrics.collectExecuted} mock Collect operations selected.`, usage: mockProviderUsage(execution.metrics.collectExecuted), execution }
+    return { profiles: execution.selectedCandidates.map(item => item.profile), totalAvailable: previewProfiles.length, responseSummary: `${execution.metrics.previewCountConsidered} demonstration Preview candidates considered; ${execution.metrics.collectExecuted} mock Collect operations selected.`, usage: mockProviderUsage(execution.metrics.collectExecuted), execution }
+  }
+  if (options.exactYearPreview) {
+    const contract = filters.graduationYear ? coresignalExactYearEsDslPreviewContract({
+      graduationYear: filters.graduationYear,
+      programmes: filters.discoveryProgrammes,
+      seniorities: filters.seniorities,
+      seniority: filters.seniority,
+      companyId: options.exactYearPreview.companyId,
+      companyName: options.exactYearPreview.companyName,
+      page: options.exactYearPreview.page,
+    }) : coresignalDiscoveryEsDslPreviewContract({
+      programmes: filters.discoveryProgrammes,
+      seniorities: filters.seniorities,
+      seniority: filters.seniority,
+      companyId: options.exactYearPreview.companyId,
+      companyName: options.exactYearPreview.companyName,
+      page: options.exactYearPreview.page,
+    })
+    const providerResponse = await previewCoresignalEmployeesExactYear(contract.body, {
+      operationContext: options.exactYearPreview.operationContext,
+      page: options.exactYearPreview.page,
+    })
+    const previewRows = responseRows(providerResponse.body)
+    const previewProfiles = previewRows.map((record, index) => mapCoresignalPreview(record, index)).filter(Boolean) as DiscoveryProfile[]
+    const execution = await executeSelectiveDiscovery({
+      previewProfiles,
+      filters,
+      alumni: internal,
+      rejectedCandidates: options.rejectedCandidates ?? [],
+      capabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES,
+      requestedCount: safeLimit,
+      maximumCollects: 0,
+      searchConstraint: {
+        institutionId: CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID,
+        exactGraduationYear: filters.graduationYear ? Number(filters.graduationYear) : 0,
+        providerCompanyId: options.exactYearPreview.companyId ?? null,
+        exactCompanyName: options.exactYearPreview.companyName ?? null,
+        companyIdentityMode: options.exactYearPreview.companyIdentityMode ?? null,
+        expectedCompanyUrl: options.exactYearPreview.expectedCompanyUrl ?? null,
+        semantics: "BASE_EMPLOYEE_ES_DSL_PREVIEW",
+      },
+      collect: async () => null,
+    })
+    execution.metrics.previewCountReturned = previewProfiles.length
+    const profiles = execution.selectedCandidates.map(item => item.profile)
+    return {
+      profiles,
+      totalAvailable: providerResponse.totalResults ?? previewProfiles.length,
+      responseSummary: `${previewProfiles.length} ES-DSL Preview candidates returned from page ${providerResponse.page}; ${execution.metrics.previewCountConsidered} considered; 0 Collect operations; provider request cost remains unresolved.`,
+      usage: unknownProviderUsage(1),
+      execution,
+    }
   }
   const previewRows = responseRows(await searchCoresignalIiml({ filters, now }))
   const previewProfiles = previewRows.map((record, index) => mapCoresignalPreview(record, index)).filter(Boolean) as DiscoveryProfile[]
-  const eligiblePreviewProfiles = previewProfiles.filter(profile => previewMatchesExistingReturnedFilters(profile, filters))
   let successfulCollects = 0
   let execution
   try {
     execution = await executeSelectiveDiscovery({
-      previewProfiles: eligiblePreviewProfiles,
+      previewProfiles,
       filters,
       alumni: internal,
       rejectedCandidates: options.rejectedCandidates ?? [],
@@ -282,7 +365,7 @@ async function searchCandidates(filters: DiscoveryFilters, internal: InternalPro
     if (error instanceof CoresignalProviderError) throw new CoresignalProviderError(error.message, error.kind, error.status, successfulCoresignalOperationCredits(true, successfulCollects))
     throw error
   }
-  const profiles = execution.candidates.map(item => item.profile)
+  const profiles = execution.selectedCandidates.map(item => item.profile)
   execution.metrics.previewCountReturned = previewProfiles.length
   const metrics = execution.metrics
   return { profiles, totalAvailable: previewProfiles.length, responseSummary: profiles.length ? `${metrics.previewCountReturned} Preview candidates returned; ${metrics.previewCountConsidered} considered; ${metrics.collectExecuted} collected; ${metrics.potentialCollectionsAvoided} potential collections avoided.` : "No additional external affiliation candidates were found.", usage: unknownProviderUsage(successfulCoresignalOperationCredits(true, successfulCollects)), execution }

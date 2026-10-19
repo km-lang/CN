@@ -47,6 +47,14 @@ export type InternalProfessionalPerson = {
 export type ProfessionalSearchOptions = {
   rejectedCandidates?: readonly RejectedCandidateEvidence[]
   maximumCollects?: number
+  exactYearPreview?: {
+    companyId?: number
+    companyName?: string
+    companyIdentityMode?: "VERIFIED_ID" | "EXACT_NAME"
+    expectedCompanyUrl?: string
+    operationContext: string
+    page?: number
+  }
 }
 
 export interface ProfessionalDataProvider {

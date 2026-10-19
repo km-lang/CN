@@ -1,4 +1,13 @@
-export const DEFAULT_DISCOVERY_PROGRAMMES = ["PGP", "ABM", "SM"] as const
+export const DEFAULT_DISCOVERY_PROGRAMMES: readonly string[] = []
+
+export const DISCOVERY_PROGRAMME_OPTIONS = Object.freeze([
+  { value: "PGP", label: "PGP" },
+  { value: "MBA", label: "MBA" },
+  { value: "PGDM", label: "PGDM" },
+  { value: "ABM", label: "ABM / PGP-ABM" },
+  { value: "PGP-SM", label: "PGP-SM" },
+  { value: "IPMX", label: "IPMX / Executive MBA" },
+] as const)
 
 export type AlumniStatusFilter = "Past alumni only" | "All graduation statuses"
 export type AlumniStatus = "Past alumnus" | "Current student" | "Graduation status unknown — review required"
@@ -6,8 +15,10 @@ export type ProgrammeStatus = "Programme matched" | "Executive/non-regular progr
 
 type ProgrammeRule = {
   code: string
+  selectionCode: string
   aliases: RegExp[]
   providerTerms: string[]
+  status?: ProgrammeStatus
 }
 
 const executiveMarkers = /\b(executive|working manager|working managers|working professional|working professionals|emba|e mba|one year mba|weekend mba|general management programme for executives|gmpe|advanced management programme|management development programme)\b/
@@ -15,28 +26,33 @@ const executiveMarkers = /\b(executive|working manager|working managers|working 
 export const CORESIGNAL_PROGRAMME_RULES: ProgrammeRule[] = [
   {
     code: "ABM",
+    selectionCode: "ABM",
     aliases: [
       /^abm$/,
       /^pgp abm$/,
       /^post graduate programme in agribusiness management$/,
       /^post graduate program in agribusiness management$/,
+      /^pgp in agribusiness management$/,
       /^mba in agribusiness management$/,
     ],
     providerTerms: ["ABM", "Agribusiness Management"],
   },
   {
     code: "SM",
+    selectionCode: "PGP-SM",
     aliases: [
       /^sm$/,
       /^pgp sm$/,
       /^post graduate programme in sustainable management$/,
       /^post graduate program in sustainable management$/,
+      /^pgp in sustainable management$/,
       /^mba in sustainable management$/,
     ],
     providerTerms: ["PGP-SM", "Sustainable Management"],
   },
   {
     code: "PGP",
+    selectionCode: "PGP",
     aliases: [
       /^pgp$/,
       /^post graduate programme$/,
@@ -45,17 +61,71 @@ export const CORESIGNAL_PROGRAMME_RULES: ProgrammeRule[] = [
       /^post graduate programme in management pgp$/,
       /^post graduate program in management$/,
       /^post graduate program in management pgp$/,
-      /^pgdm$/,
-      /^post graduate diploma$/,
-      /^post graduate diploma in management$/,
-      /^post graduate diploma in management pgdm$/,
-      /^mba$/,
-      /^master of business administration$/,
-      /^master of business administration mba$/,
     ],
-    providerTerms: ["PGP", "Post Graduate Programme", "PGDM", "MBA"],
+    providerTerms: ["PGP", "Post Graduate Programme", "Post Graduate Program", "Post Graduate Programme in Management", "Post Graduate Program in Management"],
+  },
+  {
+    code: "MBA",
+    selectionCode: "MBA",
+    aliases: [/^mba$/, /^master of business administration$/],
+    providerTerms: ["MBA", "Master of Business Administration"],
+  },
+  {
+    code: "PGDM",
+    selectionCode: "PGDM",
+    aliases: [/^pgdm$/, /^post graduate diploma in management$/],
+    providerTerms: ["PGDM", "Post Graduate Diploma in Management"],
+  },
+  {
+    code: "IPMX",
+    selectionCode: "IPMX",
+    aliases: [
+      /^ipmx$/,
+      /^international programme in management for executives$/,
+      /^international program in management for executives$/,
+      /^executive mba$/,
+      /^emba$/,
+      /^e mba$/,
+    ],
+    providerTerms: ["IPMX", "International Programme in Management for Executives", "International Program in Management for Executives", "Executive MBA", "EMBA"],
+    status: "Executive/non-regular programme",
   },
 ]
+
+const standardSelectionCodes = new Set(DISCOVERY_PROGRAMME_OPTIONS.map(option => option.value))
+const customProgrammePattern = /^[A-Za-z0-9][A-Za-z0-9 &/().,+\-]{1,79}$/
+
+export function normalizeDiscoveryProgrammeSelection(value: unknown) {
+  const text = String(value ?? "").trim().replace(/\s+/g, " ")
+  const upper = text.toUpperCase()
+  if (upper === "SM") return "PGP-SM"
+  if (upper === "EXECUTIVE MBA" || upper === "EMBA" || upper === "IPMX / EXECUTIVE MBA") return "IPMX"
+  return standardSelectionCodes.has(upper as (typeof DISCOVERY_PROGRAMME_OPTIONS)[number]["value"]) ? upper : text
+}
+
+export function normalizeDiscoveryProgrammeSelections(values: unknown) {
+  if (!Array.isArray(values)) return []
+  const seen = new Set<string>()
+  return values.map(normalizeDiscoveryProgrammeSelection).filter(value => {
+    const key = value.toLowerCase()
+    if (!value || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+export function validateDiscoveryProgrammeSelections(values: unknown) {
+  if (!Array.isArray(values)) return { ok: false as const, message: "Programmes must be an array." }
+  if (values.some(value => typeof value !== "string" || /[\u0000-\u001f\u007f]/.test(value))) {
+    return { ok: false as const, message: "Programme labels must be plain text without control characters." }
+  }
+  const selected = normalizeDiscoveryProgrammeSelections(values)
+  if (selected.length > 12) return { ok: false as const, message: "Select no more than 12 programme or degree labels." }
+  const invalid = selected.find(value => !standardSelectionCodes.has(value as (typeof DISCOVERY_PROGRAMME_OPTIONS)[number]["value"]) && !customProgrammePattern.test(value))
+  return invalid
+    ? { ok: false as const, message: `Programme label “${invalid}” must be 2–80 characters and use letters, numbers, spaces, or & / ( ) . , + -.` }
+    : { ok: true as const, values: selected }
+}
 
 function normalized(value: unknown) {
   return String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
@@ -64,26 +134,34 @@ function normalized(value: unknown) {
 export function normalizeCoresignalProgramme(rawProgramme: unknown) {
   const value = normalized(rawProgramme)
   if (!value) return { code: null, status: "Programme requires review" as ProgrammeStatus }
-  if (executiveMarkers.test(value)) return { code: null, status: "Executive/non-regular programme" as ProgrammeStatus }
   const rule = CORESIGNAL_PROGRAMME_RULES.find(candidate => candidate.aliases.some(alias => alias.test(value)))
-  return rule
-    ? { code: rule.code, status: "Programme matched" as ProgrammeStatus }
-    : { code: null, status: "Programme requires review" as ProgrammeStatus }
+  if (rule) return { code: rule.code, status: rule.status ?? "Programme matched" as ProgrammeStatus }
+  if (executiveMarkers.test(value)) return { code: null, status: "Executive/non-regular programme" as ProgrammeStatus }
+  return { code: null, status: "Programme requires review" as ProgrammeStatus }
+}
+
+function selectionRule(value: string) {
+  const normalizedSelection = normalizeDiscoveryProgrammeSelection(value)
+  return CORESIGNAL_PROGRAMME_RULES.find(rule => rule.selectionCode === normalizedSelection)
 }
 
 export function coresignalProgrammeQuery(programmes: readonly string[]) {
-  const selected = new Set(programmes.map(value => value.trim().toUpperCase()).filter(Boolean))
+  const selected = normalizeDiscoveryProgrammeSelections(programmes)
   // Coresignal Boolean syntax inside education_program_name has not been
   // empirically validated. Keep the established single-programme behavior,
   // but do not turn a multi-selection (including all active programmes) into
   // an unverified OR expression that can unnecessarily reduce recall.
-  if (selected.size !== 1) return ""
-  const terms = CORESIGNAL_PROGRAMME_RULES
-    .filter(rule => selected.has(rule.code))
-    .flatMap(rule => rule.providerTerms)
+  if (selected.length !== 1) return ""
+  const terms = selected.flatMap(value => selectionRule(value)?.providerTerms ?? [value])
   const unique = [...new Set(terms)]
   if (!unique.length) return ""
   return unique.map(term => term.includes(" ") ? `(${term})` : term).join(" OR ")
+}
+
+export function coresignalProgrammeTerms(programmes: readonly string[]) {
+  const validation = validateDiscoveryProgrammeSelections(programmes)
+  if (!validation.ok) throw new Error(validation.message)
+  return [...new Set(validation.values.flatMap(value => selectionRule(value)?.providerTerms ?? [value]))]
 }
 
 type EndEvidence = { year: number; month: number | null; day: number | null }
@@ -133,13 +211,17 @@ export function discoveryQualification(
 ) {
   const programme = normalizeCoresignalProgramme(rawProgramme)
   const alumniStatus = alumniStatusFromEducationEnd(educationEndDate, now)
-  const selected = new Set(selectedProgrammes.map(value => value.trim().toUpperCase()).filter(Boolean))
-  const programmeMatchesSelection = Boolean(programme.code && selected.has(programme.code))
+  const selected = normalizeDiscoveryProgrammeSelections(selectedProgrammes)
+  // Programme is an optional discovery dimension. An empty selection means
+  // "any programme", not "no candidate can qualify". Unknown programmes
+  // still remain review-only through programmeStatus/affiliation handling.
+  const selectedCanonicalCodes = new Set(selected.map(value => selectionRule(value)?.code).filter(Boolean))
+  const programmeMatchesSelection = selected.length === 0 || Boolean(programme.code && selectedCanonicalCodes.has(programme.code))
   return {
     normalizedProgramme: programme.code ?? "",
     programmeStatus: programme.status,
     alumniStatus,
     programmeMatchesSelection,
-    eligibleForAddition: programmeMatchesSelection && alumniStatus === "Past alumnus",
+    eligibleForAddition: programmeMatchesSelection && programme.status === "Programme matched" && alumniStatus === "Past alumnus",
   }
 }

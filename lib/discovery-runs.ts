@@ -26,6 +26,30 @@ export type DiscoveryRunHistory = {
   id: number
   applicationUnits: number
   providerReportedCredits: number | null
+  responseSummary?: string
+}
+
+export function persistedDiscoveryExecutionSummary(history: readonly DiscoveryRunHistory[]) {
+  const totals = {
+    previewCountReturned: 0, previewCountConsidered: 0, knownProviderIds: 0, knownProfileUrls: 0,
+    companyMismatches: 0, seniorityMismatches: 0, seniorityInsufficientEvidence: 0,
+    confirmedFilterMatches: 0, reviewBeforeCollect: 0, previouslyRejected: 0, ambiguousCandidates: 0,
+    collectRecommended: 0, collectExecuted: 0, collectSkippedKnown: 0, collectSkippedFilter: 0,
+    collectSkippedLimit: 0, potentialCollectionsAvoided: 0,
+  }
+  let found = false
+  for (const item of history) {
+    const marker = "Selective execution "
+    const start = item.responseSummary?.lastIndexOf(marker) ?? -1
+    if (start < 0) continue
+    try {
+      const parsed = JSON.parse(item.responseSummary!.slice(start + marker.length)) as Record<string, unknown>
+      const number = (key: string) => Number.isFinite(Number(parsed[key])) ? Math.max(0, Math.trunc(Number(parsed[key]))) : 0
+      for (const key of Object.keys(totals) as Array<keyof typeof totals>) totals[key] += number(key)
+      found = true
+    } catch { /* Historical free text without a valid metrics envelope stays unavailable. */ }
+  }
+  return found ? totals : null
 }
 
 export function discoveryClassificationCounts(results: readonly DiscoveryRunResult[]) {

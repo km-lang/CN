@@ -1,5 +1,5 @@
 import { matchesLinkedinProfileFilter, normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
-import { DEFAULT_DISCOVERY_PROGRAMMES, type AlumniStatus, type AlumniStatusFilter, type ProgrammeStatus } from "@/lib/discovery-qualification";
+import { DEFAULT_DISCOVERY_PROGRAMMES, normalizeDiscoveryProgrammeSelections, type AlumniStatus, type AlumniStatusFilter, type ProgrammeStatus } from "@/lib/discovery-qualification";
 
 export const FIXED_ALUMNI_SCHOOL = "Indian Institute of Management Lucknow";
 
@@ -243,7 +243,7 @@ export function normalizeDiscoveryFiltersInput(value: unknown): DiscoveryFilters
     ...defaults,
     ...candidate,
     discoveryProgrammes: Array.isArray(candidate.discoveryProgrammes)
-      ? [...new Set(candidate.discoveryProgrammes.map(String).map(item => item.trim().toUpperCase()).filter(Boolean))]
+      ? normalizeDiscoveryProgrammeSelections(candidate.discoveryProgrammes)
       : defaults.discoveryProgrammes,
     alumniStatus: candidate.alumniStatus === "All graduation statuses" ? candidate.alumniStatus : defaults.alumniStatus,
     company: candidate.company === "All companies" ? "" : String(candidate.company ?? defaults.company).trim(),
