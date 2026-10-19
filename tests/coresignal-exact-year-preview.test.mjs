@@ -279,6 +279,7 @@ test("one Preview page is fully qualified before requested result count and neve
     full_name: `Candidate ${index + 1}`,
     professional_network_url: `https://www.linkedin.com/in/exact-${index + 1}`,
     company_name: index === 14 || index === 4 || index === 9 ? "Google" : "Other Company",
+    active_experience_company_name: index === 14 || index === 4 || index === 9 ? "Google" : undefined,
     active_experience_title: index === 14 ? "Vice President" : index === 4 ? "Director" : index === 9 ? "India Site Lead for Privacy, Safety and Security" : "Manager",
     location_full: "India",
   }))
@@ -313,6 +314,7 @@ test("exact-name Google discovery evaluates all 20 and selects a later current V
     full_name: `Google Candidate ${index + 1}`,
     professional_network_url: `https://www.linkedin.com/in/google-${index + 1}`,
     company_name: index === 14 ? "Google" : "Other Company",
+    active_experience_company_name: index === 14 ? "Google" : "Other Company",
     company_url: index === 14 ? "https://www.linkedin.com/company/google" : "https://www.linkedin.com/company/other-company",
     active_experience_title: index === 14 ? "Vice President" : "Director",
   }))
@@ -339,8 +341,8 @@ test("exact-name Google discovery evaluates all 20 and selects a later current V
 })
 
 test("exact-name company qualification rejects conflicting identity and keeps missing URL unverified", () => {
-  const constraint = { institutionId: 25919228, exactGraduationYear: 2011, providerCompanyId: null, exactCompanyName: "Google", companyIdentityMode: "EXACT_NAME", expectedCompanyUrl: null, semantics: "BASE_EMPLOYEE_ES_DSL_PREVIEW" }
-  const profile = overrides => adapter.mapCoresignalPreview({ id: overrides.id, full_name: overrides.id, company_name: "Google", active_experience_title: "Vice President", ...overrides }, 0)
+  const constraint = { institutionId: 25919228, exactGraduationYear: 2011, providerCompanyId: null, exactCompanyName: "Google", companyIdentityMode: "EXACT_NAME", expectedCompanyUrl: "https://www.linkedin.com/company/google", semantics: "BASE_EMPLOYEE_ES_DSL_PREVIEW" }
+  const profile = overrides => adapter.mapCoresignalPreview({ id: overrides.id, full_name: overrides.id, company_name: "Google", active_experience_company_name: "Google", active_experience_title: "Vice President", ...overrides }, 0)
   const missingUrl = execution.qualifyPreviewCandidate(profile({ id: "missing-url" }), exactFilters(), constraint)
   const canonicalUrl = execution.qualifyPreviewCandidate(profile({ id: "canonical-url", company_url: "https://www.linkedin.com/company/google" }), exactFilters(), constraint)
   const alphabet = execution.qualifyPreviewCandidate(profile({ id: "alphabet", company_url: "https://www.linkedin.com/company/alphabetgoogle" }), exactFilters(), constraint)
@@ -348,7 +350,78 @@ test("exact-name company qualification rejects conflicting identity and keeps mi
   assert.match(missingUrl.company.rationale, /human review/)
   assert.equal(canonicalUrl.company.result, "NAME_MATCH_IDENTITY_UNVERIFIED")
   assert.equal(alphabet.company.result, "MISMATCH")
-  assert.match(alphabet.company.rationale, /different company/)
+  assert.match(alphabet.company.rationale, /conflicts with the verified expected company URL/)
+})
+
+test("Preview current-company normalization prefers active experience and records its provenance", () => {
+  const mapped = adapter.mapCoresignalPreview({
+    id: "active-priority",
+    company_name: "Historical Summary Company",
+    active_experience_company_name: "Google",
+    company_url: "https://www.linkedin.com/company/historical-summary",
+    active_experience_company_url: "https://www.linkedin.com/company/google",
+    active_experience_title: "Vice President",
+  }, 0)
+  assert.equal(mapped.currentCompany, "Google")
+  assert.equal(mapped.currentCompanyEvidenceSource, "ACTIVE_EXPERIENCE")
+  assert.equal(mapped.currentCompanyUrl, "https://www.linkedin.com/company/google")
+})
+
+test("exact-name query keeps conflicting generic company summary pending but rejects active-experience contradiction", async () => {
+  const constraint = { institutionId: 25919228, exactGraduationYear: 2011, providerCompanyId: null, exactCompanyName: "Google", companyIdentityMode: "EXACT_NAME", expectedCompanyUrl: null, semantics: "BASE_EMPLOYEE_ES_DSL_PREVIEW" }
+  const matchingSummaryOnly = adapter.mapCoresignalPreview({ id: "matching-summary-only", company_name: "Google", active_experience_title: "Vice President" }, 0)
+  const summaryOnly = adapter.mapCoresignalPreview({ id: "summary-only", company_name: "Summary Holdings", active_experience_title: "Vice President" }, 0)
+  const activeMismatch = adapter.mapCoresignalPreview({ id: "active-mismatch", company_name: "Google", active_experience_company_name: "Confirmed Other Employer", active_experience_title: "Vice President" }, 0)
+  const missingCompany = adapter.mapCoresignalPreview({ id: "missing-company", active_experience_title: "Vice President" }, 0)
+  const matchingSummaryQualification = execution.qualifyPreviewCandidate(matchingSummaryOnly, exactFilters(), constraint)
+  const summaryQualification = execution.qualifyPreviewCandidate(summaryOnly, exactFilters(), constraint)
+  const activeQualification = execution.qualifyPreviewCandidate(activeMismatch, exactFilters(), constraint)
+  const missingQualification = execution.qualifyPreviewCandidate(missingCompany, exactFilters(), constraint)
+  assert.equal(matchingSummaryQualification.company.result, "INSUFFICIENT_EVIDENCE")
+  assert.match(matchingSummaryQualification.company.rationale, /does not independently establish current employment/)
+  assert.equal(summaryQualification.company.result, "INSUFFICIENT_EVIDENCE")
+  assert.match(summaryQualification.company.evidence, /generic Preview company summary/)
+  assert.equal(activeQualification.company.result, "MISMATCH")
+  assert.match(activeQualification.company.evidence, /active_experience_company_name/)
+  assert.equal(missingQualification.company.result, "INSUFFICIENT_EVIDENCE")
+  assert.equal(missingQualification.company.evidence, "")
+})
+
+test("Search #10-shaped Preview retains one bounded pending candidate without Collect", async () => {
+  const constraint = { institutionId: 25919228, exactGraduationYear: 2026, providerCompanyId: null, exactCompanyName: "McKinsey & Company", companyIdentityMode: "EXACT_NAME", expectedCompanyUrl: null, semantics: "BASE_EMPLOYEE_ES_DSL_PREVIEW" }
+  const filters = exactFilters({ company: "McKinsey & Company", graduationYear: "2026", discoveryProgrammes: ["MBA", "PGP"], seniority: "All levels", seniorities: [] })
+  const previewProfiles = Array.from({ length: 11 }, (_, index) => adapter.mapCoresignalPreview({
+    id: `search-10-${index + 1}`,
+    professional_network_url: `https://www.linkedin.com/in/search-10-${index + 1}`,
+    company_name: "Conflicting Generic Summary",
+    active_experience_title: "Role unavailable",
+  }, index))
+  let collectCalls = 0
+  const result = await execution.executeSelectiveDiscovery({
+    previewProfiles,
+    filters,
+    alumni: [],
+    rejectedCandidates: [],
+    capabilities: (await vite.ssrLoadModule("/lib/discovery-provider-capabilities.ts")).CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES,
+    requestedCount: 1,
+    maximumCollects: 0,
+    searchConstraint: constraint,
+    collect: async () => { collectCalls += 1; return null },
+  })
+  assert.equal(collectCalls, 0)
+  assert.equal(result.metrics.previewCountReturned, 11)
+  assert.equal(result.metrics.previewCountConsidered, 11)
+  assert.equal(result.metrics.companyMismatches, 0)
+  assert.equal(result.metrics.pendingVerification, 11)
+  assert.equal(result.metrics.savedReviewCandidates, 1)
+  assert.equal(result.selectedCandidates.length, 1)
+  assert.equal(result.selectedCandidates[0].finalStatus, "IDENTITY_REVIEW_REQUIRED")
+  assert.equal(result.selectedCandidates[0].qualification.programme.result, "SEARCH_CONSTRAINED_NOT_VERIFIED")
+  assert.match(result.selectedCandidates[0].collectionRationale, /pending human review/)
+  assert.match(discoveryRoute, /response\.profiles\.map/)
+  assert.match(discoveryRoute, /db\.insert\(externalDiscoveryResults\)/)
+  assert.match(discoveryRoute, /\[company-source=\$\{companySource\}\]/)
+  assert.match(discoveryRoute, /currentCompanyEvidenceSource: storedCompanyEvidenceSource\(result\.reviewNote\)/)
 })
 
 test("official Preview fields normalize without fabricating education or freshness", () => {

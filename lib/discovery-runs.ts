@@ -32,8 +32,9 @@ export type DiscoveryRunHistory = {
 export function persistedDiscoveryExecutionSummary(history: readonly DiscoveryRunHistory[]) {
   const totals = {
     previewCountReturned: 0, previewCountConsidered: 0, knownProviderIds: 0, knownProfileUrls: 0,
-    companyMismatches: 0, seniorityMismatches: 0, seniorityInsufficientEvidence: 0,
-    confirmedFilterMatches: 0, reviewBeforeCollect: 0, previouslyRejected: 0, ambiguousCandidates: 0,
+    companyMismatches: 0, roleMismatches: 0, functionMismatches: 0, seniorityMismatches: 0, locationMismatches: 0,
+    seniorityInsufficientEvidence: 0, pendingVerification: 0, confirmedMismatches: 0, alreadyKnown: 0,
+    savedReviewCandidates: 0, approvedAlumni: 0, confirmedFilterMatches: 0, reviewBeforeCollect: 0, previouslyRejected: 0, ambiguousCandidates: 0,
     collectRecommended: 0, collectExecuted: 0, collectSkippedKnown: 0, collectSkippedFilter: 0,
     collectSkippedLimit: 0, potentialCollectionsAvoided: 0,
   }

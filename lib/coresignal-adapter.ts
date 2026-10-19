@@ -151,6 +151,7 @@ function mapProfile(record: Row, index: number, options: { now?: Date; selectedP
     name: first(record, ["full_name", "name"]) || "Name unavailable",
     education: selectedEducation?.institution ?? FIXED_ALUMNI_SCHOOL,
     currentCompany: currentRoleAmbiguous ? "Multiple current roles — review required" : currentCompany || "Company unavailable",
+    currentCompanyEvidenceSource: currentRoleAmbiguous ? "NONE" : currentCompany ? "COLLECTED_CURRENT_ROLE" : "NONE",
     role: currentRoleAmbiguous ? "Multiple current roles — review required" : rawTitle || "Role unavailable",
     rawTitle: currentRoleAmbiguous ? "" : rawTitle,
     function: currentRoleAmbiguous ? "Other" : normalizeFunction(first(employment, ["function", "department"]), rawTitle),
@@ -184,7 +185,10 @@ export function mapCoresignalPreview(record: Row, index: number): DiscoveryProfi
   if (!notDeleted(record)) return null
   const employeeId = first(record, ["id", "employee_id", "employee_base_id"])
   const rawTitle = first(record, ["active_experience_title", "title", "current_title", "headline"])
-  const company = first(record, ["company_name", "active_experience_company_name", "current_company_name"])
+  const activeExperienceCompany = first(record, ["active_experience_company_name"])
+  const summaryCompany = first(record, ["company_name", "current_company_name"])
+  const company = activeExperienceCompany || summaryCompany
+  const currentCompanyEvidenceSource = activeExperienceCompany ? "ACTIVE_EXPERIENCE" : summaryCompany ? "GENERIC_SUMMARY" : "NONE"
   const linkedinUrl = normalizeProfessionalProfileUrl(first(record, ["profile_url", "professional_network_url", "linkedin_url", "url"]))
   // The documented Preview response does not promise education fields. Keep
   // them optional, but preserve exact same-row IIML evidence if the provider
@@ -197,6 +201,7 @@ export function mapCoresignalPreview(record: Row, index: number): DiscoveryProfi
     name: first(record, ["full_name", "name"]) || "Name unavailable",
     education: displayedEducation?.institution ?? "Education not returned",
     currentCompany: company || "Company unavailable",
+    currentCompanyEvidenceSource,
     role: rawTitle || "Role unavailable",
     rawTitle,
     function: normalizeFunction("", rawTitle),
@@ -216,7 +221,7 @@ export function mapCoresignalPreview(record: Row, index: number): DiscoveryProfi
     institutionId: displayedEducation ? first(displayedEducation.source, ["institution_id", "school_id"]) : "",
     institutionUrl: displayedEducation ? institutionUrl(displayedEducation.source) : "",
     currentCompanyId: first(record, ["company_id"]),
-    currentCompanyUrl: first(record, ["company_url", "company_professional_network_url", "company_linkedin_url", "active_experience_company_url", "active_experience_company_professional_network_url"]),
+    currentCompanyUrl: first(record, ["active_experience_company_url", "active_experience_company_professional_network_url", "company_url", "company_professional_network_url", "company_linkedin_url"]),
     currentRoleStartDate: "",
     currentIndustry: first(record, ["company_industry"]),
     currentRoleAmbiguous: false,

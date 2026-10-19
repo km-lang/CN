@@ -100,6 +100,15 @@ test("persisted execution metrics do not infer missing qualification categories"
   assert.equal(summary.confirmedFilterMatches, 0)
 })
 
+test("persisted execution metrics retain evaluated mismatches and saved pending counts", () => {
+  const summary = persistedDiscoveryExecutionSummary([{ id: 18, applicationUnits: 1, providerReportedCredits: null, responseSummary: `Selective execution ${JSON.stringify({ previewCountReturned: 11, previewCountConsidered: 11, companyMismatches: 11, pendingVerification: 0, confirmedMismatches: 11, savedReviewCandidates: 0 })}` }])
+  assert.equal(summary.previewCountConsidered, 11)
+  assert.equal(summary.companyMismatches, 11)
+  assert.equal(summary.confirmedMismatches, 11)
+  assert.equal(summary.pendingVerification, 0)
+  assert.equal(summary.savedReviewCandidates, 0)
+})
+
 test("manually confirmed Preview pages accumulate qualification metrics", () => {
   const first = { id: 1, applicationUnits: 1, providerReportedCredits: null, responseSummary: `page 1 · Selective execution ${JSON.stringify({ previewCountReturned: 20, previewCountConsidered: 20, companyMismatches: 4, confirmedFilterMatches: 3 })}` }
   const second = { id: 2, applicationUnits: 1, providerReportedCredits: null, responseSummary: `page 2 · Selective execution ${JSON.stringify({ previewCountReturned: 20, previewCountConsidered: 20, companyMismatches: 2, confirmedFilterMatches: 5 })}` }

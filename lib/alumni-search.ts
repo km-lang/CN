@@ -65,6 +65,7 @@ export type DiscoveryProfile = {
   name: string;
   education: string;
   currentCompany: string;
+  currentCompanyEvidenceSource?: "ACTIVE_EXPERIENCE" | "GENERIC_SUMMARY" | "COLLECTED_CURRENT_ROLE" | "NONE";
   role: string;
   rawTitle: string;
   function: string;

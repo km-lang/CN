@@ -186,18 +186,47 @@ function companyCriterion(profile: DiscoveryProfile, filters: DiscoveryFilters, 
   const returned = roles.map(role => role.company).filter(value => value && !/unavailable|multiple current roles/i.test(value))
   if (!returned.length) return criterion("INSUFFICIENT_EVIDENCE", source, "", "Current-company evidence was not returned.")
   const match = returned.find(value => normalized(value) === normalized(filters.company))
-  if (match && source === "SEARCH_PREVIEW" && searchConstraint?.companyIdentityMode === "EXACT_NAME") {
+  const previewExactName = source === "SEARCH_PREVIEW" && searchConstraint?.companyIdentityMode === "EXACT_NAME"
+  const evidenceSource = profile.currentCompanyEvidenceSource === "ACTIVE_EXPERIENCE"
+    ? "active_experience_company_name"
+    : profile.currentCompanyEvidenceSource === "GENERIC_SUMMARY"
+      ? "generic Preview company summary"
+      : "returned current-company field"
+  if (previewExactName && profile.currentCompanyEvidenceSource === "GENERIC_SUMMARY") {
     const returnedIdentity = companyLinkedinIdentity(profile.currentCompanyUrl)
-    const expectedIdentity = companyLinkedinIdentity(searchConstraint.expectedCompanyUrl ?? "") || normalized(searchConstraint.exactCompanyName ?? filters.company)
+    const expectedIdentity = companyLinkedinIdentity(searchConstraint.expectedCompanyUrl ?? "")
+    if (returnedIdentity && expectedIdentity && returnedIdentity !== expectedIdentity) {
+      return criterion("MISMATCH", source, `${evidenceSource}: ${returned.join("; ")} · ${profile.currentCompanyUrl}`, `The returned company URL conflicts with the verified expected company URL for ${filters.company}.`)
+    }
+    return criterion(
+      "INSUFFICIENT_EVIDENCE",
+      source,
+      `${evidenceSource}: ${returned.join("; ")}`,
+      match
+        ? `The generic Preview company summary aligns with ${filters.company}, but it does not independently establish current employment. Current-company identity remains pending human review.`
+        : `The provider query matched a current, non-deleted ${filters.company} experience row, but Preview returned only a conflicting generic company summary. Current-company identity remains pending human review.`,
+    )
+  }
+  if (match && previewExactName) {
+    const returnedIdentity = companyLinkedinIdentity(profile.currentCompanyUrl)
+    const expectedIdentity = companyLinkedinIdentity(searchConstraint.expectedCompanyUrl ?? "")
     if (returnedIdentity && returnedIdentity !== expectedIdentity) {
-      return criterion("MISMATCH", source, `${match} · ${profile.currentCompanyUrl}`, `Returned company name matches ${filters.company}, but the returned company URL identifies a different company. Exact-name Search does not override conflicting identity evidence.`)
+      if (expectedIdentity) return criterion("MISMATCH", source, `${evidenceSource}: ${match} · ${profile.currentCompanyUrl}`, `Returned company name matches ${filters.company}, but the returned company URL conflicts with the verified expected company URL.`)
     }
     const identityEvidence = returnedIdentity ? `company URL /company/${returnedIdentity}` : "company URL not returned"
-    return criterion("NAME_MATCH_IDENTITY_UNVERIFIED", source, `${match} · ${identityEvidence}`, `Returned current-company name matches ${filters.company} under the same-row exact-name Search constraint. No verified numeric provider-company identity is asserted; employer identity remains subject to human review.`)
+    return criterion("NAME_MATCH_IDENTITY_UNVERIFIED", source, `${evidenceSource}: ${match} · ${identityEvidence}`, `Returned ${evidenceSource} matches ${filters.company} under the same-row exact-name Search constraint. No verified numeric provider-company identity is asserted; employer identity remains subject to human review.`)
+  }
+  if (!match && previewExactName && profile.currentCompanyEvidenceSource !== "ACTIVE_EXPERIENCE") {
+    const returnedIdentity = companyLinkedinIdentity(profile.currentCompanyUrl)
+    const expectedIdentity = companyLinkedinIdentity(searchConstraint.expectedCompanyUrl ?? "")
+    if (returnedIdentity && expectedIdentity && returnedIdentity !== expectedIdentity) {
+      return criterion("MISMATCH", source, `${evidenceSource}: ${returned.join("; ")} · ${profile.currentCompanyUrl}`, `The returned company URL conflicts with the verified expected company URL for ${filters.company}.`)
+    }
+    return criterion("INSUFFICIENT_EVIDENCE", source, `${evidenceSource}: ${returned.join("; ")}`, `The provider query matched a current, non-deleted ${filters.company} experience row, but Preview returned only a conflicting generic company summary. Current-company identity remains pending human review.`)
   }
   return match
-    ? criterion(source === "BASE_COLLECT" ? "VERIFIED_MATCH" : "MATCH", source, match, `Returned current-company evidence matches ${filters.company}.`)
-    : criterion(source === "BASE_COLLECT" ? "VERIFIED_MISMATCH" : "MISMATCH", source, returned.join("; "), `Returned current-company evidence does not match ${filters.company}.`)
+    ? criterion(source === "BASE_COLLECT" ? "VERIFIED_MATCH" : "MATCH", source, `${evidenceSource}: ${match}`, `Returned current-company evidence matches ${filters.company}.`)
+    : criterion(source === "BASE_COLLECT" ? "VERIFIED_MISMATCH" : "MISMATCH", source, `${evidenceSource}: ${returned.join("; ")}`, `Returned current-company evidence does not match ${filters.company}.`)
 }
 
 export function titleSeniority(title: string) {
@@ -414,7 +443,7 @@ function preliminaryDecision(reconciliation: ReconciliationResult, qualification
   if (["KNOWN_PROVIDER_ID", "KNOWN_PROFILE_URL", "KNOWN_STRONG_IDENTITY"].includes(reconciliation.classification)) return { state: "SKIPPED_ALREADY_KNOWN" as const, status: "ALREADY_KNOWN" as const, reason: reconciliation.rationale }
   if (reconciliation.classification === "PREVIOUSLY_REJECTED") return { state: "SKIPPED_PREVIOUSLY_REJECTED" as const, status: "PREVIOUSLY_REJECTED" as const, reason: reconciliation.rationale }
   if (hasMismatch(qualification)) return { state: "SKIPPED_FILTER_MISMATCH" as const, status: "FILTER_MISMATCH" as const, reason: qualification.company.result === "MISMATCH" ? qualification.company.rationale : qualification.seniority.result === "MISMATCH" ? qualification.seniority.rationale : qualification.graduationYear.rationale }
-  if (reconciliation.classification === "AMBIGUOUS" || hasPreviewOnlyInsufficientEvidence(qualification)) return { state: "REVIEW_BEFORE_COLLECT" as const, status: "IDENTITY_REVIEW_REQUIRED" as const, reason: reconciliation.classification === "AMBIGUOUS" ? reconciliation.rationale : "Preview evidence is insufficient for safe automatic collection." }
+  if (reconciliation.classification === "AMBIGUOUS" || hasPreviewOnlyInsufficientEvidence(qualification)) return { state: "REVIEW_BEFORE_COLLECT" as const, status: "IDENTITY_REVIEW_REQUIRED" as const, reason: reconciliation.classification === "AMBIGUOUS" ? reconciliation.rationale : qualification.company.result === "INSUFFICIENT_EVIDENCE" ? qualification.company.rationale : "Preview evidence is insufficient for safe automatic collection." }
   return null
 }
 
@@ -459,7 +488,7 @@ export async function executeSelectiveDiscovery(options: {
         reconciliation: previewReconciliation,
         qualification: previewQualification,
         collectionState: "REVIEW_BEFORE_COLLECT",
-        collectionRationale: "Preview evidence satisfies every requested locally-verifiable criterion. The candidate remains human-review-only; no Collect is required merely to occupy the requested qualified-result slot.",
+        collectionRationale: `Preview evidence satisfies every requested locally-verifiable criterion. Company evidence: ${previewQualification.company.evidence || "not requested"}. The candidate remains human-review-only; no Collect is required merely to occupy the requested qualified-result slot.`,
         finalStatus: "QUALIFIED_FOR_REVIEW",
       })
       continue
@@ -471,7 +500,7 @@ export async function executeSelectiveDiscovery(options: {
         reconciliation: previewReconciliation,
         qualification: previewQualification,
         collectionState: "REVIEW_BEFORE_COLLECT",
-        collectionRationale: "The provider-only Preview path returned unresolved requested evidence. No automatic Collect is authorized; the candidate remains pending human verification.",
+        collectionRationale: `The provider-only Preview path returned unresolved requested evidence. Company evidence: ${previewQualification.company.evidence || "not requested"}. No automatic Collect is authorized; the candidate remains pending human verification.`,
         finalStatus: "INSUFFICIENT_EVIDENCE",
       })
       continue

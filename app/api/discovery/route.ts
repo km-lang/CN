@@ -192,6 +192,7 @@ async function remainingApplicationUnits() {
 }
 
 function resultValues(searchId: number, profile: DiscoveryProfile, match: ReturnType<typeof classify>, execution?: DiscoveryExecutionCandidate) {
+  const companySource = profile.currentCompanyEvidenceSource ?? "NONE"
   return {
     searchId, provider: PROFESSIONAL_DATA_PROVIDER, providerResultId: profile.providerResultId, providerPersonId: profile.providerPersonId,
     name: profile.name, education: profile.education, currentCompany: profile.currentCompany, role: profile.role, rawTitle: profile.rawTitle,
@@ -202,7 +203,7 @@ function resultValues(searchId: number, profile: DiscoveryProfile, match: Return
     institutionId: profile.institutionId, institutionUrl: profile.institutionUrl, currentCompanyId: profile.currentCompanyId,
     currentCompanyUrl: profile.currentCompanyUrl, currentRoleStartDate: profile.currentRoleStartDate, currentIndustry: profile.currentIndustry,
     currentRoleAmbiguous: profile.currentRoleAmbiguous, providerFreshnessAt: profile.providerFreshnessAt,
-    reviewNote: execution ? `${execution.collectionState}: ${execution.collectionRationale}` : "",
+    reviewNote: execution ? `${execution.collectionState}: [company-source=${companySource}] ${execution.collectionRationale}` : "",
   }
 }
 
@@ -216,6 +217,12 @@ function executionPresentation(execution?: DiscoveryExecutionCandidate) {
 }
 
 const collectionStates = new Set(["COLLECT_PERFORMED", "SKIPPED_ALREADY_KNOWN", "SKIPPED_FILTER_MISMATCH", "SKIPPED_PREVIOUSLY_REJECTED", "REVIEW_BEFORE_COLLECT", "SKIPPED_COLLECT_LIMIT"])
+const companyEvidenceSources = new Set(["ACTIVE_EXPERIENCE", "GENERIC_SUMMARY", "COLLECTED_CURRENT_ROLE", "NONE"])
+
+function storedCompanyEvidenceSource(reviewNote: string): DiscoveryProfile["currentCompanyEvidenceSource"] {
+  const source = reviewNote.match(/\[company-source=([A-Z_]+)\]/)?.[1] ?? ""
+  return companyEvidenceSources.has(source) ? source as DiscoveryProfile["currentCompanyEvidenceSource"] : undefined
+}
 
 function storedQualificationPresentation(result: typeof externalDiscoveryResults.$inferSelect, filters: DiscoveryFilters, searchConstraint?: DiscoverySearchConstraintEvidence) {
   const collectionState = result.reviewNote.split(":", 1)[0]
@@ -223,6 +230,7 @@ function storedQualificationPresentation(result: typeof externalDiscoveryResults
   const profile: DiscoveryProfile = {
     providerResultId: result.providerResultId, providerPersonId: result.providerPersonId, name: result.name, education: result.education,
     currentCompany: result.currentCompany, role: result.role, rawTitle: result.rawTitle, function: result.function, seniority: result.seniority,
+    currentCompanyEvidenceSource: storedCompanyEvidenceSource(result.reviewNote),
     location: result.location, graduationYear: result.graduationYear, linkedinUrl: result.linkedinUrl, matchConfidence: result.matchConfidence,
     affiliationStatus: result.affiliationStatus as DiscoveryProfile["affiliationStatus"], educationProgramme: result.educationProgramme,
     normalizedProgramme: normalizeCoresignalProgramme(result.educationProgramme).code ?? "", programmeStatus: normalizeCoresignalProgramme(result.educationProgramme).status,
@@ -232,7 +240,7 @@ function storedQualificationPresentation(result: typeof externalDiscoveryResults
     currentIndustry: result.currentIndustry, currentRoleAmbiguous: result.currentRoleAmbiguous, providerFreshnessAt: result.providerFreshnessAt,
   }
   const qualification = collectionState === "COLLECT_PERFORMED" ? qualifyCollectedCandidate(profile, filters) : qualifyPreviewCandidate(profile, filters, searchConstraint)
-  return { qualification, collectionState, collectionRationale: result.reviewNote.slice(collectionState.length + 1).trim() }
+  return { qualification, collectionState, collectionRationale: result.reviewNote.slice(collectionState.length + 1).trim().replace(/^\[company-source=[A-Z_]+\]\s*/, "") }
 }
 
 function alumnusValues(result: typeof externalDiscoveryResults.$inferSelect, actor: string, now: string, suffix = "") {
@@ -310,16 +318,7 @@ export async function GET(request: Request) {
     })
     const counts = discoveryClassificationCounts(activeResults)
     const storedExecution = persistedDiscoveryExecutionSummary(activeProviderHistoryRows)
-    const executionSummary = storedExecution ? {
-      ...storedExecution,
-      seniorityInsufficientEvidence: presentedResults.filter(result => result.qualification?.seniority.result === "INSUFFICIENT_EVIDENCE").length,
-      confirmedFilterMatches: presentedResults.filter(result => result.qualification
-        && ["MATCH", "NAME_MATCH_IDENTITY_UNVERIFIED", "NOT_REQUESTED"].includes(result.qualification.company.result)
-        && ["MATCH", "NOT_REQUESTED"].includes(result.qualification.seniority.result)
-        && ["EXACT_YEAR_VERIFIED", "EXACT_YEAR_QUERY_MATCH"].includes(result.qualification.graduationYear.result)).length,
-      reviewBeforeCollect: presentedResults.filter(result => result.reviewStatus === "Pending review"
-        && String(result.reviewNote ?? "").startsWith("REVIEW_BEFORE_COLLECT:")).length,
-    } : null
+    const executionSummary = storedExecution
     return Response.json({ ...common, activeSearch: activeSearchSummary, results: presentedResults, counts, reconciliationSummary: reconciliations.length ? selectiveCollectSummary(reconciliations) : null, executionSummary, filters, providerHistory: context.role === "ADMIN" ? activeProviderHistory : [], historyRestricted: context.role !== "ADMIN", creditsUsed: activeSearch.creditsUsed, retrieval: "stored", source: { provider: activeSearch.provider, mode: activeSearch.mode, searchId: activeSearch.id, createdAt: activeSearch.createdAt } })
   } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return Response.json({ error: error instanceof Error ? error.message : "Unable to load discovery history." }, { status: 500 }) }
 }
