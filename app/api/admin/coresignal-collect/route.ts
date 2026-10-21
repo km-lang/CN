@@ -181,7 +181,7 @@ export async function POST(request: Request) {
     if (payload.webhookEventId && preflight.runtime.applicationUnitsRemaining < CORESIGNAL_COLLECT_ESTIMATED_CREDITS) { preflight.allowed = false; preflight.blockers.push("The application budget cannot cover this full-record Collect.") }
     if (payload.action === "preflight") {
       const token = preflight.allowed ? createCollectConfirmation({ searchHistoryId: resolved.candidate.searchHistoryId, employeeId: resolved.candidate.employeeId, searchAttemptId: resolved.searchAttemptId }, confirmationSecret()) : null
-      return Response.json({ preflight, confirmationToken: token, documentedCollectCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, providerBalanceKnown: false, automaticCollect: false })
+      return Response.json({ preflight, confirmationToken: token, applicationReservationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, maximumAuthorizedProviderCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, providerBalanceKnown: false, providerDebitKnown: false, automaticCollect: false })
     }
     if (payload.action !== "execute" || payload.confirmed !== true || typeof payload.confirmationToken !== "string") return Response.json({ error: "Explicit Collect confirmation is required." }, { status: 400 })
     const confirmationValid = verifyCollectConfirmation(payload.confirmationToken, { searchHistoryId: resolved.candidate.searchHistoryId, employeeId: resolved.candidate.employeeId, searchAttemptId: resolved.searchAttemptId }, confirmationSecret())

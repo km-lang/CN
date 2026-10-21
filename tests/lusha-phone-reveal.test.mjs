@@ -75,10 +75,18 @@ test("phone reveal 6: exact, omitted, and explicit-zero usage keep distinct acco
   assert.equal(usage.providerUsageState(4), "provider_reported");
 });
 
+test("phone reveal 6b: an unrelated or missing provider contact ID cannot update a canonical phone", async () => {
+  for (const record of [{ id: "other", phones: [{ number: "+1 202 555 0100" }] }, { phones: [{ number: "+1 202 555 0100" }] }]) {
+    const result = await lusha.revealLushaPhone("lusha-abhi", { fetcher: async () => new Response(JSON.stringify({ results: [record] }), { status: 200 }) });
+    assert.equal(result.status, "review_required");
+    assert.equal(result.phone, "");
+  }
+});
+
 test("phone reveal 7: route persists phone provenance without modifying email or professional fields", () => {
   const phoneBlock = route.match(/if \(payload\.action === "lusha_reveal_phone"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "";
-  assert.match(phoneBlock, /operation: "Phone Reveal"/);
-  assert.match(phoneBlock, /Requested fields: phone only/);
+  assert.match(phoneBlock, /claimLushaRequest\(person, "Phone Reveal", actor\)/);
+  assert.match(phoneBlock, /completeLushaRequest\(claim\.id/);
   assert.match(phoneBlock, /phoneSource: "Lusha"/);
   assert.match(phoneBlock, /phoneRetrievedAt: now/);
   assert.match(phoneBlock, /providerReportedCredits: result\.creditsUsed/);
@@ -111,7 +119,7 @@ test("phone reveal 9: UI is single-person, channel-specific, and explicitly conf
 
 test("phone reveal 10: email-only and Signals implementations remain isolated", () => {
   assert.match(route, /revealLushaEmail\(person\.lushaPersonId\)/);
-  assert.match(route, /requestSummary: "Stable Lusha contact ID · Requested fields: email only"/);
+  assert.match(route, /claimLushaRequest\(person, "Email Reveal", actor\)/);
   assert.match(signals, /fetchLushaContactSignals/);
-  assert.doesNotMatch(route.match(/if \(payload\.action === "lusha_reveal_phone"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "", /signals|engagementEvents|mail|outreach/i);
+  assert.doesNotMatch(route.match(/if \(payload\.action === "lusha_reveal_phone"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "", /fetchLushaContactSignals|engagementEvents|sendMail|outreach/i);
 });

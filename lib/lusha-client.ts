@@ -1,4 +1,4 @@
-import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
+import { linkedinProfileIdentifier, normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { providerSecret } from "@/lib/provider-runtime"
 
 const LUSHA_API_BASE = "https://api.lusha.com"
@@ -19,7 +19,8 @@ export type LushaContactSearchInput = {
 }
 
 export type LushaContactPreview = {
-  status: "success" | "no_match"
+  status: "success" | "no_match" | "review_required"
+  identityReason: "PROFILE_URL_MATCH" | "PROFILE_URL_CONFLICT" | "PROFILE_URL_MISSING" | "NO_TRUSTED_INPUT_URL" | "MULTIPLE_RESULTS" | "NO_MATCH"
   contactId: string
   fullName: string
   jobTitle: string
@@ -32,14 +33,14 @@ export type LushaContactPreview = {
 }
 
 export type LushaEmailReveal = {
-  status: "success" | "no_match"
+  status: "success" | "no_match" | "review_required"
   email: string
   creditsUsed: number | null
   usageSource: "provider_response" | "unavailable"
 }
 
 export type LushaPhoneReveal = {
-  status: "success" | "no_match"
+  status: "success" | "no_match" | "review_required"
   phone: string
   creditsUsed: number | null
   usageSource: "provider_response" | "unavailable"
@@ -74,13 +75,13 @@ function responseRecords(body: Record<string, unknown>) {
 function providerCredits(response: Response, body: Record<string, unknown>) {
   for (const name of ["x-credits-used", "x-credits-spent", "x-call-credits-spent", "x-credit-usage", "x-api-credits-used"]) {
     const value = numericValue(response.headers.get(name))
-    if (value !== null) return value
+    if (value !== null && Number.isSafeInteger(value)) return value
   }
   const meta = recordValue(body.meta)
   const usage = recordValue(body.usage)
   for (const value of [body.creditsUsed, body.credits_used, meta.creditsUsed, meta.credits_used, usage.creditsUsed, usage.credits_used, usage.credits]) {
     const parsed = numericValue(value)
-    if (parsed !== null) return parsed
+    if (parsed !== null && Number.isSafeInteger(parsed)) return parsed
   }
   return null
 }
@@ -124,29 +125,39 @@ async function lushaRequest(path: string, init: RequestInit, options: { fetcher?
 
 export async function searchLushaContact(input: LushaContactSearchInput, options: { fetcher?: Fetcher } = {}): Promise<LushaContactPreview> {
   const linkedinUrl = normalizeProfessionalProfileUrl(input.linkedinUrl)
+  const requestedLinkedinId = linkedinProfileIdentifier(linkedinUrl)
   const [firstName, ...surname] = input.name.trim().split(/\s+/)
-  const identifier = linkedinUrl
+  const identifier = requestedLinkedinId
     ? { linkedinUrl }
     : { firstName, lastName: surname.join(" "), companyName: input.company.trim() || undefined }
   const { response, body } = await lushaRequest("/v3/contacts/search", {
     method: "POST",
     body: JSON.stringify({ contacts: [identifier] }),
   }, options)
-  const first = responseRecords(body)[0]
+  const results = responseRecords(body)
+  const first = results[0]
   const creditsUsed = providerCredits(response, body)
-  if (!first) return { status: "no_match", contactId: "", fullName: "", jobTitle: "", company: "", linkedinUrl, emailAvailable: null, phoneAvailable: null, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
+  if (!first) return { status: "no_match", identityReason: "NO_MATCH", contactId: "", fullName: "", jobTitle: "", company: "", linkedinUrl: "", emailAvailable: null, phoneAvailable: null, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
   const has = Array.isArray(first.has) ? first.has.map(textValue) : []
   const jobTitle = recordValue(first.jobTitle)
   const company = recordValue(first.company)
   const socialLinks = recordValue(first.socialLinks)
   const contactId = textValue(first.id ?? first.contactId)
+  const providerLinkedinUrl = normalizeProfessionalProfileUrl(socialLinks.linkedin ?? first.linkedinUrl)
+  const returnedLinkedinId = linkedinProfileIdentifier(providerLinkedinUrl)
+  const identityReason = results.length > 1 ? "MULTIPLE_RESULTS"
+    : !requestedLinkedinId ? "NO_TRUSTED_INPUT_URL"
+    : !returnedLinkedinId ? "PROFILE_URL_MISSING"
+    : returnedLinkedinId !== requestedLinkedinId ? "PROFILE_URL_CONFLICT"
+    : "PROFILE_URL_MATCH"
   return {
-    status: contactId ? "success" : "no_match",
+    status: !contactId ? "no_match" : identityReason === "PROFILE_URL_MATCH" ? "success" : "review_required",
+    identityReason: contactId ? identityReason : "NO_MATCH",
     contactId,
     fullName: textValue(first.fullName) || [textValue(first.firstName), textValue(first.lastName)].filter(Boolean).join(" "),
     jobTitle: textValue(jobTitle.title ?? first.title),
     company: textValue(company.name ?? first.companyName),
-    linkedinUrl: normalizeProfessionalProfileUrl(socialLinks.linkedin ?? first.linkedinUrl) || linkedinUrl,
+    linkedinUrl: providerLinkedinUrl,
     emailAvailable: has.length ? has.includes("emails") : typeof first.hasEmail === "boolean" ? first.hasEmail : null,
     phoneAvailable: has.length ? has.includes("phones") : typeof first.hasPhone === "boolean" ? first.hasPhone : null,
     creditsUsed,
@@ -171,10 +182,12 @@ export async function revealLushaEmail(contactId: string, options: { fetcher?: F
     method: "POST",
     body: JSON.stringify({ ids: [contactId.trim()], reveal: ["emails"] }),
   }, options)
-  const first = responseRecords(body)[0]
-  const email = first ? firstEmail(first) : ""
+  const records = responseRecords(body)
+  const first = records[0]
+  const identityMatches = records.length === 1 && textValue(first?.id ?? first?.contactId) === contactId.trim()
+  const email = identityMatches && first ? firstEmail(first) : ""
   const creditsUsed = providerCredits(response, body)
-  return { status: email ? "success" : "no_match", email, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
+  return { status: first && !identityMatches ? "review_required" : email ? "success" : "no_match", email, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
 }
 
 export async function revealLushaPhone(contactId: string, options: { fetcher?: Fetcher } = {}): Promise<LushaPhoneReveal> {
@@ -183,10 +196,12 @@ export async function revealLushaPhone(contactId: string, options: { fetcher?: F
     method: "POST",
     body: JSON.stringify({ ids: [contactId.trim()], reveal: ["phones"] }),
   }, options)
-  const first = responseRecords(body)[0]
-  const phone = first ? firstPhone(first) : ""
+  const records = responseRecords(body)
+  const first = records[0]
+  const identityMatches = records.length === 1 && textValue(first?.id ?? first?.contactId) === contactId.trim()
+  const phone = identityMatches && first ? firstPhone(first) : ""
   const creditsUsed = providerCredits(response, body)
-  return { status: phone ? "success" : "no_match", phone, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
+  return { status: first && !identityMatches ? "review_required" : phone ? "success" : "no_match", phone, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
 }
 
 function firstMetric(body: Record<string, unknown>, keys: string[]) {

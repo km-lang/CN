@@ -100,7 +100,7 @@ export type SanitizedCollectEvidence = {
     freshnessEvidence: CollectQuality
   }
   reviewState: "REVIEW_REQUIRED" | "NO_CHANGE"
-  applicationAccounting: { applicationUnits: number; documentedCollectCredits: number; confirmedDebit: null }
+  applicationAccounting: { applicationUnits: number; maximumAuthorizedProviderCredits: number; confirmedDebit: null }
   providerCreditsRemaining: number | null
   providerActions: { searchRequests: 0; previewRequests: 0; collectRequests: 1; retries: 0; pagination: false; canonicalMutations: 0; identityAttachments: 0 }
   audit: { requestedAt: string; completedAt: string; durationMs: number; provenance: "provider_response_history" }
@@ -225,7 +225,7 @@ export function sanitizeCollectResponse(input: { body: unknown; candidate: Retai
     title: text(firstValue(item, ["title", "position", "role"]), 200),
     startDate: text(firstValue(item, ["date_from", "start_date"]), 40),
     endDate: text(firstValue(item, ["date_to", "end_date"]), 40),
-    current: truthy(firstValue(item, ["is_current"])) || !text(firstValue(item, ["date_to", "end_date"]), 40),
+    current: currentExperience(item),
   }))
   const matchingEducation = education.filter(item => item.institutionId === String(input.candidate.institutionId))
   const currentRoles = employment.filter(item => item.current)
@@ -262,7 +262,7 @@ export function sanitizeCollectResponse(input: { body: unknown; candidate: Retai
       freshnessEvidence: checkedAt || updatedAt ? "NOT_INDEPENDENTLY_VERIFIED" : "MISSING",
     },
     reviewState: "REVIEW_REQUIRED",
-    applicationAccounting: { applicationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, documentedCollectCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, confirmedDebit: null },
+    applicationAccounting: { applicationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, maximumAuthorizedProviderCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, confirmedDebit: null },
     providerCreditsRemaining: input.providerCreditsRemaining,
     providerActions: { searchRequests: 0, previewRequests: 0, collectRequests: 1, retries: 0, pagination: false, canonicalMutations: 0, identityAttachments: 0 },
     audit: { requestedAt: input.requestedAt, completedAt: input.completedAt, durationMs, provenance: "provider_response_history" },
@@ -311,6 +311,11 @@ function first(source: Record<string, unknown>, names: string[]) { return String
 function text(value: unknown, maximum: number) { return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, maximum) }
 function bounded(value: string, maximum: number) { const result = text(value, maximum); if (!result) throw new Error("Required evidence text is missing."); return result }
 function truthy(value: unknown) { return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true" }
+function currentExperience(value: Record<string, unknown>) {
+  const explicit = value.is_current
+  if (explicit !== null && explicit !== undefined && explicit !== "") return truthy(explicit)
+  return !text(firstValue(value, ["date_to", "end_date"]), 40)
+}
 function activeRow(value: Record<string, unknown>) { return !truthy(value.deleted) }
 function year(value: unknown) { const match = String(value ?? "").match(/(?:19|20)\d{2}/); return match ? Number(match[0]) : null }
 function safeProfileUrl(value: unknown) { const textValue = text(value, 500); if (!textValue) return ""; try { const url = new URL(textValue); return /(^|\.)linkedin\.com$/i.test(url.hostname) && url.pathname.startsWith("/in/") ? `${url.protocol}//${url.hostname.toLowerCase()}${url.pathname.replace(/\/+$/, "")}` : "" } catch { return "" } }

@@ -1,4 +1,5 @@
-import { desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { env } from "cloudflare:workers";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { alumni, alumniPrivacyControls, communicationPreferences, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
@@ -14,6 +15,7 @@ import { attachCoresignalIdentity } from "@/lib/coresignal-identity";
 import { coresignalIdentityStore } from "@/lib/coresignal-identity-store";
 import { presentProviderHistorySearchEvidence } from "@/lib/coresignal-search-evidence";
 import { presentProviderHistoryCollectEvidence } from "@/lib/coresignal-collect-only";
+import { LUSHA_ATTACH_ID_SQL, LUSHA_REQUEST_CLAIM_SQL, lushaApplicationReservation, lushaBalanceCoversReservation, lushaContactEntitlement, lushaReportedChargeExceedsReservation, type LushaGovernedOperation } from "@/lib/lusha-request-guard";
 
 const providers: ProviderName[] = ["coresignal", "lusha"];
 const defaultLimits: Record<ProviderName, number> = { coresignal: 25, lusha: 100 };
@@ -35,17 +37,48 @@ async function usageSnapshot() {
   await ensureSettings();
   const [settings, usage] = await Promise.all([
     db.select().from(providerSettings),
-    db.select({ provider: providerResponseHistory.provider, credits: sql<number>`coalesce(sum(${providerResponseHistory.creditsUsed}), 0)`, applicationUnits: sql<number>`coalesce(sum(${providerResponseHistory.applicationUnits}), 0)` })
+    db.select({ provider: providerResponseHistory.provider, credits: sql<number>`coalesce(sum(${providerResponseHistory.creditsUsed}), 0)`, applicationUnits: sql<number>`coalesce(sum(${providerResponseHistory.applicationUnits}), 0)`, lushaBudgetUnits: sql<number>`coalesce(sum(case when ${providerResponseHistory.mode}='live' then case when ${providerResponseHistory.applicationUnits}>0 then ${providerResponseHistory.applicationUnits} else ${providerResponseHistory.creditsUsed} end else 0 end), 0)` })
       .from(providerResponseHistory)
-      .where(gte(providerResponseHistory.createdAt, monthStart()))
+      .where(sql`datetime(${providerResponseHistory.createdAt}) >= datetime(${monthStart()})`)
       .groupBy(providerResponseHistory.provider),
   ]);
-  const usedByProvider = Object.fromEntries(usage.map(row => [row.provider, row.provider === PROFESSIONAL_DATA_PROVIDER ? Number(row.applicationUnits) : Number(row.credits)]));
+  const usedByProvider = Object.fromEntries(usage.map(row => [row.provider, row.provider === "lusha" ? Number(row.lushaBudgetUnits) : row.provider === PROFESSIONAL_DATA_PROVIDER ? Number(row.applicationUnits) : Number(row.credits)]));
   return Object.fromEntries(providers.map(provider => {
     const limit = settings.find(row => row.provider === provider)?.monthlyCreditLimit ?? defaultLimits[provider];
     const used = usedByProvider[provider] ?? 0;
     return [provider, { used, limit, remaining: Math.max(0, limit - used), configured: providerConfigured(provider), mode: enrichmentMode(provider) }];
   }));
+}
+
+function lushaMonthStart() { return monthStart(); }
+
+async function claimLushaRequest(person: typeof alumni.$inferSelect, operation: LushaGovernedOperation, actor: string) {
+  const reservation = lushaApplicationReservation(operation);
+  if (reservation === null) return { error: "This Lusha operation has no approved application-unit ceiling. Configure it only after account-specific entitlement and billing review." } as const;
+  if (!lushaContactEntitlement(operation)) return { error: "Lusha endpoint entitlement has not been confirmed for this operation and account. No provider request was made." } as const;
+  let accountBalance: Awaited<ReturnType<typeof getLushaAccountUsage>>;
+  try { accountBalance = await getLushaAccountUsage(); }
+  catch { return { error: "Current Lusha account balance could not be verified. No contact request was made." } as const; }
+  if (!lushaBalanceCoversReservation(accountBalance.remaining, reservation)) return { error: "Lusha account balance is unavailable or below the approved per-operation ceiling. No contact request was made." } as const;
+  await ensureSettings();
+  const start = lushaMonthStart();
+  const row = await env.DB.prepare(LUSHA_REQUEST_CLAIM_SQL).bind(
+    person.id, person.name, operation, reservation, `One ${operation} request for saved alumnus #${person.id}`, actor,
+    person.id, operation, start, reservation, start,
+  ).first<{ id: number }>();
+  if (!row) return { error: "A duplicate, unresolved Lusha charge, or application allowance blocks this request. No provider call was made." } as const;
+  return { id: row.id, reservation } as const;
+}
+
+async function completeLushaRequest(claimId: number, reservation: number, status: string, credits: number | null, resultCount: number, summary: string) {
+  const applicationUnits = Math.max(reservation, credits ?? 0);
+  const result = await env.DB.prepare("UPDATE provider_response_history SET status=?,credits_used=?,application_units=?,provider_reported_credits=?,usage_state=?,result_count=?,response_summary=? WHERE id=? AND provider='lusha' AND status='in_progress'")
+    .bind(status, credits ?? 0, applicationUnits, credits, providerUsageState(credits), resultCount, summary, claimId).run() as { meta: { changes?: number } };
+  if (result.meta.changes !== 1) throw new Error("The Lusha request claim could not be finalized; manual reconciliation is required.");
+}
+
+async function markLushaAttemptUncertain(claimId: number) {
+  await env.DB.prepare("UPDATE provider_response_history SET status='ambiguous',response_summary='The request outcome is uncertain; the reserved application units remain held and no retry is permitted.',error_message='Provider transport or persistence failed; Admin reconciliation required.' WHERE id=? AND provider='lusha' AND status='in_progress'").bind(claimId).run();
 }
 
 export async function GET(request: Request) {
@@ -124,13 +157,14 @@ export async function POST(request: Request) {
         return Response.json({ error: "Choose a provider-history record, enter a whole observed account delta, and record its source." }, { status: 400 });
       }
       const [history] = await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.id, payload.historyId!)).limit(1);
-      if (!history || history.provider !== "lusha" || history.providerReportedCredits !== null || !["reconciliation_required", "not_applicable"].includes(history.usageState)) {
+      if (!history || history.provider !== "lusha" || history.providerReportedCredits !== null || history.status === "in_progress" || !["reconciliation_required", "not_applicable"].includes(history.usageState)) {
         return Response.json({ error: "Only a Lusha operation without provider-reported usage can be reconciled." }, { status: 409 });
       }
       const reconciledCredits = Number(payload.reconciledCredits);
       const now = new Date().toISOString();
       await db.update(providerResponseHistory).set({
         creditsUsed: reconciledCredits,
+        applicationUnits: Math.max(history.applicationUnits, reconciledCredits),
         reconciledCredits,
         usageState: "reconciled_account_usage",
         reconciliationSource: payload.reconciliationSource.trim().slice(0, 240),
@@ -159,37 +193,38 @@ export async function POST(request: Request) {
         if (!eligibleContactChannels(person, ["phone"]).includes("phone")) return Response.json({ error: "A verified phone is already stored. No contact search was made." }, { status: 409 });
       }
       const identifier = person.linkedinUrl ? "professional profile" : "name and current company";
-      const result = await searchLushaContact({ name: person.name, company: person.company, linkedinUrl: person.linkedinUrl });
-      const recordedCredits = result.creditsUsed ?? 0;
-      if (result.status === "success" && result.contactId) {
+      const claim = await claimLushaRequest(person, "Contact Search Preview", actor);
+      if ("error" in claim) return Response.json({ error: claim.error }, { status: 409 });
+      let result: Awaited<ReturnType<typeof searchLushaContact>>;
+      try { result = await searchLushaContact({ name: person.name, company: person.company, linkedinUrl: person.linkedinUrl }); }
+      catch (error) { await markLushaAttemptUncertain(claim.id); throw error; }
+      let previewStatus: typeof result.status = lushaReportedChargeExceedsReservation(result.creditsUsed, claim.reservation) ? "review_required" : result.status;
+      let identityReason: string = previewStatus === "review_required" && result.status !== "review_required" ? "REPORTED_CHARGE_EXCEEDS_APPROVED_RESERVATION" : result.identityReason;
+      const summary = previewStatus === "success"
+        ? `Stable Lusha contact ID found. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. Phone availability: ${result.phoneAvailable === null ? "not reported" : result.phoneAvailable ? "available" : "not available"}. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
+        : `${previewStatus === "review_required" ? `Lusha returned a contact, but identity or billing requires review (${identityReason}); no contact ID was attached.` : "No Lusha contact match."} ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`;
+      await completeLushaRequest(claim.id, claim.reservation, previewStatus, result.creditsUsed, result.contactId ? 1 : 0, summary);
+      if (previewStatus === "success" && result.contactId) {
         const companyConflict = Boolean(result.company && person.company && result.company.toLowerCase() !== person.company.toLowerCase());
         const roleConflict = Boolean(result.jobTitle && person.title && result.jobTitle.toLowerCase() !== person.title.toLowerCase());
-        await db.update(alumni).set({
-          lushaPersonId: result.contactId,
-          ...(companyConflict || roleConflict ? {
+        const now = new Date().toISOString();
+        const attached = await env.DB.prepare(LUSHA_ATTACH_ID_SQL).bind(result.contactId, actor, now, person.id, result.contactId, person.id, result.contactId).first<{ id: number }>();
+        if (!attached) {
+          previewStatus = "review_required";
+          identityReason = "CONTACT_ID_ALREADY_LINKED_OR_CONFLICTING";
+          await env.DB.prepare("UPDATE provider_response_history SET status='review_required',response_summary='Lusha returned a contact, but its ID could not be attached uniquely; manual identity review required.' WHERE id=? AND provider='lusha'").bind(claim.id).run();
+        } else if (companyConflict || roleConflict) await db.update(alumni).set({
             professionalDataStatus: "Conflict — manual verification required",
             professionalDataNote: `Internal professional profile: ${person.title} at ${person.company}. Lusha preview: ${result.jobTitle || "role not reported"} at ${result.company || "company not reported"}. No profile field was overwritten.`,
-          } : {}),
-          updatedBy: actor,
-          updatedAt: new Date().toISOString(),
         }).where(eq(alumni.id, person.id));
       }
-      await db.insert(providerResponseHistory).values({
-        provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Contact Search Preview", mode: "live", status: result.status,
-        creditsUsed: recordedCredits, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0,
-        requestSummary: `Identifier: ${identifier} · Requested fields: availability preview`,
-        responseSummary: result.status === "success"
-          ? `Stable Lusha contact ID found. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. Phone availability: ${result.phoneAvailable === null ? "not reported" : result.phoneAvailable ? "available" : "not available"}. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
-          : `No Lusha contact match. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`,
-        requestedBy: actor,
-      });
-      await writeSecurityAudit(context, { action: "lusha_contact_preview", entityType: "alumnus", entityId: person.id, metadata: { identifier, outcome: result.status, requestedFields: ["availability_preview"], creditsUsed: result.creditsUsed } });
+      await writeSecurityAudit(context, { action: "lusha_contact_preview", entityType: "alumnus", entityId: person.id, metadata: { claimId: claim.id, identifier, outcome: previewStatus, identityReason, requestedFields: ["availability_preview"], providerReportedCredits: result.creditsUsed, applicationUnitsReserved: claim.reservation } });
       return authenticatedJsonResponse(context, {
         preview: {
           alumnusId: person.id, alumnusName: person.name, contactId: result.contactId,
           fullName: result.fullName, jobTitle: result.jobTitle, company: result.company,
           professionalProfile: result.linkedinUrl, emailAvailable: result.emailAvailable,
-          phoneAvailable: result.phoneAvailable, status: result.status,
+          phoneAvailable: result.phoneAvailable, status: previewStatus, identityReason,
           creditsUsed: result.creditsUsed, usageSource: result.usageSource,
         },
         usage: await usageSnapshot(),
@@ -205,24 +240,22 @@ export async function POST(request: Request) {
       if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
       if (person.intakeStatus === "PROVISIONAL") return Response.json({ error: "Provisional profiles are not eligible for contact enrichment." }, { status: 409 });
       if (!person.lushaPersonId) return Response.json({ error: "Run the Lusha contact preview first so a stable contact ID can be confirmed." }, { status: 409 });
-      const result = await revealLushaEmail(person.lushaPersonId);
+      const claim = await claimLushaRequest(person, "Email Reveal", actor);
+      if ("error" in claim) return Response.json({ error: claim.error }, { status: 409 });
+      let result: Awaited<ReturnType<typeof revealLushaEmail>>;
+      try { result = await revealLushaEmail(person.lushaPersonId); }
+      catch (error) { await markLushaAttemptUncertain(claim.id); throw error; }
+      const outcome = lushaReportedChargeExceedsReservation(result.creditsUsed, claim.reservation) ? "review_required" : result.status;
       const recordedCredits = result.creditsUsed ?? 0;
-      if (result.status === "success" && result.email) {
+      await completeLushaRequest(claim.id, claim.reservation, outcome, result.creditsUsed, outcome === "success" ? 1 : 0,
+        `${outcome === "review_required" ? "Returned identity or reported debit requires review; no canonical email change." : outcome === "success" ? "Email returned by Lusha." : "No email was returned."} ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`);
+      if (outcome === "success" && result.email) {
         const now = new Date().toISOString();
         if (result.email !== person.email) await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field: "email", oldValue: person.email, newValue: result.email, source: "Lusha", providerAction: "Email Reveal", creditsCharged: recordedCredits, initiatedBy: actor });
         await db.update(alumni).set({ email: result.email, emailVerification: "Unverified", emailSource: "Lusha", emailRetrievedAt: now, lastLushaEnrichment: now, updatedBy: actor, updatedAt: now }).where(eq(alumni.id, person.id));
       }
-      await db.insert(providerResponseHistory).values({
-        provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Email Reveal", mode: "live", status: result.status,
-        creditsUsed: recordedCredits, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0,
-        requestSummary: "Stable Lusha contact ID · Requested fields: email only",
-        responseSummary: result.status === "success"
-          ? `Email returned by Lusha. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
-          : `No email was returned. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`,
-        requestedBy: actor,
-      });
-      await writeSecurityAudit(context, { action: "lusha_email_reveal", entityType: "alumnus", entityId: person.id, metadata: { requestedFields: ["email"], outcome: result.status, creditsUsed: result.creditsUsed } });
-      return authenticatedJsonResponse(context, { result: { status: result.status, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
+      await writeSecurityAudit(context, { action: "lusha_email_reveal", entityType: "alumnus", entityId: person.id, metadata: { claimId: claim.id, requestedFields: ["email"], outcome, providerReportedCredits: result.creditsUsed, applicationUnitsReserved: claim.reservation } });
+      return authenticatedJsonResponse(context, { result: { status: outcome, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
     }
 
     if (payload.action === "lusha_reveal_phone") {
@@ -241,24 +274,22 @@ export async function POST(request: Request) {
       if (!permission.allowed) return Response.json({ error: permission.reason }, { status: 409 });
       if (!eligibleContactChannels(person, ["phone"]).includes("phone")) return Response.json({ error: "A verified phone is already stored. No repeat provider call was made." }, { status: 409 });
       if (!person.lushaPersonId.trim()) return Response.json({ error: "Run the Lusha contact preview first so a stable contact ID can be confirmed." }, { status: 409 });
-      const result = await revealLushaPhone(person.lushaPersonId);
+      const claim = await claimLushaRequest(person, "Phone Reveal", actor);
+      if ("error" in claim) return Response.json({ error: claim.error }, { status: 409 });
+      let result: Awaited<ReturnType<typeof revealLushaPhone>>;
+      try { result = await revealLushaPhone(person.lushaPersonId); }
+      catch (error) { await markLushaAttemptUncertain(claim.id); throw error; }
+      const outcome = lushaReportedChargeExceedsReservation(result.creditsUsed, claim.reservation) ? "review_required" : result.status;
       const recordedCredits = result.creditsUsed ?? 0;
-      if (result.status === "success" && result.phone) {
+      await completeLushaRequest(claim.id, claim.reservation, outcome, result.creditsUsed, outcome === "success" ? 1 : 0,
+        `${outcome === "review_required" ? "Returned identity or reported debit requires review; no canonical phone change." : outcome === "success" ? "Phone returned by Lusha." : "No phone was returned."} ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`);
+      if (outcome === "success" && result.phone) {
         const now = new Date().toISOString();
         if (result.phone !== person.phone) await db.insert(fieldChangeHistory).values({ alumnusId: person.id, field: "phone", oldValue: person.phone, newValue: result.phone, source: "Lusha", providerAction: "Phone Reveal", creditsCharged: recordedCredits, initiatedBy: actor });
         await db.update(alumni).set({ phone: result.phone, phoneVerification: "Unverified", phoneSource: "Lusha", phoneRetrievedAt: now, lastLushaEnrichment: now, updatedBy: actor, updatedAt: now }).where(eq(alumni.id, person.id));
       }
-      await db.insert(providerResponseHistory).values({
-        provider: "lusha", alumnusId: person.id, alumnusName: person.name, operation: "Phone Reveal", mode: "live", status: result.status,
-        creditsUsed: recordedCredits, providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.status === "success" ? 1 : 0,
-        requestSummary: "Stable Lusha contact ID · Requested fields: phone only",
-        responseSummary: result.status === "success"
-          ? `Phone returned by Lusha. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`
-          : `No phone was returned. ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`,
-        requestedBy: actor,
-      });
-      await writeSecurityAudit(context, { action: "lusha_phone_reveal", entityType: "alumnus", entityId: person.id, metadata: { requestedFields: ["phone"], outcome: result.status, creditsUsed: result.creditsUsed } });
-      return authenticatedJsonResponse(context, { result: { status: result.status, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
+      await writeSecurityAudit(context, { action: "lusha_phone_reveal", entityType: "alumnus", entityId: person.id, metadata: { claimId: claim.id, requestedFields: ["phone"], outcome, providerReportedCredits: result.creditsUsed, applicationUnitsReserved: claim.reservation } });
+      return authenticatedJsonResponse(context, { result: { status: outcome, creditsUsed: result.creditsUsed, usageSource: result.usageSource }, usage: await usageSnapshot() });
     }
 
     if (payload.action === "apply_refresh" && Number.isInteger(payload.reviewId)) {

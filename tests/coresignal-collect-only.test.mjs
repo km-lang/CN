@@ -238,10 +238,24 @@ test("missing education/employment and conflicting evidence remain review states
   assert.equal(conflict.reviewState, "REVIEW_REQUIRED")
 })
 
+test("an explicitly non-current experience is never promoted by a missing end date", () => {
+  const evidence = collect.sanitizeCollectResponse({
+    body: profile({ experience: [
+      { company_id: 8469989, company_name: "Lincoln International", title: "Director", is_current: 0, deleted: 0 },
+      { company_id: 7, company_name: "Other Company", title: "VP", deleted: 0 },
+    ] }),
+    candidate: candidate(), attemptId: "currentness", requestedAt: "2026-10-17T03:00:00Z", completedAt: "2026-10-17T03:00:01Z", upstreamHttpStatus: 200, providerCreditsRemaining: null,
+  })
+  assert.equal(evidence.employment[0].current, false)
+  assert.equal(evidence.employment[1].current, true)
+  assert.equal(evidence.quality.currentEmployer, "PRESENT_BUT_CONFLICTING")
+  assert.equal(evidence.reviewState, "REVIEW_REQUIRED")
+})
+
 test("unchanged provider credit header stays separate from documented cost and confirmed debit", () => {
   const evidence = collect.sanitizeCollectResponse({ body: profile(), candidate: candidate(), attemptId: "a", requestedAt: "2026-10-17T03:00:00Z", completedAt: "2026-10-17T03:00:01Z", upstreamHttpStatus: 200, providerCreditsRemaining: 4950 })
   assert.equal(evidence.providerCreditsRemaining, 4950)
-  assert.deepEqual(evidence.applicationAccounting, { applicationUnits: 20, documentedCollectCredits: 20, confirmedDebit: null })
+  assert.deepEqual(evidence.applicationAccounting, { applicationUnits: 20, maximumAuthorizedProviderCredits: 20, confirmedDebit: null })
 })
 
 test("Collect metadata transport is one GET with apikey auth, redirect refusal and retained balance header", async () => {

@@ -67,8 +67,32 @@ test("stage4a 3: known-contact search uses V3 and prefers the professional profi
   assert.deepEqual(calls[0].body, { contacts: [{ linkedinUrl: "https://linkedin.com/in/sahilb" }] });
   assert.equal(calls[0].key, process.env.LUSHA_API_KEY);
   assert.equal(result.contactId, "lusha-contact-1");
+  assert.equal(result.status, "success");
+  assert.equal(result.identityReason, "PROFILE_URL_MATCH");
   assert.equal(result.emailAvailable, true);
   assert.equal(result.creditsUsed, 1);
+});
+
+test("stage4a 3b: a conflicting or missing provider profile URL cannot establish a canonical Lusha identity", async () => {
+  for (const [providerUrl, expectedReason] of [
+    ["https://linkedin.com/in/someone-else", "PROFILE_URL_CONFLICT"],
+    ["", "PROFILE_URL_MISSING"],
+  ]) {
+    const result = await lusha.searchLushaContact({ name: "Sahil Bansal", company: "Google", linkedinUrl: "https://linkedin.com/in/sahilb" }, { fetcher: async () => new Response(JSON.stringify({ results: [{ id: "other-contact", fullName: "Sahil Bansal", socialLinks: { linkedin: providerUrl } }] }), { status: 200, headers: { "x-credits-used": "1" } }) });
+    assert.equal(result.status, "review_required");
+    assert.equal(result.identityReason, expectedReason);
+    assert.equal(result.linkedinUrl, providerUrl);
+    assert.equal(result.creditsUsed, 1);
+  }
+});
+
+test("stage4a 3c: name/company-only and multiple-result previews remain unverified", async () => {
+  const noUrl = await lusha.searchLushaContact({ name: "Sahil Bansal", company: "Google", linkedinUrl: "" }, { fetcher: async () => new Response(JSON.stringify({ results: [{ id: "contact-1", socialLinks: { linkedin: "https://linkedin.com/in/sahilb" } }] }), { status: 200 }) });
+  assert.equal(noUrl.status, "review_required");
+  assert.equal(noUrl.identityReason, "NO_TRUSTED_INPUT_URL");
+  const multiple = await lusha.searchLushaContact({ name: "Sahil Bansal", company: "Google", linkedinUrl: "https://linkedin.com/in/sahilb" }, { fetcher: async () => new Response(JSON.stringify({ results: [{ id: "contact-1", socialLinks: { linkedin: "https://linkedin.com/in/sahilb" } }, { id: "contact-2" }] }), { status: 200 }) });
+  assert.equal(multiple.status, "review_required");
+  assert.equal(multiple.identityReason, "MULTIPLE_RESULTS");
 });
 
 test("stage4a 4: search preview requests no contact reveal", async () => {
@@ -99,6 +123,18 @@ test("stage4a 6: missing per-call usage is marked for reconciliation instead of 
   assert.equal(result.creditsUsed, null);
   assert.equal(result.usageSource, "unavailable");
   assert.match(route, /reconcile against Lusha account usage/);
+});
+
+test("stage4a 6b: email reveal never applies a different or unidentified contact", async () => {
+  for (const records of [
+    [{ id: "different", emails: [{ email: "wrong@example.org" }] }],
+    [{ emails: [{ email: "unknown@example.org" }] }],
+    [{ id: "lusha-contact-1", emails: [{ email: "first@example.org" }] }, { id: "other" }],
+  ]) {
+    const result = await lusha.revealLushaEmail("lusha-contact-1", { fetcher: async () => new Response(JSON.stringify({ results: records }), { status: 200 }) });
+    assert.equal(result.status, "review_required");
+    assert.equal(result.email, "");
+  }
 });
 
 test("stage4a 7: account validation uses the non-contact usage endpoint", async () => {
@@ -145,9 +181,12 @@ test("stage4a 11: Lusha actions remain PCOM-operational and settings remain Admi
 });
 
 test("stage4a 12: search persists stable ID and history without raw provider payload", () => {
-  assert.match(route, /lushaPersonId: result\.contactId/);
-  assert.match(route, /operation: "Contact Search Preview"/);
-  assert.match(route, /Requested fields: availability preview/);
+  assert.match(route, /LUSHA_ATTACH_ID_SQL/);
+  assert.match(route, /if \(previewStatus === "success" && result\.contactId\)/);
+  assert.match(route, /identityReason = "CONTACT_ID_ALREADY_LINKED_OR_CONFLICTING"/);
+  assert.match(route, /no contact ID was attached/);
+  assert.match(route, /claimLushaRequest\(person, "Contact Search Preview", actor\)/);
+  assert.match(route, /completeLushaRequest\(claim\.id/);
   assert.doesNotMatch(route, /JSON\.stringify\(result\)/);
 });
 
