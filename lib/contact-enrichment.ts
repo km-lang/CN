@@ -10,6 +10,7 @@ export type ContactCandidate = {
   phoneVerification?: string | null
   verification?: { email?: string; phone?: string }
   lushaPersonId?: string | null
+  intakeStatus?: string | null
   privacy?: { generalContactStatus?: string | null } | null
 }
 
@@ -19,6 +20,7 @@ export type ContactPermission = {
 }
 
 export function contactEnrichmentPermission(person: ContactCandidate, legacyStatuses: readonly string[] = []): ContactPermission {
+  if (person.intakeStatus === "PROVISIONAL") return { allowed: false, reason: "Provisional intake does not establish alumni identity or outreach eligibility" }
   if (person.privacy?.generalContactStatus === "Do not contact" || legacyStatuses.includes("Do not contact")) {
     return { allowed: false, reason: "Contact enrichment is blocked by the alumnus's do-not-contact preference" }
   }

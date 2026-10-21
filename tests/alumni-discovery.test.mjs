@@ -35,7 +35,7 @@ test("12. approved professional changes create field history", () => { assert.ma
 test("13. no-change refresh remains visible and recorded", () => { assert.match(page, /No professional changes detected/); assert.match(route + enrichment, /Reviewed — kept existing|No changes/); assert.match(enrichment, /providerResponseHistory/) })
 test("14. filtering internal data makes no provider request", () => { const block = page.match(/const filtered = useMemo\([\s\S]*?\[alumni, companyPriorities, engagements, filters\]\)/)?.[0] ?? ""; assert.match(block, /matchesInternalFilters/); assert.doesNotMatch(block, /fetch\(/) })
 test("15. provider usage is attached to explicit controls", () => {
-  for (const label of ["Confirm Live Search", "Prepare Email Reveal", "Prepare Phone Reveal", "Confirm Contact Search"]) assert.match(page, new RegExp(label))
+  for (const label of ["Confirm One Preview Request", "Prepare Email Reveal", "Prepare Phone Reveal", "Confirm Contact Search"]) assert.match(page, new RegExp(label))
   assert.match(page, /Confirm \{lushaRevealChannel === "email" \? "Email" : "Phone"\}-Only Reveal/)
 })
 test("16. current application configuration retains root-hosted defaults", () => { const current = config.createAppConfig({}); assert.equal(current.name, "Corporate Network"); assert.equal(current.basePath, ""); assert.equal(current.publicUrl, "http://localhost:3000") })

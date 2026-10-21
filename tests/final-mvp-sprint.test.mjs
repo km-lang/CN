@@ -63,7 +63,8 @@ test("final sprint persists requested separately from returned and provider usag
 test("final sprint Coresignal confirmation lists active filters and separated usage", () => {
   for (const label of ["Education", "Company", "Role", "Function", "Seniority", "Location", "Graduation year", "Profiles requested", "Application units remaining", "Maximum application usage"]) assert.match(page, new RegExp(label))
   assert.match(page, /1 Preview · 0 Collect/)
-  assert.match(page, /The legacy Preview request does not enforce an exact graduation year/)
+  assert.match(page, /Confirm one Base Employee ES-DSL Preview request/)
+  assert.doesNotMatch(page, /The legacy Preview request does not enforce an exact graduation year/)
   assert.match(page, /discoveryMaximumApplicationUsage/)
   assert.match(page, /Application usage and provider-account usage remain separate/)
 })

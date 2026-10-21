@@ -121,7 +121,8 @@ export function createCoresignalSearchEvidence(input: {
   if (!/^[A-Za-z0-9._:-]+$/.test(attemptId)) throw new Error("attemptId is invalid.")
   const upstreamHttpStatus = safeInteger(input.execution.upstreamHttpStatus, "upstreamHttpStatus", 100, 599)
   const graduationYear = input.filters.graduationYear ? safeInteger(Number(input.filters.graduationYear), "graduationYear", 1_000, 9_999) : null
-  const company = input.filters.company.trim() ? boundedText(input.filters.company, "company", 160) : null
+  const resolvedCompany = input.execution.companyMapping.displayName || input.filters.company
+  const company = resolvedCompany.trim() ? boundedText(resolvedCompany, "company", 160) : null
   const mappedCompanyId = nullableSafeInteger(input.execution.companyMapping.providerCompanyId, "mappedCompanyId", 1)
   const totalResults = nullableSafeInteger(input.execution.routing.providerSearch.totalResults, "totalResults")
   const totalPages = nullableSafeInteger(input.execution.routing.providerSearch.totalPages, "totalPages")

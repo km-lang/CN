@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `idx_csw_coverage_employee_active` ON `coresignal_webhook_coverage` (`employee_id`) WHERE "coresignal_webhook_coverage"."status" = 'ACTIVE';

@@ -1,4 +1,4 @@
-import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled, localCoresignalSearchEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
+import { localBrightDataHumanTrialEnabled, localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled, localCoresignalSearchEnabled, localDevelopmentAuthEnabled } from "@/lib/local-development"
 
 export type ProviderName = "coresignal" | "lusha"
 export type ProviderMode = "mock" | "live"
@@ -31,6 +31,10 @@ export type ProviderRuntimeEnvironment = {
   BRIGHTDATA_MOCK_TRANSPORT?: string
   BRIGHTDATA_APPLICATION_REQUEST_LIMIT?: string
   BRIGHTDATA_ACCESS_ENTITLEMENT?: string
+  BRIGHTDATA_HUMAN_TRIAL_ENABLED?: string
+  BRIGHTDATA_HUMAN_TRIAL_TARGET?: string
+  LOCAL_DEV_D1_PERSIST_PATH?: string
+  CORESIGNAL_WEBHOOK_MOCK_TRANSPORT?: string
 }
 
 function runtimeEnvironment() {
@@ -138,6 +142,7 @@ export function brightDataRuntimeStatus() {
     datasetConfigured: mock || Boolean(values.BRIGHTDATA_DATASET_ID?.trim()),
     executionGateEnabled: mock || live,
     entitlement,
+    humanTrialEnabled: localBrightDataHumanTrialEnabled(values),
     applicationRequestLimit: boundedInteger(values.BRIGHTDATA_APPLICATION_REQUEST_LIMIT, 5, 10),
     billingEstimate: "unknown" as const,
     supportedInput: "One public LinkedIn profile URL" as const,
@@ -146,4 +151,5 @@ export function brightDataRuntimeStatus() {
 
 export function brightDataSecret() { return runtimeEnvironment().BRIGHTDATA_API_TOKEN?.trim() ?? "" }
 export function brightDataDatasetId() { return runtimeEnvironment().BRIGHTDATA_DATASET_ID?.trim() ?? "" }
+export function brightDataHumanTrialTarget() { return runtimeEnvironment().BRIGHTDATA_HUMAN_TRIAL_TARGET?.trim() ?? "" }
 export function brightDataMockTransportEnabled() { return localBrightDataMockTransportEnabled(runtimeEnvironment()) }

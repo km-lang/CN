@@ -4,15 +4,20 @@ import { DEFAULT_DISCOVERY_PROGRAMMES, normalizeDiscoveryProgrammeSelections, ty
 export const FIXED_ALUMNI_SCHOOL = "Indian Institute of Management Lucknow";
 
 export type DirectoryFilters = {
+  profileStatus: "All profiles" | "Verified alumni" | "Provisional" | "Needs review";
+  excludeProvisional: boolean;
   search: string;
   name: string;
   company: string;
+  companyPriority: string;
   role: string;
   function: string;
   seniority: string;
   location: string;
   linkedinUrl: string;
   programme: string;
+  programmes: string[];
+  alumniIds: number[];
   batch: string;
   graduationYearMode: "exact" | "onOrBefore" | "range" | "multiple";
   graduationYearStart: string;
@@ -33,6 +38,8 @@ export type DiscoveryFilters = {
   alumniStatus: AlumniStatusFilter;
   discoveryProgrammes: string[];
   company: string;
+  /** Internal saved-company selection key. Never a provider ID; resolved authoritatively by the server. */
+  companySelectionKey: string;
   role: string;
   function: string;
   seniorities: string[];
@@ -43,6 +50,7 @@ export type DiscoveryFilters = {
 };
 
 export type SearchableAlumnus = {
+  intakeStatus?: "VERIFIED" | "PROVISIONAL" | "REVIEW_REQUIRED";
   name: string;
   company: string;
   title: string;
@@ -248,6 +256,7 @@ export function normalizeDiscoveryFiltersInput(value: unknown): DiscoveryFilters
       : defaults.discoveryProgrammes,
     alumniStatus: candidate.alumniStatus === "All graduation statuses" ? candidate.alumniStatus : defaults.alumniStatus,
     company: candidate.company === "All companies" ? "" : String(candidate.company ?? defaults.company).trim(),
+    companySelectionKey: String(candidate.companySelectionKey ?? defaults.companySelectionKey).trim(),
     role: String(candidate.role ?? defaults.role).trim(),
     function: String(candidate.function ?? defaults.function).trim() || defaults.function,
     seniorities,
@@ -288,7 +297,7 @@ export function matchesInternalFilters(
     && matchesSelectedSeniority
     && contains(person.location, filters.location)
     && matchesLinkedinProfileFilter(person.linkedinUrl, filters.linkedinUrl)
-    && exactOrAll(person.programme, filters.programme, "All programmes")
+    && (filters.programmes.length ? filters.programmes.some(value => normalized(person.programme) === normalized(value)) : exactOrAll(person.programme, filters.programme, "All programmes"))
     && matchesGraduationYear
     && contains(person.previous, filters.previousCompany)
     && relevance >= filters.minRelevance
@@ -442,15 +451,20 @@ export function toDiscoveryProfile(record: Record<string, unknown>, index: numbe
 
 export function defaultDirectoryFilters(): DirectoryFilters {
   return {
+    profileStatus: "All profiles",
+    excludeProvisional: false,
     search: "",
     name: "",
     company: "All companies",
+    companyPriority: "All priorities",
     role: "",
     function: "All functions",
     seniority: "All levels",
     location: "",
     linkedinUrl: "",
     programme: "All programmes",
+    programmes: [],
+    alumniIds: [],
     batch: "",
     graduationYearMode: "exact",
     graduationYearStart: "",
@@ -473,6 +487,7 @@ export function defaultDiscoveryFilters(): DiscoveryFilters {
     alumniStatus: "Past alumni only",
     discoveryProgrammes: [...DEFAULT_DISCOVERY_PROGRAMMES],
     company: "",
+    companySelectionKey: "",
     role: "",
     function: "All functions",
     seniorities: [],

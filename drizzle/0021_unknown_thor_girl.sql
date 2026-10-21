@@ -1,0 +1,1 @@
+CREATE INDEX `idx_provider_collection_alumnus_date` ON `provider_collection_attempts` (`alumnus_id`,`created_at`);

@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 
 import { deserializeCoresignalSearchEvidence, type CoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
+import { linkedinProfileIdentifier } from "@/lib/professional-profile"
+import { CORESIGNAL_COLLECT_ESTIMATED_CREDITS } from "@/lib/coresignal-webhooks"
 import type { CoresignalCollectEntitlement } from "@/lib/provider-runtime"
 
 export const CORESIGNAL_COLLECT_OPERATION = "Base Employee Collect-only"
@@ -17,15 +19,27 @@ export const CORESIGNAL_COLLECT_CLAIM_SQL = `
   )
   RETURNING id
 `
+export const CORESIGNAL_KNOWN_COLLECT_CLAIM_SQL = `
+  INSERT INTO provider_response_history
+    (provider, alumnus_id, alumnus_name, operation, mode, status, credits_used, application_units, provider_reported_credits, usage_state, result_count, request_summary, response_summary, error_message, requested_by)
+  SELECT 'coresignal', ?, ?, ?, ?, 'in_progress', 0, 0, NULL, 'not_applicable', 0, ?, ?, '', ?
+  WHERE NOT EXISTS (
+    SELECT 1 FROM provider_response_history
+    WHERE provider = 'coresignal' AND operation = ? AND request_summary = ?
+  )
+  RETURNING id
+`
 
 export type CollectQuality = "PRESENT_AND_PLAUSIBLE" | "PRESENT_BUT_CONFLICTING" | "MISSING" | "UNSUPPORTED" | "NOT_INDEPENDENTLY_VERIFIED"
 
 export type RetainedSearchCandidate = {
   searchHistoryId: number
-  searchOperation: "Base Employee ES-DSL Search"
+  searchOperation: "Base Employee ES-DSL Search" | "Known alumnus identity"
   searchTimestamp: string
   employeeId: string
-  identityResolutionStatus: "IDENTITY_RESOLUTION_REQUIRED"
+  identityResolutionStatus: "IDENTITY_RESOLUTION_REQUIRED" | "KNOWN_ALUMNUS"
+  sourceAlumnusId?: number
+  sourceWebhookEventId?: number
   institutionId: number
   graduationYear: number | null
   company: string | null
@@ -81,8 +95,8 @@ export type SanitizedCollectEvidence = {
     location: CollectQuality
     freshnessEvidence: CollectQuality
   }
-  reviewState: "REVIEW_REQUIRED"
-  applicationAccounting: { applicationUnits: 1; documentedCollectCredits: 1; confirmedDebit: null }
+  reviewState: "REVIEW_REQUIRED" | "NO_CHANGE"
+  applicationAccounting: { applicationUnits: number; documentedCollectCredits: number; confirmedDebit: null }
   providerCreditsRemaining: number | null
   providerActions: { searchRequests: 0; previewRequests: 0; collectRequests: 1; retries: 0; pagination: false; canonicalMutations: 0; identityAttachments: 0 }
   audit: { requestedAt: string; completedAt: string; durationMs: number; provenance: "provider_response_history" }
@@ -112,6 +126,39 @@ export function candidateFromSearchHistory(row: { id: number; provider: string; 
     mappedCompanyId: retained.evidence.searchParameters.mappedCompanyId,
     priorCollectStatus,
   }
+}
+
+export function candidateFromKnownAlumnus(person: { id: number; coresignalEmployeeId: string; createdAt: string }, priorCollectStatus: string | null): RetainedSearchCandidate {
+  if (!Number.isSafeInteger(person.id) || person.id < 1) throw new Error("A saved alumnus is required.")
+  return {
+    searchHistoryId: 0,
+    searchOperation: "Known alumnus identity",
+    searchTimestamp: person.createdAt,
+    employeeId: normalizeEmployeeId(person.coresignalEmployeeId),
+    identityResolutionStatus: "KNOWN_ALUMNUS",
+    sourceAlumnusId: person.id,
+    institutionId: 0,
+    graduationYear: null,
+    company: null,
+    mappedCompanyId: null,
+    priorCollectStatus,
+  }
+}
+
+export function knownAlumnusCollectChanges(person: { coresignalEmployeeId: string; linkedinUrl: string; company: string; title: string; location: string }, evidence: SanitizedCollectEvidence) {
+  if (person.coresignalEmployeeId !== evidence.returnedEmployeeId) return { outcome: "IDENTITY_CONFLICT" as const, changes: [] }
+  const storedUrlId = linkedinProfileIdentifier(person.linkedinUrl)
+  const returnedUrlId = linkedinProfileIdentifier(evidence.identity.professionalProfileUrl)
+  if (storedUrlId && returnedUrlId && storedUrlId !== returnedUrlId) return { outcome: "IDENTITY_CONFLICT" as const, changes: [] }
+  const current = evidence.employment.filter(position => position.current)
+  if (current.length !== 1 || !current[0].company || !current[0].title) return { outcome: "INSUFFICIENT_CURRENT_ROLE" as const, changes: [] }
+  const fields = current.length === 1 ? [
+    { field: "company", oldValue: person.company, proposedValue: current[0].company },
+    { field: "title", oldValue: person.title, proposedValue: current[0].title },
+  ] : []
+  fields.push({ field: "location", oldValue: person.location, proposedValue: evidence.location })
+  const changes = fields.filter(item => item.proposedValue && item.proposedValue !== item.oldValue)
+  return { outcome: changes.length ? "CHANGES_PROPOSED" as const : "NO_CHANGE" as const, changes }
 }
 
 export function collectPreflight(candidate: RetainedSearchCandidate, runtime: CollectRuntimeState): CollectPreflight {
@@ -211,7 +258,7 @@ export function sanitizeCollectResponse(input: { body: unknown; candidate: Retai
       freshnessEvidence: checkedAt || updatedAt ? "NOT_INDEPENDENTLY_VERIFIED" : "MISSING",
     },
     reviewState: "REVIEW_REQUIRED",
-    applicationAccounting: { applicationUnits: 1, documentedCollectCredits: 1, confirmedDebit: null },
+    applicationAccounting: { applicationUnits: input.candidate.sourceWebhookEventId ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1, documentedCollectCredits: input.candidate.sourceWebhookEventId ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1, confirmedDebit: null },
     providerCreditsRemaining: input.providerCreditsRemaining,
     providerActions: { searchRequests: 0, previewRequests: 0, collectRequests: 1, retries: 0, pagination: false, canonicalMutations: 0, identityAttachments: 0 },
     audit: { requestedAt: input.requestedAt, completedAt: input.completedAt, durationMs, provenance: "provider_response_history" },
@@ -226,7 +273,7 @@ export function deserializeCollectEvidence(summary: string) {
   const index = summary.lastIndexOf(CORESIGNAL_COLLECT_EVIDENCE_MARKER)
   if (index < 0) return null
   const evidence = JSON.parse(summary.slice(index + CORESIGNAL_COLLECT_EVIDENCE_MARKER.length)) as SanitizedCollectEvidence
-  if (evidence.schemaVersion !== 1 || evidence.reviewState !== "REVIEW_REQUIRED" || evidence.providerActions.collectRequests !== 1 || evidence.providerActions.searchRequests !== 0 || evidence.providerActions.canonicalMutations !== 0 || evidence.providerActions.identityAttachments !== 0) throw new Error("Stored Collect evidence is invalid.")
+  if (evidence.schemaVersion !== 1 || !["REVIEW_REQUIRED", "NO_CHANGE"].includes(evidence.reviewState) || evidence.providerActions.collectRequests !== 1 || evidence.providerActions.searchRequests !== 0 || evidence.providerActions.canonicalMutations !== 0 || evidence.providerActions.identityAttachments !== 0) throw new Error("Stored Collect evidence is invalid.")
   return { summary: summary.slice(0, index).trim(), evidence }
 }
 
@@ -269,8 +316,8 @@ export type SearchEvidence = CoresignalSearchEvidence
 
 export type CollectClaimStore = {
   acquire(input: { candidate: RetainedSearchCandidate; attemptId: string; actor: string; transportMode: "live" | "mock" }): Promise<{ acquired: true; claimId: number } | { acquired: false }>
-  complete(input: { claimId: number; evidence: SanitizedCollectEvidence; responseSummary: string }): Promise<boolean>
-  fail(input: { claimId: number; status: "error" | "ambiguous"; message: string }): Promise<boolean>
+  complete(input: { claimId: number; candidate: RetainedSearchCandidate; evidence: SanitizedCollectEvidence; responseSummary: string }): Promise<boolean>
+  fail(input: { claimId: number; candidate: RetainedSearchCandidate; status: "error" | "ambiguous"; message: string }): Promise<boolean>
 }
 
 export async function executeCollectOnce(input: {
@@ -294,14 +341,14 @@ export async function executeCollectOnce(input: {
     const completedAt = now().toISOString()
     const evidence = sanitizeCollectResponse({ ...response, candidate: input.preflight.candidate, attemptId, requestedAt, completedAt })
     const summary = "One Base Employee Collect request succeeded. Structured professional evidence requires human review; no identity or canonical record was changed."
-    if (!await input.store.complete({ claimId: claim.claimId, evidence, responseSummary: serializeCollectEvidence(summary, evidence) })) {
+    if (!await input.store.complete({ claimId: claim.claimId, candidate: input.preflight.candidate, evidence, responseSummary: serializeCollectEvidence(summary, evidence) })) {
       throw new Error("Collect evidence could not be finalized. The request must not be retried automatically.")
     }
     return { state: "REVIEW_REQUIRED" as const, providerCalls: 1, claimId: claim.claimId, evidence }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Coresignal Collect failed."
     const ambiguous = /timed out|could not be finalized/i.test(message)
-    await input.store.fail({ claimId: claim.claimId, status: ambiguous ? "ambiguous" : "error", message })
+    await input.store.fail({ claimId: claim.claimId, candidate: input.preflight.candidate, status: ambiguous ? "ambiguous" : "error", message })
     throw error
   }
 }

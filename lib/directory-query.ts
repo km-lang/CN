@@ -67,13 +67,18 @@ export function normalizeDirectoryQuery(value: unknown): DirectoryQuery {
   if (candidate.pageSize !== undefined && !DIRECTORY_PAGE_SIZES.includes(pageSizeValue as 10 | 25 | 50)) throw new Error("Page size must be 10, 25, or 50.")
   const pageSize = DIRECTORY_PAGE_SIZES.includes(pageSizeValue as 10 | 25 | 50) ? pageSizeValue as 10 | 25 | 50 : 10
   if (candidate.sort !== undefined && !["relevance", "name", "graduationYear", "seniority"].includes(text(candidate.sort))) throw new Error("Directory sort is unsupported.")
+  if (candidate.profileStatus !== undefined && !["All profiles", "Verified alumni", "Provisional", "Needs review"].includes(text(candidate.profileStatus))) throw new Error("Profile status is unsupported.")
   const sort = ["relevance", "name", "graduationYear", "seniority"].includes(text(candidate.sort)) ? text(candidate.sort) as DirectorySort : "relevance"
   return {
     filters: {
       ...defaults,
-      search: text(candidate.search), name: text(candidate.name), company: text(candidate.company) || defaults.company, role: text(candidate.role),
+      profileStatus: (text(candidate.profileStatus) || "All profiles") as DirectoryQuery["filters"]["profileStatus"],
+      excludeProvisional: candidate.excludeProvisional === true,
+      search: text(candidate.search), name: text(candidate.name), company: text(candidate.company) || defaults.company, companyPriority: text(candidate.companyPriority) || defaults.companyPriority, role: text(candidate.role),
       function: text(candidate.function) || defaults.function, seniority: text(candidate.seniority) || defaults.seniority,
       location: text(candidate.location), linkedinUrl: text(candidate.linkedinUrl, 300), programme: text(candidate.programme) || defaults.programme,
+      programmes: stringList(candidate.programmes).slice(0, 20),
+      alumniIds: Array.isArray(candidate.alumniIds) ? [...new Set(candidate.alumniIds.map(Number).filter(id => Number.isSafeInteger(id) && id > 0))].slice(0, 500) : [],
       batch, graduationYearMode: mode, graduationYearStart, graduationYearEnd, graduationYears: years.join(","),
       seniorityMode, seniorities, previousCompany: text(candidate.previousCompany),
       minRelevance: Math.max(0, Math.min(100, Number(candidate.minRelevance) || 0)),
@@ -92,6 +97,9 @@ export function normalizedPersonName(value: unknown) {
 }
 
 export function directoryMatches(person: SearchableAlumnus, query: DirectoryQuery, relevance: number, contactStatus: string) {
+  if (query.filters.excludeProvisional && person.intakeStatus === "PROVISIONAL") return false
+  const requiredStatus = { "Verified alumni": "VERIFIED", Provisional: "PROVISIONAL", "Needs review": "REVIEW_REQUIRED" }[query.filters.profileStatus as "Verified alumni" | "Provisional" | "Needs review"]
+  if (requiredStatus && (person.intakeStatus ?? "REVIEW_REQUIRED") !== requiredStatus) return false
   const nameQuery = normalizedPersonName(query.filters.name)
   const nameMatches = !nameQuery || normalizedPersonName(person.name).includes(nameQuery)
   return nameMatches && matchesInternalFilters(person, { ...query.filters, name: "" }, relevance, contactStatus)

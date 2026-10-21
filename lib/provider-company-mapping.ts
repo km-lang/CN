@@ -23,6 +23,7 @@ export type ProviderCompanyMappingRecord = {
 
 export type ProviderCompanyMappingStore = {
   findByCompany(provider: string, normalizedCompanyKey: string): Promise<ProviderCompanyMappingRecord[]>
+  findBySelectionId?(provider: string, mappingId: number): Promise<ProviderCompanyMappingRecord[]>
 }
 
 export type ProviderCompanyResolution = {
@@ -84,6 +85,31 @@ export async function resolveProviderCompanyMapping(
   } catch {
     return unresolved("CONFLICT", provider, normalizedCompanyKey, mapping.displayName, `${mapping.displayName} has an invalid ${providerName} company ID.`, mapping)
   }
+}
+
+export async function resolveProviderCompanySelection(
+  companyName: unknown,
+  selectionKey: unknown,
+  providerName: unknown,
+  store: ProviderCompanyMappingStore,
+): Promise<ProviderCompanyResolution> {
+  const provider = normalizeProviderKey(providerName)
+  const key = normalizeCompanyDisplayName(selectionKey)
+  if (!key) return resolveProviderCompanyMapping(companyName, providerName, store)
+  const match = key.match(/^([a-z0-9_-]+):(\d+)$/)
+  if (!match || match[1] !== provider || !store.findBySelectionId) {
+    return unresolved("CONFLICT", provider, normalizeCompanyKey(companyName), normalizeCompanyDisplayName(companyName), "The selected company identity is invalid or cannot be resolved server-side.")
+  }
+  const mappingId = Number(match[2])
+  if (!Number.isSafeInteger(mappingId) || mappingId <= 0) {
+    return unresolved("CONFLICT", provider, normalizeCompanyKey(companyName), normalizeCompanyDisplayName(companyName), "The selected company identity is invalid.")
+  }
+  const rows = await store.findBySelectionId(provider, mappingId)
+  if (rows.length !== 1) {
+    return unresolved(rows.length ? "CONFLICT" : "MISSING", provider, normalizeCompanyKey(companyName), normalizeCompanyDisplayName(companyName), "The selected company identity no longer resolves to one saved company.")
+  }
+  const mapping = rows[0]
+  return resolveProviderCompanyMapping(mapping.displayName, providerName, { findByCompany: async () => [mapping] })
 }
 
 export function validateProviderCompanyMappingInput(input: {

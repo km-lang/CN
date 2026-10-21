@@ -23,7 +23,7 @@ import { coresignalIdentityStore } from "@/lib/coresignal-identity-store"
 import { executeCoresignalRegularSearch, prepareCoresignalRegularSearch, CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS } from "@/lib/coresignal-regular-search"
 import { coresignalSearchIdLookupStore } from "@/lib/coresignal-search-id-store"
 import { providerCompanyMappingStore } from "@/lib/provider-company-mapping-store"
-import { resolveProviderCompanyMapping } from "@/lib/provider-company-mapping"
+import { resolveProviderCompanySelection } from "@/lib/provider-company-mapping"
 import { CoresignalSearchEvidencePersistenceError, createCoresignalSearchEvidence, executeAndPersistCoresignalSearchEvidence, presentProviderHistorySearchEvidence, serializeCoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
 import { candidateEvidenceDecisions, candidateEvidenceOutcome, normalizeCandidateObservation, validateReviewerDecisions, type EvidenceDecisions } from "@/lib/discovery-candidate-evidence"
 import { sha256Text, stableMutationPayload } from "@/lib/mutation-fingerprint"
@@ -77,6 +77,7 @@ function reviewedAlumnusValues(result: typeof externalDiscoveryResults.$inferSel
     designationVerification: decisions.role === "MATCH" ? "Verified" : "Unverified",
     locationVerification: decisions.location === "MATCH" ? "Verified" : "Unverified",
     source: "Human-reviewed Coresignal discovery", verified: `Human-reviewed external candidate · ${now.slice(0, 10)}`,
+    intakeStatus: "VERIFIED" as const,
     note: `IIM Lucknow affiliation and selected search criteria were reviewed in external discovery evidence #${evidence.id}. Placement context has not been assessed.`,
   }
 }
@@ -393,8 +394,9 @@ export async function POST(request: Request) {
       let companyIdentityMode: "VERIFIED_ID" | "EXACT_NAME" | undefined
       let expectedCompanyUrl: string | undefined
       if (filters.company) {
-        const mapping = await resolveProviderCompanyMapping(filters.company, "Coresignal", providerCompanyMappingStore(db))
-        if (mapping.state === "CONFLICT") return Response.json({ error: `Preview continuation blocked: ${mapping.reason}`, blocked: true, reason: "company_mapping_conflict", providerCallMade: false }, { status: 409 })
+        const mapping = await resolveProviderCompanySelection(filters.company, filters.companySelectionKey, "Coresignal", providerCompanyMappingStore(db))
+        if (mapping.state === "CONFLICT" || (filters.companySelectionKey && mapping.state === "MISSING")) return Response.json({ error: `Preview continuation blocked: ${mapping.reason}`, blocked: true, reason: "company_mapping_conflict", providerCallMade: false }, { status: 409 })
+        if (mapping.mapping) filters.company = mapping.displayName
         if (mapping.state === "VERIFIED" && mapping.providerCompanyId !== null) {
           companyId = mapping.providerCompanyId; companyIdentityMode = "VERIFIED_ID"; expectedCompanyUrl = mapping.mapping?.providerCompanyUrl || undefined
         } else { companyName = filters.company; companyIdentityMode = "EXACT_NAME" }
@@ -459,12 +461,13 @@ export async function POST(request: Request) {
       } catch (error) {
         return Response.json({ error: error instanceof Error ? error.message : "Company Search is blocked.", blocked: true, reason: "company_mapping_blocked", providerCallMade: false, applicationUnits: 0 }, { status: 409 })
       }
+      if (preparation.companyMappingRequired) filters.company = preparation.companyMapping.displayName
       const preparationSummary = {
         provider: PROFESSIONAL_DATA_PROVIDER_LABEL,
         operation: "Base Employee ES-DSL Search",
         institution: FIXED_ALUMNI_SCHOOL,
         company: preparation.companyMappingRequired ? preparation.companyMapping.displayName : "Not constrained",
-        companyMapping: preparation.companyMappingRequired ? "Verified" : "Not required",
+        companyMapping: preparation.companyMappingRequired ? preparation.companyIdentityMode === "VERIFIED_ID" ? "Verified provider ID" : "Unverified exact-name fallback" : "Not required",
         graduationYear: filters.graduationYear || "All years",
         seniority: "Not constrained by provider Search; applied locally later",
         pageSize: staticValidation.requested,
@@ -486,7 +489,7 @@ export async function POST(request: Request) {
       if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, maximumAllowed: validation.maximumAllowed }, { status: 400 })
       const queryMode = preparation.contract.searchMode.toLowerCase().replaceAll("_", "-")
       const operationContext = `External Discovery · IIM Lucknow${filters.graduationYear ? ` · exact graduation year ${filters.graduationYear}` : " · all years"}${preparation.companyMappingRequired ? ` · current company ${preparation.companyMapping.displayName}` : ""}`
-      const requestSummary = `${operationContext} · institution_match=provider_institution_id · provider_institution_id=${CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID} · company_mapping=${preparation.companyMappingRequired ? "verified" : "not_required"} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
+      const requestSummary = `${operationContext} · institution_match=provider_institution_id · provider_institution_id=${CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID} · company_mapping=${preparation.companyIdentityMode.toLowerCase()} · is_parent=1 · items_per_page=${validation.requested} · Preview 0 · Collect 0`
       const attemptId = crypto.randomUUID()
       const requestedAt = new Date().toISOString()
       try {
@@ -554,20 +557,24 @@ export async function POST(request: Request) {
       if (!programmeValidation.ok) return Response.json({ error: programmeValidation.message, blocked: true, reason: "invalid_programme_selection", providerCallMade: false, applicationUnits: 0 }, { status: 400 })
       const filters = normalizedDiscoveryFilters(payload.filters)
       let exactYearPreview: { companyId?: number; companyName?: string; companyIdentityMode?: "VERIFIED_ID" | "EXACT_NAME"; expectedCompanyUrl?: string; operationContext: string } | undefined
-      const constrainedPreview = coresignalProvider.mode() === "live" && Boolean(filters.graduationYear || filters.discoveryProgrammes.length || filters.seniorities.length)
+      // The fixed IIML education row is itself a valid ES-DSL constraint. Every
+      // live External Discovery search uses one confirmed Preview page; the
+      // separately authorized ID-only Search action remains independent.
+      const constrainedPreview = coresignalProvider.mode() === "live"
       const previewOperation = filters.graduationYear ? "Exact-year ES-DSL Preview" : "Constrained ES-DSL Preview"
       if (constrainedPreview) {
-        if (context.role !== "ADMIN") return Response.json({ error: "Constrained ES-DSL Preview is Admin-only.", blocked: true, reason: "admin_required", filters, effectiveLimit: 0 }, { status: 403 })
+        if (context.role !== "ADMIN") return Response.json({ error: "Base Employee ES-DSL Preview is Admin-only.", blocked: true, reason: "admin_required", filters, effectiveLimit: 0 }, { status: 403 })
         if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before ES-DSL Preview.", blocked: true, reason: "confirmation_required", filters, effectiveLimit: 0 }, { status: 400 })
         const entitlement = coresignalExactYearPreviewEntitlement(providerRuntimeEnvironment)
-        if (!coresignalExactYearPreviewEnabled(providerRuntimeEnvironment)) return Response.json({ error: entitlement === "confirmed" ? "Exact-year ES-DSL Preview is disabled by its independent server gate." : "Exact-year ES-DSL Preview is blocked until account access and billing are confirmed.", blocked: true, reason: entitlement === "confirmed" ? "exact_year_preview_gate_disabled" : "exact_year_preview_entitlement_unconfirmed", entitlement, filters, effectiveLimit: 0, providerCallMade: false, applicationUnits: 0 }, { status: 403 })
+        if (!coresignalExactYearPreviewEnabled(providerRuntimeEnvironment)) return Response.json({ error: entitlement === "confirmed" ? "Base Employee ES-DSL Preview is disabled by its independent server gate." : "Base Employee ES-DSL Preview is blocked until account access and billing are confirmed.", blocked: true, reason: entitlement === "confirmed" ? "exact_year_preview_gate_disabled" : "exact_year_preview_entitlement_unconfirmed", entitlement, filters, effectiveLimit: 0, providerCallMade: false, applicationUnits: 0 }, { status: 403 })
         let companyId: number | undefined
         let companyName: string | undefined
         let companyIdentityMode: "VERIFIED_ID" | "EXACT_NAME" | undefined
         let expectedCompanyUrl: string | undefined
         if (filters.company) {
-          const mapping = await resolveProviderCompanyMapping(filters.company, "Coresignal", providerCompanyMappingStore(db))
-          if (mapping.state === "CONFLICT") return Response.json({ error: `Exact-year Preview blocked: ${mapping.reason}`, blocked: true, reason: "company_mapping_conflict", filters, effectiveLimit: 0, providerCallMade: false, applicationUnits: 0 }, { status: 409 })
+          const mapping = await resolveProviderCompanySelection(filters.company, filters.companySelectionKey, "Coresignal", providerCompanyMappingStore(db))
+          if (mapping.state === "CONFLICT" || (filters.companySelectionKey && mapping.state === "MISSING")) return Response.json({ error: `Exact-year Preview blocked: ${mapping.reason}`, blocked: true, reason: "company_mapping_conflict", filters, effectiveLimit: 0, providerCallMade: false, applicationUnits: 0 }, { status: 409 })
+          if (mapping.mapping) filters.company = mapping.displayName
           if (mapping.state === "VERIFIED" && mapping.providerCompanyId !== null) {
             companyId = mapping.providerCompanyId
             companyIdentityMode = "VERIFIED_ID"
@@ -581,7 +588,7 @@ export async function POST(request: Request) {
       }
       const remaining = await remainingApplicationUnits()
       const searchOperationReserve = coresignalProvider.mode() === "live" && !constrainedPreview ? 1 : 0
-      if (remaining <= searchOperationReserve) return Response.json({ error: "External search was not run because the Coresignal application limit cannot cover a Search and at least one Collect operation.", blocked: true, reason: "application_limit", filters, effectiveLimit: 0 }, { status: 429 })
+      if (remaining <= searchOperationReserve) return Response.json({ error: constrainedPreview ? "External search was not run because the Coresignal application limit cannot cover one Preview request." : "External search was not run because the Coresignal application limit cannot cover a Search and at least one Collect operation.", blocked: true, reason: "application_limit", filters, effectiveLimit: 0 }, { status: 429 })
       const maximum = coresignalProvider.mode() === "live" ? coresignalLiveSearchMaximum() : 100
       const validation = validateDiscoveryCount(payload.limit, remaining, maximum, searchOperationReserve)
       if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, filters, effectiveLimit: 0, maximumAllowed: validation.maximumAllowed }, { status: 400 })
@@ -608,7 +615,7 @@ export async function POST(request: Request) {
       const counts = { existing: reconciled.filter(i => i.matchStatus === "Already in database").length, new: reconciled.filter(i => i.matchStatus === "New").length, possibleDuplicate: reconciled.filter(i => i.matchStatus === "Possible duplicate").length, needsReview: reconciled.filter(i => i.matchStatus === "Needs review").length }
       await db.update(externalDiscoverySearches).set({ existingCount: counts.existing, newCount: counts.new, duplicateCount: counts.possibleDuplicate }).where(eq(externalDiscoverySearches.id, search.id))
       const executionAudit = response.execution?.metrics ? ` · Selective execution ${JSON.stringify(response.execution.metrics)}` : ""
-      const [history] = await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: exactYearPreview ? previewOperation : "Education affiliation search", mode: coresignalProvider.mode(), status: "success", creditsUsed: response.usage.providerReportedUsage ?? 0, applicationUnits: response.usage.applicationUnits, providerReportedCredits: response.usage.providerReportedUsage, usageState: response.usage.usageState, resultCount: providerCandidatesReturned, requestSummary: `${criteriaSummary(filters)} · Qualified target: ${validation.requested}${exactYearPreview ? ` · page=1 · same-row nested education and current-employment constraints · no automatic Collect` : ""}`, responseSummary: `${response.responseSummary}${executionAudit}`, requestedBy: actor }).returning()
+      const [history] = await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: exactYearPreview ? previewOperation : "Education affiliation search", mode: coresignalProvider.mode(), status: "success", creditsUsed: response.usage.providerReportedUsage ?? 0, applicationUnits: response.usage.applicationUnits, providerReportedCredits: response.usage.providerReportedUsage, usageState: response.usage.usageState, resultCount: providerCandidatesReturned, requestSummary: `${criteriaSummary(filters)} · Qualified target: ${validation.requested}${exactYearPreview ? ` · page=1 · expected provider cost: 20 search credits per Preview page (vendor workbook); actual account debit unverified · same-row nested education and current-employment constraints · no automatic Collect` : ""}`, responseSummary: `${response.responseSummary}${executionAudit}`, requestedBy: actor }).returning()
       const storedRows = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, search.id)).orderBy(externalDiscoveryResults.id)
       const reconciliationByKey = new Map(reconciled.map(item => [item.reconciliation.candidateKey, item.reconciliation]))
       const newEvidenceState = await evidenceForResults(db, storedRows.map(result => result.id))

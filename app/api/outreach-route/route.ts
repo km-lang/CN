@@ -25,6 +25,7 @@ export async function POST(request: Request) {
     const targetId = Number(payload.targetAlumnusId);
     const [target] = await db.select().from(alumni).where(eq(alumni.id, targetId)).limit(1);
     if (!target) return Response.json({ error: `The selected alumnus is not in ${appConfig.name}.` }, { status: 404 });
+    if (target.intakeStatus === "PROVISIONAL") return Response.json({ error: "Provisional profiles are not eligible for alumni outreach recommendations." }, { status: 409 });
 
     const [relations, targetHistory] = await Promise.all([
       db.select().from(alumniRelationships).where(and(eq(alumniRelationships.targetAlumnusId, targetId), eq(alumniRelationships.confirmed, true))),
@@ -37,7 +38,7 @@ export async function POST(request: Request) {
         }))
       : [];
     const credible = intermediaryRows
-      .filter(item => item.person && relationshipStrength(item.person.iimlRelationship) && responsive(item.person.status))
+      .filter(item => item.person && item.person.intakeStatus !== "PROVISIONAL" && relationshipStrength(item.person.iimlRelationship) && responsive(item.person.status))
       .sort((a, b) => b.relation.successfulIntroductions - a.relation.successfulIntroductions)[0];
 
     const usableContact = Boolean(target.email || target.phone);

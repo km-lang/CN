@@ -117,6 +117,7 @@ async function buildDraft(eventId: number, templateId?: number) {
 async function validateSendEligibility(eventId: number, actor?: string) {
   const db = getDb();
   const { event, person } = await getEvent(eventId);
+  if (person.intakeStatus === "PROVISIONAL") throw new Error("Provisional intake does not grant outreach eligibility or consent.");
   if (terminalStatuses.has(event.status) || event.actionTakenAt) {
     throw new Error(`Already engaged by ${event.actionTakenBy || "another committee member"}${event.actionTakenAt ? ` on ${new Date(event.actionTakenAt).toLocaleString()}` : ""}.`);
   }
@@ -265,6 +266,7 @@ export async function POST(request: Request) {
       if (!Number.isInteger(alumnusId)) return Response.json({ error: "Select a valid approved alumnus." }, { status: 400 });
       const [person] = await db.select().from(alumni).where(eq(alumni.id, alumnusId)).limit(1);
       if (!person) return Response.json({ error: "Approved alumnus not found." }, { status: 404 });
+      if (person.intakeStatus === "PROVISIONAL") return Response.json({ error: "Provisional profiles cannot enter the approved outreach workflow." }, { status: 409 });
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email)) return Response.json({ error: "A valid stored recipient email is required before drafting." }, { status: 409 });
 
       const manualEvents = await db.select().from(engagementEvents).where(and(

@@ -1,9 +1,10 @@
 import { and, eq, sql } from "drizzle-orm"
 import { getDb } from "@/db"
-import { activityLog, alumni, alumniPrivacyControls, alumniProfileChangeProposals, fieldChangeHistory, importRuns, mutationCommitGuards, mutationRequestItems, mutationRequests, programmeOptions, securityAuditEvents } from "@/db/schema"
+import { activityLog, alumni, alumniPrivacyControls, alumniProfileChangeProposals, alumniSourceObservations, fieldChangeHistory, importRuns, mutationCommitGuards, mutationRequestItems, mutationRequests, programmeOptions, securityAuditEvents } from "@/db/schema"
 import { importPreviewDigest, institutionalProfileKey, MAX_IMPORT_ROWS, validateImport, type ImportExisting, type ImportRecord } from "@/lib/alumni-import"
 import { existingMutation, mutationConflictResponse, mutationIdentity, mutationPendingResponse, replayMutationResponse } from "@/lib/mutation-idempotency"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
+import { effectiveIntakeStatus } from "@/lib/intake-status"
 import { accessErrorResponse, authorizeRequest, safeAuditMetadata } from "@/lib/security"
 
 type ImportPayload = { action?: "preview" | "execute"; mode?: "upsert" | "update_only"; filename?: string; records?: ImportRecord[]; previewId?: string; approvedUpdateKeys?: string[]; confirmed?: boolean }
@@ -13,6 +14,13 @@ function number(value: unknown, fallback = 0) { const result = Number(value); re
 function normalized(value: unknown) { return text(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() }
 function initials(name: string) { return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join("") || "AL" }
 function safeFilename(value: unknown) { return text(value, "alumni-import.csv").split(/[\\/]/).pop()?.slice(0, 180) || "alumni-import.csv" }
+function retainedImportObservation(record: ImportRecord) {
+  return JSON.stringify(Object.fromEntries(Object.entries({
+    company: record.company, title: record.title, location: record.location, programme: record.programme,
+    graduationYear: record.graduation_year, seniority: record.seniority, function: record.function,
+    previousCompanies: record.previous_companies,
+  }).filter(([, value]) => text(value) && !/^(unknown|not recorded|not assessed)$/i.test(text(value)))))
+}
 async function sha256(value: string) { const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)); return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, "0")).join("") }
 
 function existingRecord(person: typeof alumni.$inferSelect): ImportExisting {
@@ -40,7 +48,7 @@ function newAlumnus(record: ImportRecord, actor: string) {
 
 function safeUpdates(record: ImportRecord, current: typeof alumni.$inferSelect, actor: string) {
   const now = new Date().toISOString()
-  const changes: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: now, source: `Institutional import · ${record.source_system || "partial update"}` }
+  const changes: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: now }
   const history: Array<{ field: string; oldValue: string; newValue: string }> = []
   const proposals: Array<{ field: string; oldValue: string; proposedValue: string }> = []
   let protectedFields = 0
@@ -54,10 +62,11 @@ function safeUpdates(record: ImportRecord, current: typeof alumni.$inferSelect, 
     ;(changes as Record<string, unknown>)[column] = column === "experience" ? number(next) : next
     history.push({ field, oldValue: text(currentValue), newValue: next })
   }
-  apply("name", "name", current.name, record.name, true)
+  const trustedAlumniIdentity = effectiveIntakeStatus(current) === "VERIFIED" || current.profileMatch === "Confirmed"
+  apply("name", "name", current.name, record.name, !trustedAlumniIdentity)
   if (changes.name) changes.initials = initials(String(changes.name))
-  apply("programme", "programme", current.programme, record.programme, !current.programme || current.programme === "Not recorded")
-  apply("graduationYear", "graduation_year", current.graduationYear, record.graduation_year, current.graduationYear === 0)
+  apply("programme", "programme", current.programme, record.programme, !trustedAlumniIdentity && (!current.programme || current.programme === "Not recorded" || current.programme === "Unknown"))
+  apply("graduationYear", "graduation_year", current.graduationYear, record.graduation_year, !trustedAlumniIdentity && current.graduationYear === 0)
   if (changes.graduationYear) changes.batch = number(changes.graduationYear)
   apply("company", "company", current.company, record.company, current.currentCompanyVerification === "Unverified")
   apply("title", "title", current.title, record.title, current.designationVerification === "Unverified")
@@ -74,7 +83,10 @@ function safeUpdates(record: ImportRecord, current: typeof alumni.$inferSelect, 
   apply("note", "note", current.note, record.note, true)
   if (changes.email) { changes.emailSource = `Institutional import · ${record.source_system}`; changes.emailVerification = "Unverified" }
   if (changes.phone) { changes.phoneSource = `Institutional import · ${record.source_system}`; changes.phoneVerification = "Unverified" }
-  if (history.length) changes.recordVersion = current.recordVersion + 1
+  if (history.length) {
+    changes.recordVersion = current.recordVersion + 1
+    changes.source = `Institutional import · ${record.source_system || "partial update"}`
+  }
   return { changes, history, proposals, protectedFields, now }
 }
 
@@ -177,7 +189,9 @@ export async function POST(request: Request) {
           db.insert(alumni).values({ ...record, lastMutationRequestKey: itemMutationKey }).onConflictDoNothing({ target: alumni.profileKey }),
           ownershipGuard(alumnusId, `import_create_ownership:${row.key}`),
           db.insert(mutationCommitGuards).values({ requestKey: executeIdentity.requestKey, alumnusId: alumnusId as unknown as number, operation: `import_create:${row.key}:attempt:${attemptCount}`, valid: sql<number>`(select case when exists (select 1 from alumni where profile_key = ${record.profileKey} and last_mutation_request_key = ${itemMutationKey}) then 1 else 0 end)` }),
+          db.insert(alumniSourceObservations).values({ alumnusId: alumnusId as unknown as number, mutationRequestKey: executeIdentity.requestKey, sourceRowKey: row.key, filename, sourceSystem: text(row.record.source_system), sourceDate: text(row.record.source_date), observedJson: retainedImportObservation(row.record), importedBy: context.displayName }).onConflictDoNothing(),
         ]
+        if (record.linkedinUrl) actions.push(db.insert(mutationCommitGuards).values({ requestKey: executeIdentity.requestKey, alumnusId: alumnusId as unknown as number, operation: `import_linkedin_identity:${row.key}:attempt:${attemptCount}`, valid: sql<number>`(select case when (select count(*) from alumni where rtrim(lower(linkedin_url), '/') = rtrim(lower(${record.linkedinUrl}), '/')) = 1 then 1 else 0 end)` }))
         const privacy = { generalContactStatus: text(row.record.general_contact_status, "Unknown"), professionalEngagementStatus: text(row.record.professional_engagement_status, "Unknown"), birthdayEngagementStatus: text(row.record.birthday_engagement_status, "Unknown"), consentSource: text(row.record.consent_source, "Unknown") }
         if (Object.values(privacy).some(value => value !== "Unknown")) actions.push(db.insert(alumniPrivacyControls).values({ alumnusId: alumnusId as unknown as number, ...privacy, notes: "Imported explicit restrictions/consent status; no consent inferred.", updatedBy: context.displayName }).onConflictDoNothing())
         actions.push(db.insert(mutationRequestItems).values({ requestKey: executeIdentity.requestKey, itemKey: row.key, outcomeJson: JSON.stringify({ imported: 1, updated: 0, unchanged: 0, protectedFields: 0 }) }))
@@ -201,6 +215,7 @@ export async function POST(request: Request) {
           )
         }
         actions.push(ownershipGuard(current.id, `import_item_ownership:${row.key}`))
+        actions.push(db.insert(alumniSourceObservations).values({ alumnusId: current.id, mutationRequestKey: executeIdentity.requestKey, sourceRowKey: row.key, filename, sourceSystem: text(row.record.source_system), sourceDate: text(row.record.source_date), observedJson: retainedImportObservation(row.record), importedBy: context.displayName }).onConflictDoNothing())
         actions.push(db.insert(mutationRequestItems).values({ requestKey: executeIdentity.requestKey, itemKey: row.key, outcomeJson: JSON.stringify({ imported: 0, updated: plan.history.length ? 1 : 0, unchanged: plan.history.length || plan.proposals.length ? 0 : 1, protectedFields: plan.protectedFields }) }))
         await enqueueGroup(actions)
       }

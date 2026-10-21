@@ -13,5 +13,11 @@ export function providerCompanyMappingStore(db: Database): ProviderCompanyMappin
         eq(providerCompanyMappings.normalizedCompanyKey, normalizedCompanyKey),
       )).orderBy(providerCompanyMappings.id)
     },
+    findBySelectionId(provider, mappingId) {
+      return db.select().from(providerCompanyMappings).where(and(
+        eq(providerCompanyMappings.provider, provider),
+        eq(providerCompanyMappings.id, mappingId),
+      )).orderBy(providerCompanyMappings.id)
+    },
   }
 }

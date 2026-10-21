@@ -162,6 +162,71 @@ test("ES-DSL discovery composes programme-only, seniority-only, combined, all, a
   assert.doesNotMatch(JSON.stringify(omitted.body), /education\.program|experience\.title/)
 })
 
+test("demo criteria matrix keeps optional dimensions independent and multiselects within their nested rows", () => {
+  const combinations = [
+    { companyName: "Synthetic Employer" },
+    { companyName: "Synthetic Employer", graduationYear: 2024 },
+    { companyName: "Synthetic Employer", programmes: ["MBA"] },
+    { companyName: "Synthetic Employer", seniorities: ["Director"] },
+    { companyName: "Synthetic Employer", graduationYear: 2024, programmes: ["MBA"] },
+    { companyName: "Synthetic Employer", graduationYear: 2024, programmes: ["MBA", "PGP"], seniorities: ["Director", "VP+"] },
+    {},
+    { programmes: ["MBA", "PGDM"] },
+    { seniorities: ["Director", "VP+"] },
+  ]
+  for (const input of combinations) {
+    const contract = client.coresignalDiscoveryEsDslPreviewContract(input)
+    const filters = contract.body.query.bool.filter
+    const education = filters.find(item => item.nested?.path === "education")?.nested.query.bool.filter
+    const experience = filters.find(item => item.nested?.path === "experience")?.nested.query.bool.filter
+    assert.deepEqual(education[0], { term: { "education.institution_id": client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } })
+    assert.equal(Boolean(education.find(item => item.term?.["education.date_to_year"])), Boolean(input.graduationYear))
+    assert.equal(Boolean(education.find(item => item.bool?.minimum_should_match === 1)), Boolean(input.programmes?.length))
+    assert.equal(Boolean(experience), Boolean(input.companyName || input.seniorities?.length))
+    if (experience) {
+      assert.deepEqual(experience.filter(item => item.term && !item.term["experience.company_name.exact"]), [
+        { term: { "experience.is_current": 1 } },
+        { term: { "experience.deleted": 0 } },
+      ])
+      assert.equal(Boolean(experience.find(item => item.term?.["experience.company_name.exact"])), Boolean(input.companyName))
+      assert.equal(Boolean(experience.find(item => item.bool?.minimum_should_match === 1)), Boolean(input.seniorities?.length))
+    }
+    assert.equal(filters.filter(item => item.nested?.path === "education").length, 1)
+    assert.equal(filters.filter(item => item.nested?.path === "experience").length, input.companyName || input.seniorities?.length ? 1 : 0)
+  }
+})
+
+test("mocked Preview bounds requested N=1,5,10 while evaluating all returned candidates", async () => {
+  process.env.NODE_ENV = "production"
+  process.env.CORESIGNAL_API_KEY = "test-only-key-never-sent"
+  process.env.CORESIGNAL_LIVE_ENABLED = "true"
+  const records = Array.from({ length: 12 }, (_, index) => ({
+    id: 9000 + index,
+    full_name: `Synthetic Candidate ${index + 1}`,
+    professional_network_url: `https://www.linkedin.com/in/synthetic-demo-${index + 1}`,
+    active_experience_title: "Manager",
+  }))
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls += 1
+    return new Response(JSON.stringify(records), { status: 200, headers: { "x-total-results": "12" } })
+  }
+  for (const requested of [1, 5, 10]) {
+    const result = await adapter.coresignalProvider.searchCandidates(exactFilters({ company: "", graduationYear: "", seniority: "All levels", seniorities: [], discoveryProgrammes: [] }), [], requested, {
+      maximumCollects: 0,
+      exactYearPreview: { operationContext: "synthetic demo acceptance" },
+    })
+    assert.equal(result.execution.metrics.previewCountReturned, 12)
+    assert.equal(result.execution.metrics.previewCountConsidered, 12)
+    assert.equal(result.execution.metrics.savedReviewCandidates, requested)
+    assert.equal(result.profiles.length, requested)
+    assert.equal(new Set(result.profiles.map(item => item.providerPersonId)).size, requested)
+    assert.equal(result.execution.metrics.collectExecuted, 0)
+    assert.ok(result.execution.selectedCandidates.every(item => item.finalStatus !== "FILTER_MISMATCH"))
+  }
+  assert.equal(calls, 3)
+})
+
 test("Preview page contract is bounded and sends an explicit page only for continuation", async () => {
   process.env.CORESIGNAL_API_KEY = "test-key"
   const urls = []
@@ -225,7 +290,10 @@ test("route and UI preserve Admin, explicit-confirmation, entitlement, and no-fa
   assert.match(page, /exact company_name\.exact=/)
   assert.match(page, /Exact-name fallback does not establish a verified provider company ID/)
   assert.match(page, /1 Preview · 0 Collect/)
-  assert.match(page, /Constrained Search Blocked/)
+  assert.match(page, /Preview Search Blocked/)
+  assert.match(discoveryRoute, /const constrainedPreview = coresignalProvider\.mode\(\) === "live"/)
+  assert.doesNotMatch(discoveryRoute, /const constrainedPreview = [^\n]*Boolean\(filters\./)
+  assert.match(page, /Confirm One Preview Request/)
   assert.match(envExample, /CORESIGNAL_ES_DSL_PREVIEW_ENABLED=false/)
   assert.match(envExample, /CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT=unknown/)
   assert.doesNotMatch(envExample, /CORESIGNAL_API_KEY=\S+/)

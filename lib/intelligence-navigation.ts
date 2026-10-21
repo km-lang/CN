@@ -1,4 +1,4 @@
-export const INTELLIGENCE_VIEWS = ["refresh", "reviews", "discovery"] as const
+export const INTELLIGENCE_VIEWS = ["refresh", "reviews", "discovery", "webhooks"] as const
 export type IntelligenceView = typeof INTELLIGENCE_VIEWS[number]
 
 export function intelligenceView(search: string): IntelligenceView {

@@ -20,12 +20,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { AlumnusCombobox } from "@/components/alumnus-combobox"
-import { CompanyCombobox, normalizeCompanyOptions } from "@/components/company-combobox"
+import { CompanyCombobox, CompanySearchCombobox, normalizeCompanyOptions } from "@/components/company-combobox"
 import { PaginationFooter, usePagination } from "@/components/pagination"
 import { IntelligenceWorkspace } from "@/components/intelligence/intelligence-workspace"
 import { OpportunitiesWorkspace } from "@/components/opportunities/opportunities-workspace"
 import { BrightDataWorkflow } from "@/components/brightdata-workflow"
 import { ProfileIntelligencePanel } from "@/components/intelligence/profile-intelligence-panel"
+import { AlumniHistoryPanel } from "@/components/alumni-history-panel"
 import { AdminPanel } from "@/app/admin-panel"
 import { useAccessSession } from "@/app/access-provider"
 import {
@@ -60,6 +61,8 @@ import { groupEngagementsByAlumnus } from "@/lib/engagement-presentation"
 import { MANUAL_ALUMNUS_REQUIRED_COPY, validateManualAlumnusInput } from "@/lib/manual-alumnus"
 import { mailPresentation, signalsPresentation } from "@/lib/runtime-readiness"
 import { alumniEducationLabel } from "@/lib/alumni-education"
+import { calculatePlacementRelevance, placementSeniorityLabel, placementResponsivenessLabel, HIRING_OPTIONS, RELATIONSHIP_OPTIONS, WARM_INTRO_OPTIONS, COMPANY_PRIORITY_OPTIONS } from "@/lib/placement-relevance"
+import type { CompanyDirectoryOption } from "@/lib/company-directory"
 import {
   PROFESSIONAL_VERIFICATION_LABELS,
   PROFESSIONAL_VERIFICATION_OPTIONS,
@@ -74,6 +77,7 @@ const API_ROUTES = Object.freeze({
   enrichment: apiPath("/api/enrichment"),
   engagements: apiPath("/api/engagements"),
   discovery: apiPath("/api/discovery"),
+  provisionalIntake: apiPath("/api/discovery/intake"),
   signals: apiPath("/api/signals"),
   outreachRoute: apiPath("/api/outreach-route"),
   professionalVerification: apiPath("/api/professional-verification"),
@@ -88,6 +92,7 @@ const ADDED_DISCOVERY_STATUSES = new Set<string>([
   DISCOVERY_REVIEW_STATUS.added,
   DISCOVERY_REVIEW_STATUS.addedSeparate,
   DISCOVERY_REVIEW_STATUS.legacyAdded,
+  "Added provisionally",
 ])
 
 type OutreachStatus = "Not contacted" | "Contacted" | "Responded" | "Meeting set"
@@ -160,6 +165,7 @@ type Alumni = {
   professionalDataStatus?: string
   professionalDataNote?: string
   verified: string
+  intakeStatus?: "VERIFIED" | "PROVISIONAL" | "REVIEW_REQUIRED"
   status: OutreachStatus
   note: string
   assessment: {
@@ -271,6 +277,7 @@ type RetainedCollectCandidate = {
   company: string | null
   mappedCompanyId: number | null
   priorCollectStatus: string | null
+  sourceAlumnusId?: number
 }
 type CollectPreflightView = {
   candidate: RetainedCollectCandidate
@@ -326,6 +333,14 @@ type DiscoveryResult = {
   humanQualified?: boolean
   reviewedIdentity?: string | null
   reviewedAlumnusId?: number | null
+}
+
+type ProvisionalIntakePreflight = {
+  selectedCount: number
+  eligibleCount: number
+  excludedCount: number
+  assessments: Array<{ resultId: number; decision: "ELIGIBLE" | "ALREADY_PRESENT" | "REVIEW_REQUIRED"; reason: string }>
+  consequences: string
 }
 
 type CandidateEvidenceDraft = Omit<CandidateObservation, "educationStartYear" | "educationEndYear" | "graduationYear"> & {
@@ -482,87 +497,27 @@ type LushaContactPreview = {
   resumedFromStoredContact?: boolean
 }
 
-const hiringOptions = [
-  ["Direct hiring decision-maker", 100], ["Strong hiring influence", 80],
-  ["Moderate hiring influence", 60], ["Limited hiring influence", 30],
-  ["No known hiring influence", 10], ["Unknown / Not assessed", 50],
-] as const
-
-const relationshipOptions = [
-  ["Very strong", 100], ["Strong", 85], ["Moderate", 65],
-  ["Limited", 40], ["Minimal / record only", 20], ["Unknown / Not assessed", 50],
-] as const
-
-const warmIntroOptions = [
-  ["Is the relevant decision-maker", 100], ["Confirmed direct connection to decision-maker", 90],
-  ["Can credibly provide introduction", 75], ["Same relevant function / business unit", 60],
-  ["Same company only", 40], ["Weak evidence of connection", 20],
-  ["No known route", 10], ["Unknown / Not assessed", 50],
-] as const
-
-const companyPriorityOptions = [
-  ["Tier 1 Strategic Target", 100], ["High Priority", 85], ["Target Recruiter", 70],
-  ["Secondary Target", 50], ["Low Priority", 30], ["Not Currently Targeted", 10],
-] as const
-
-const seniorityOptions = [
-  ["CXO / Country Head / Managing Partner", 100], ["EVP / SVP / VP / Partner", 90],
-  ["Director / GM", 80], ["Senior Manager", 65], ["Manager", 50],
-  ["Associate / Consultant", 35], ["Analyst / Junior", 20],
-] as const
-
-const responsivenessOptions = [
-  ["Positive and took action", 90], ["Positive response", 80],
-  ["Contacted once, no response", 35], ["Never contacted / no history", 50],
-] as const
+const hiringOptions = HIRING_OPTIONS
+const relationshipOptions = RELATIONSHIP_OPTIONS
+const warmIntroOptions = WARM_INTRO_OPTIONS
+const companyPriorityOptions = COMPANY_PRIORITY_OPTIONS
 
 const statusOptions: OutreachStatus[] = ["Not contacted", "Contacted", "Responded", "Meeting set"]
 const functionFilterOptions = ["HR", "Finance", "Strategy", "Consulting", "Product", "Operations", "Sales", "Marketing", "Technology", "General Management", "Other"]
 const seniorityFilterOptions = [...DISCOVERY_SENIORITY_OPTIONS]
 
-function optionScore(options: readonly (readonly [string, number])[], label: string) {
-  return options.find(([name]) => name === label)?.[1] ?? 50
-}
-
 function seniorityLabel(person: Alumni) {
-  const value = person.seniority.toLowerCase()
-  if (/country|managing director|chief|c-suite|cxo/.test(value)) return seniorityOptions[0][0]
-  if (/evp|svp|vice president|\bvp\b|partner/.test(value)) return seniorityOptions[1][0]
-  if (/director|general manager|\bgm\b/.test(value)) return seniorityOptions[2][0]
-  if (/senior manager/.test(value)) return seniorityOptions[3][0]
-  if (/manager/.test(value)) return seniorityOptions[4][0]
-  if (/associate|consultant/.test(value)) return seniorityOptions[5][0]
-  return seniorityOptions[6][0]
-}
-
-function responsivenessLabel(status: OutreachStatus) {
-  if (status === "Meeting set") return responsivenessOptions[0][0]
-  if (status === "Responded") return responsivenessOptions[1][0]
-  if (status === "Contacted") return responsivenessOptions[2][0]
-  return responsivenessOptions[3][0]
+  return placementSeniorityLabel(person.seniority)
 }
 
 function derivedResponsiveness(person: Alumni, history: EngagementEvent[] = []) {
-  const relevant = history.filter(event => event.alumnusId === person.id)
-  const responses = relevant.filter(event => event.responseReceived).length
-  const completed = relevant.filter(event => ["Action Taken", "Response Received", "Follow-up Due", "Closed"].includes(event.status)).length
-  if (responses >= 2) return responsivenessOptions[0][0]
-  if (responses === 1) return responsivenessOptions[1][0]
-  if (completed >= 2) return responsivenessOptions[2][0]
-  return responsivenessLabel(person.status)
+  return placementResponsivenessLabel(person.status, history.filter(event => event.alumnusId === person.id))
 }
 
 function relevanceBreakdown(person: Alumni, priorities: Record<string, string>, history: EngagementEvent[] = []) {
-  const items = [
-    { label: "Hiring influence", score: optionScore(hiringOptions, person.assessment.hiringInfluence), weight: 30 },
-    { label: "Seniority", score: optionScore(seniorityOptions, seniorityLabel(person)), weight: 20 },
-    { label: "Company priority", score: optionScore(companyPriorityOptions, priorities[person.company]), weight: 20 },
-    { label: "IIML relationship", score: optionScore(relationshipOptions, person.assessment.iimlRelationship), weight: 15 },
-    { label: "Past responsiveness", score: optionScore(responsivenessOptions, derivedResponsiveness(person, history)), weight: 10 },
-    { label: "Warm-intro potential", score: optionScore(warmIntroOptions, person.assessment.warmIntroPotential), weight: 5 },
-  ]
-  const score = Math.round(items.reduce((total, item) => total + item.score * item.weight / 100, 0))
-  return { score, items }
+  const calculated = calculatePlacementRelevance({ intakeStatus: person.intakeStatus, hiringInfluence: person.assessment.hiringInfluence, seniority: person.seniority, company: person.company, companyPriority: priorities[person.company] || "Secondary Target", iimlRelationship: person.assessment.iimlRelationship, warmIntroPotential: person.assessment.warmIntroPotential, outreachStatus: person.status, events: history.filter(event => event.alumnusId === person.id) })
+  // The numeric fallback is used only by legacy sort helpers; provisional scores are never presented as assessed.
+  return { ...calculated, score: calculated.score ?? 0, assessed: calculated.score !== null }
 }
 
 function operationalStatus(person: Alumni) {
@@ -743,6 +698,7 @@ export default function Home() {
   const [alumni, setAlumni] = useState<Alumni[]>([])
   const [companyPriorities, setCompanyPriorities] = useState<Record<string, string>>({})
   const [workspaceCompanyOptions, setWorkspaceCompanyOptions] = useState<string[]>([])
+  const [companyDirectory, setCompanyDirectory] = useState<CompanyDirectoryOption[]>([])
   const [configuredProgrammes, setConfiguredProgrammes] = useState<ProgrammeOption[]>([])
   const [filters, setFilters] = useState<DirectoryFilters>(defaultDirectoryFilters)
   const [discoveryFilters, setDiscoveryFilters] = useState<DiscoveryFilters>(defaultDiscoveryFilters)
@@ -757,7 +713,7 @@ export default function Home() {
   const [directoryPage, setDirectoryPage] = useState(1)
   const [directoryPageSize, setDirectoryPageSizeState] = useState<10 | 25 | 50>(10)
   const [directoryLoading, setDirectoryLoading] = useState(false)
-  const [alumniSummary, setAlumniSummary] = useState({ total: 0, activeOutreach: 0, contactReady: 0 })
+  const [alumniSummary, setAlumniSummary] = useState({ total: 0, verified: 0, provisional: 0, needsReview: 0, activeOutreach: 0, contactReady: 0 })
   const [overviewTopAlumni, setOverviewTopAlumni] = useState<Alumni[]>([])
   const [companyRows, setCompanyRows] = useState<Alumni[]>([])
   const [companyTotal, setCompanyTotal] = useState(0)
@@ -806,6 +762,7 @@ export default function Home() {
   const [usageReconciliationDrafts, setUsageReconciliationDrafts] = useState<Record<number, string>>({})
   const [creditDrafts, setCreditDrafts] = useState<Record<Provider, string>>({ coresignal: "25", lusha: "100" })
   const [selectedForEnrichment, setSelectedForEnrichment] = useState<number[]>([])
+  const [brightProfileTarget, setBrightProfileTarget] = useState<{ alumnusId: number; profileUrl: string } | null>(null)
   const [selectedForIntelligence, setSelectedForIntelligence] = useState<number[]>([])
   const [enriching, setEnriching] = useState(false)
   const [enrichmentMessage, setEnrichmentMessage] = useState("")
@@ -837,6 +794,9 @@ export default function Home() {
   const [discoveryReconciliation, setDiscoveryReconciliation] = useState<ReconciliationSummary | null>(null)
   const [discoveryExecution, setDiscoveryExecution] = useState<DiscoveryExecutionSummary | null>(null)
   const [selectedDiscoveryIds, setSelectedDiscoveryIds] = useState<number[]>([])
+  const [selectedProvisionalIds, setSelectedProvisionalIds] = useState<number[]>([])
+  const [provisionalPreflight, setProvisionalPreflight] = useState<ProvisionalIntakePreflight | null>(null)
+  const [provisionalIntakeBusy, setProvisionalIntakeBusy] = useState(false)
   const [comparisonResult, setComparisonResult] = useState<DiscoveryResult | null>(null)
   const [selectedComparisonFields, setSelectedComparisonFields] = useState<string[]>([])
   const [candidateEvidenceDraft, setCandidateEvidenceDraft] = useState<CandidateEvidenceDraft>(EMPTY_CANDIDATE_EVIDENCE)
@@ -923,13 +883,14 @@ export default function Home() {
     try {
       setWorkspaceLoading(true)
       const response = await fetch(`${API_ROUTES.workspace}?includeAlumni=false`, { cache: "no-store" })
-      const data = await response.json() as { companyPriorities?: Record<string, string>; companyOptions?: string[]; programmeOptions?: ProgrammeOption[]; latestImport?: LatestImport | null; alumniSummary?: { total: number; activeOutreach: number; contactReady: number }; outreachStatusCounts?: Record<string, number>; topAlumni?: Alumni[]; error?: string }
+      const data = await response.json() as { companyPriorities?: Record<string, string>; companyOptions?: string[]; companyDirectory?: CompanyDirectoryOption[]; programmeOptions?: ProgrammeOption[]; latestImport?: LatestImport | null; alumniSummary?: { total: number; verified: number; provisional: number; needsReview: number; activeOutreach: number; contactReady: number }; outreachStatusCounts?: Record<string, number>; topAlumni?: Alumni[]; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load the shared workspace.")
       setCompanyPriorities(data.companyPriorities ?? {})
       setWorkspaceCompanyOptions(data.companyOptions ?? [])
+      setCompanyDirectory(data.companyDirectory ?? [])
       setConfiguredProgrammes(data.programmeOptions ?? [])
       setLatestImport(data.latestImport ?? null)
-      setAlumniSummary(data.alumniSummary ?? { total: 0, activeOutreach: 0, contactReady: 0 })
+      setAlumniSummary(data.alumniSummary ?? { total: 0, verified: 0, provisional: 0, needsReview: 0, activeOutreach: 0, contactReady: 0 })
       setOverviewTopAlumni(data.topAlumni ?? [])
       setOutreachStatusCounts(data.outreachStatusCounts ?? {})
       setWorkspaceMessage("")
@@ -1059,15 +1020,29 @@ export default function Home() {
     } finally { setCollectBusy(false) }
   }
 
+  async function reviewKnownCollectEligibility(alumnusId: number) {
+    setCollectBusy(true)
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.coresignalCollect, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "preflight", alumnusId }) })
+      const data = await response.json() as { preflight?: CollectPreflightView; confirmationToken?: string | null; error?: string }
+      if (!response.ok || !data.preflight) throw new Error(data.error || "Unable to validate Collect eligibility.")
+      setCollectPreflightView(data.preflight)
+      setCollectConfirmationToken(data.confirmationToken ?? "")
+    } catch (error) {
+      setEnrichmentMessage(error instanceof Error ? error.message : "Unable to validate Collect eligibility.")
+    } finally { setCollectBusy(false) }
+  }
+
   async function executeCollectOnly() {
     if (!collectPreflightView || !collectConfirmationToken) return
     setCollectBusy(true)
     try {
-      const response = await fetch(API_ROUTES.coresignalCollect, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "execute", searchHistoryId: collectPreflightView.candidate.searchHistoryId, employeeId: collectPreflightView.candidate.employeeId, confirmed: true, confirmationToken: collectConfirmationToken }) })
-      const data = await response.json() as { state?: string; error?: string }
+      const response = await fetch(API_ROUTES.coresignalCollect, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "execute", ...(collectPreflightView.candidate.sourceAlumnusId ? { alumnusId: collectPreflightView.candidate.sourceAlumnusId } : { searchHistoryId: collectPreflightView.candidate.searchHistoryId }), employeeId: collectPreflightView.candidate.employeeId, confirmed: true, confirmationToken: collectConfirmationToken }) })
+      const data = await response.json() as { state?: string; comparisonOutcome?: string; error?: string }
       if (!response.ok) throw new Error(data.error || "Collect execution failed.")
       setCollectPreflightView(null); setCollectConfirmationToken("")
-      setEnrichmentMessage("Collect evidence was retained for human review. No identity or canonical alumnus field was changed.")
+      setEnrichmentMessage(data.comparisonOutcome === "NO_CHANGE" ? "Collect evidence was retained; no comparable professional-field change was observed, so no correction was proposed." : data.comparisonOutcome === "IDENTITY_CONFLICT" ? "Collect evidence was retained with an identity conflict; no correction was proposed. Review the provider history before proceeding." : "Collect evidence was retained for human review. No identity or canonical alumnus field was changed.")
       await loadEnrichment()
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Collect execution failed.")
@@ -1211,7 +1186,7 @@ export default function Home() {
     }
   }
 
-  const companies = useMemo(() => normalizeCompanyOptions(workspaceCompanyOptions.length ? workspaceCompanyOptions : alumni.filter(person => (person.lifecycle ?? "Active") === "Active").map(person => person.company)), [alumni, workspaceCompanyOptions])
+  const companies = useMemo(() => normalizeCompanyOptions(workspaceCompanyOptions.length ? workspaceCompanyOptions : alumni.filter(person => (person.lifecycle ?? "Active") === "Active" && person.intakeStatus !== "PROVISIONAL").map(person => person.company)), [alumni, workspaceCompanyOptions])
   const programmeChoices = useMemo(() => programmeFilterOptions(configuredProgrammes, alumni.map(person => person.programme)), [alumni, configuredProgrammes])
   const activeProgrammeChoices = useMemo(() => programmeChoices.filter(option => option.active), [programmeChoices])
   const [customDiscoveryProgramme, setCustomDiscoveryProgramme] = useState("")
@@ -1223,7 +1198,7 @@ export default function Home() {
     selectorSearchRef.current = controller
     setSelectorSearching(true)
     try {
-      const filters = { ...defaultDirectoryFilters(), search, company }
+      const filters = { ...defaultDirectoryFilters(), search, company, excludeProvisional: true }
       const query = new URLSearchParams({ filters: JSON.stringify(filters), page: "1", pageSize: "25", sort: "name" })
       const response = await fetch(`${API_ROUTES.alumniCollection}?${query}`, { cache: "no-store", signal: controller.signal })
       const data = await response.json() as { items?: Alumni[]; error?: string }
@@ -1246,10 +1221,10 @@ export default function Home() {
     const timer = window.setTimeout(async () => {
       const defaults = defaultDirectoryFilters()
       const filters: DirectoryFilters = activeTab === "companies"
-        ? { ...defaults, company: activeTargetCompany || "All companies" }
+        ? { ...defaults, company: activeTargetCompany || "All companies", excludeProvisional: true }
         : activeTab === "outreach"
-          ? { ...defaults, name: outreachSearch, company: outreachCompany, outreachStatus: outreachStatus === "All alumni" ? defaults.outreachStatus : outreachStatus, minRelevance: outreachRelevance === "75–100" ? 75 : outreachRelevance === "50–74" ? 50 : 0, maxRelevance: outreachRelevance === "50–74" ? 74 : outreachRelevance === "Below 50" ? 49 : 100 }
-          : defaults
+          ? { ...defaults, name: outreachSearch, company: outreachCompany, outreachStatus: outreachStatus === "All alumni" ? defaults.outreachStatus : outreachStatus, minRelevance: outreachRelevance === "75–100" ? 75 : outreachRelevance === "50–74" ? 50 : 0, maxRelevance: outreachRelevance === "50–74" ? 74 : outreachRelevance === "Below 50" ? 49 : 100, excludeProvisional: true }
+          : { ...defaults, excludeProvisional: true }
       const page = activeTab === "companies" ? companyPage : activeTab === "outreach" ? outreachPage : enrichmentPage
       const pageSize = activeTab === "companies" ? companyPageSize : activeTab === "outreach" ? outreachPageSize : enrichmentPageSize
       const query = new URLSearchParams({ filters: JSON.stringify(filters), page: String(page), pageSize: String(pageSize), sort: "relevance" })
@@ -1269,7 +1244,7 @@ export default function Home() {
   }, [activeTab, activeTargetCompany, companyPage, companyPageSize, enrichmentPage, enrichmentPageSize, outreachCompany, outreachPage, outreachPageSize, outreachRelevance, outreachSearch, outreachStatus])
 
   const selectorPool = useMemo(() => [...new Map([...alumni, ...companyRows, ...overviewTopAlumni, ...selectorAlumni].map(person => [person.id, person])).values()], [alumni, companyRows, overviewTopAlumni, selectorAlumni])
-  const routeEligibleAlumni = useMemo(() => selectorPool.filter(person => (person.lifecycle ?? "Active") === "Active").sort((a, b) => a.name.localeCompare(b.name)), [selectorPool])
+  const routeEligibleAlumni = useMemo(() => selectorPool.filter(person => (person.lifecycle ?? "Active") === "Active" && person.intakeStatus !== "PROVISIONAL").sort((a, b) => a.name.localeCompare(b.name)), [selectorPool])
   const filtered = useMemo(() => alumni.filter(person => {
     const relevance = relevanceBreakdown(person, companyPriorities, engagements).score
     return matchesInternalFilters(person, filters, relevance, operationalStatus(person))
@@ -1310,12 +1285,11 @@ export default function Home() {
     && ["Standard engagement allowed", "Birthday engagement allowed"].includes(event.preference)
     && !isCompletedEngagement(event.status)
   const reviewableBirthdaysNextWeek = birthdaysNextWeek.filter(birthdayReady)
-  const discoveryUsesEsDslPreview = Boolean(discoveryFilters.graduationYear || discoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(discoveryFilters).length)
-  const discoverySearchOperationReserve = providerModes.coresignal === "live" && !discoveryUsesEsDslPreview ? 1 : 0
+  const discoverySearchOperationReserve = 0
   const discoveryMaximum = maximumDiscoveryCount(providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100, discoverySearchOperationReserve)
   const discoveryCountPreset = ["1", "5", "10", "20"].includes(discoveryLimit) ? discoveryLimit : "custom"
   const discoveryCountValidation = validateDiscoveryCount(Number(discoveryLimit), providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100, discoverySearchOperationReserve)
-  const discoveryMaximumApplicationUsage = discoveryApplicationUnits(Number(discoveryLimit), discoverySearchOperationReserve)
+  const discoveryMaximumApplicationUsage = providerModes.coresignal === "live" ? 1 : discoveryApplicationUnits(Number(discoveryLimit), discoverySearchOperationReserve)
   const visibleEngagements = engagements.filter(event => engagementMatches(event, {
     queue: engagementFilter, period: engagementPeriod, company: engagementCompany,
     assignee: engagementAssignee, actionState: engagementActionState,
@@ -2149,6 +2123,19 @@ export default function Home() {
     setDiscoveryFilters(current => ({ ...current, [key]: value }))
     setDiscoveryResults([])
     setSelectedDiscoveryIds([])
+    setSelectedProvisionalIds([])
+    setDiscoveryMessage("")
+    setDiscoveryState("idle")
+    setLastDiscoveryFilters(null)
+    setDiscoveryReconciliation(null)
+    setDiscoveryExecution(null)
+  }
+
+  function selectDiscoveryCompany(company: string, companySelectionKey: string) {
+    setDiscoveryFilters(current => ({ ...current, company, companySelectionKey }))
+    setDiscoveryResults([])
+    setSelectedDiscoveryIds([])
+    setSelectedProvisionalIds([])
     setDiscoveryMessage("")
     setDiscoveryState("idle")
     setLastDiscoveryFilters(null)
@@ -2182,6 +2169,7 @@ export default function Home() {
     }))
     setDiscoveryResults([])
     setSelectedDiscoveryIds([])
+    setSelectedProvisionalIds([])
     setDiscoveryMessage("")
     setDiscoveryState("idle")
     setLastDiscoveryFilters(null)
@@ -2232,7 +2220,7 @@ export default function Home() {
 
   function discoverMoreAlumni(searchFilters: DiscoveryFilters = discoveryFilters) {
     const requested = Number(discoveryLimit)
-    const operationReserve = providerModes.coresignal === "live" && !searchFilters.graduationYear ? 1 : 0
+    const operationReserve = 0
     const validation = validateDiscoveryCount(requested, providerUsage.coresignal.remaining, providerModes.coresignal === "live" ? coresignalLiveMaximum : 100, operationReserve)
     if (!validation.ok) {
       setDiscoveryState("blocked")
@@ -2273,6 +2261,7 @@ export default function Home() {
       setDiscoveryResults(data.results)
       setDiscoveryCounts(data.counts)
       setSelectedDiscoveryIds([])
+      setSelectedProvisionalIds([])
       setLastDiscoveryFilters(data.filters ?? null)
       setActiveDiscoveryRun(data.activeSearch ?? null)
       setDiscoveryRunHistory(data.history ?? [data.activeSearch, ...(data.previousSearches ?? [])].filter((run): run is DiscoveryRunSummary => Boolean(run)).sort((left, right) => right.searchId - left.searchId))
@@ -2317,6 +2306,7 @@ export default function Home() {
       setDiscoveryReconciliation(data.reconciliationSummary ?? null)
       setDiscoveryExecution(data.executionSummary ?? null)
       setSelectedDiscoveryIds([])
+      setSelectedProvisionalIds([])
       setDiscoveryState(data.results.length ? "results" : "empty")
       setDiscoveryMessage(data.results.length
         ? `${data.returnedCount ?? data.results.length} Preview candidates returned; ${data.storedResultCount ?? data.results.length} discovery results stored; ${data.activeSearch?.pendingCount ?? 0} actionable review candidates. Application usage: ${data.applicationUnits ?? data.results.length}; provider-account usage: ${data.creditsUsed == null ? "unknown" : data.creditsUsed}.`
@@ -2498,6 +2488,37 @@ export default function Home() {
     } finally {
       setDiscovering(false)
     }
+  }
+
+  async function prepareProvisionalIntake(resultIds: number[]) {
+    if (!resultIds.length) return
+    setProvisionalIntakeBusy(true)
+    try {
+      const response = await fetch(API_ROUTES.provisionalIntake, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "preflight", resultIds }) })
+      const data = await response.json() as ProvisionalIntakePreflight & { error?: string }
+      if (!response.ok) throw new Error(data.error || "Provisional intake preflight failed.")
+      setProvisionalPreflight(data)
+    } catch (error) { setDiscoveryMessage(error instanceof Error ? error.message : "Provisional intake preflight failed.") }
+    finally { setProvisionalIntakeBusy(false) }
+  }
+
+  async function confirmProvisionalIntake() {
+    if (!provisionalPreflight?.eligibleCount) return
+    setProvisionalIntakeBusy(true)
+    try {
+      const resultIds = provisionalPreflight.assessments.map(item => item.resultId)
+      const response = await fetch(API_ROUTES.provisionalIntake, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "execute", resultIds, confirmed: true }) })
+      const data = await response.json() as { addedCount?: number; added?: Array<{ resultId: number; alumnusId: number }>; excludedCount?: number; error?: string }
+      if (!response.ok) throw new Error(data.error || "Provisional intake failed.")
+      const added = new Map((data.added ?? []).map(item => [item.resultId, item.alumnusId]))
+      setDiscoveryResults(current => current.map(item => added.has(item.id) ? { ...item, reviewStatus: "Added provisionally", linkedInternalAlumnusId: added.get(item.id) ?? null } : item))
+      setSelectedProvisionalIds([])
+      setProvisionalPreflight(null)
+      setActiveDiscoveryRun(current => current ? { ...current, pendingCount: Math.max(0, current.pendingCount - added.size) } : current)
+      setDiscoveryMessage(`${data.addedCount ?? added.size} provisional profile${added.size === 1 ? "" : "s"} added to the Directory; ${data.excludedCount ?? 0} excluded for review. No alumni fact or outreach consent was verified.`)
+      await Promise.all([loadWorkspace(), loadPendingDiscoverySummary()])
+    } catch (error) { setDiscoveryMessage(error instanceof Error ? error.message : "Provisional intake failed.") }
+    finally { setProvisionalIntakeBusy(false) }
   }
 
   async function ignoreDiscoveryResult(resultId: number, reason = ignoreReason) {
@@ -2793,9 +2814,9 @@ export default function Home() {
 
           <TabsContent value="overview" className="tab-panel">
             <section className="stats-grid" aria-label="Key metrics">
-              <StatCard icon={UsersRound} label="Alumni mapped" value={`${alumniSummary.total}`} delta="Shared master database" />
+              <StatCard icon={UsersRound} label="Directory profiles" value={`${alumniSummary.total}`} delta={`${alumniSummary.verified} verified · ${alumniSummary.provisional} provisional · ${alumniSummary.needsReview} need review`} />
               <StatCard icon={Building2} label="Companies covered" value={`${companies.length}`} delta="Calculated from current records" />
-              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumniSummary.total}`} delta="Based on field verification" help="Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone." />
+              <StatCard icon={UserRoundCheck} label="Contact-ready alumni" value={`${contactReadyCount} / ${alumniSummary.total - alumniSummary.provisional}`} delta="Excludes provisional profiles" help="Requires a confirmed profile match, verified current company, verified or likely designation, and at least one verified email or phone. Provisional intake never grants outreach eligibility." />
               <StatCard icon={Target} label="Active outreach" value={`${activeOutreach}`} delta="Visible to all committee members" help="Includes shared outreach states Contacted, Responded, and Meeting set." />
               {session.canOperate && <StatCard icon={BriefcaseBusiness} label="Active opportunities" value={`${opportunitySummary.active}`} delta={`${opportunitySummary.followUpsDue} follow-up${opportunitySummary.followUpsDue === 1 ? "" : "s"} due`} help="Persistent Corporate Opportunities that are not Confirmed or Closed Lost." />}
             </section>
@@ -2831,9 +2852,10 @@ export default function Home() {
 
           <TabsContent value="directory" className="tab-panel">
             <section className="panel directory-panel">
-              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal alumni directory</p><h2>Alumni directory</h2><span>{directoryLoading ? "Searching stored alumni…" : `${directoryTotal} alumni found in ${appConfig.name}, ranked by Placement Relevance`}</span></div>{session.canOperate && <div className="directory-intelligence-actions"><Button variant="outline" onClick={() => setDirectoryExportOpen(true)}><Download /> Export Data</Button><Button variant="outline" disabled={!selectedForIntelligence.length} onClick={() => openIntelligenceFor(selectedForIntelligence)}>Refresh selected</Button><Button variant="outline" disabled={!selectedForIntelligence.length} onClick={() => openIntelligenceFor(selectedForIntelligence)}>Schedule selected</Button><Button variant="ghost" onClick={() => openIntelligenceFor(directoryPagination.items.map(person => person.id))}>Use current page</Button><Button variant="ghost" onClick={() => openIntelligenceFor(filtered.map(person => person.id))}>Use all matching</Button></div>}</div>
+              <div className="panel-heading directory-heading"><div><p className="eyebrow">Internal alumni directory</p><h2>Alumni directory</h2><span>{directoryLoading ? "Searching stored profiles…" : `${directoryTotal} profiles found in ${appConfig.name}, ranked by Placement Relevance`}</span></div>{session.canOperate && <div className="directory-intelligence-actions"><Button variant="outline" onClick={() => setDirectoryExportOpen(true)}><Download /> Export Data</Button><Button variant="outline" disabled={!selectedForIntelligence.length} onClick={() => openIntelligenceFor(selectedForIntelligence)}>Prepare inactive policy</Button><Button variant="ghost" onClick={() => openIntelligenceFor(directoryPagination.items.filter(person => person.intakeStatus !== "PROVISIONAL").map(person => person.id))}>Use current page</Button><Button variant="ghost" onClick={() => openIntelligenceFor(filtered.filter(person => person.intakeStatus !== "PROVISIONAL").map(person => person.id))}>Use loaded matches only</Button></div>}</div>
               {session.canOperate && pendingDiscoveryCount > 0 && <div className="pending-review-banner" role="status"><span className="pending-review-icon"><Eye /></span><span><strong>{pendingDiscoveryCount} external alumn{pendingDiscoveryCount === 1 ? "us" : "i"} awaiting review</strong><small>Reopen the stored results without running another provider search.</small></span><Button variant="outline" onClick={() => void reviewPendingDiscoveryResults()} disabled={loadingPendingReview}>{loadingPendingReview ? <LoaderCircle className="spin" /> : <Eye />} Review Results</Button></div>}
               <div className="filters core-filters">
+                <Select value={filters.profileStatus} onValueChange={value => updateDirectoryFilter("profileStatus", value as DirectoryFilters["profileStatus"])}><SelectTrigger aria-label="Profile verification status"><SelectValue /></SelectTrigger><SelectContent>{["All profiles", "Verified alumni", "Provisional", "Needs review"].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
                 <div className="search-field directory-filter-name"><Search /><Input value={filters.name} onChange={event => updateDirectoryFilter("name", event.target.value)} placeholder="Alumnus name" aria-label="Search by alumnus name" /></div>
                 <Input className="directory-filter-company" list="company-options" value={filters.company === "All companies" ? "" : filters.company} onChange={event => updateDirectoryFilter("company", event.target.value || "All companies")} placeholder="Company name" aria-label="Filter by current company" />
                 <datalist id="company-options">{companies.map(item => <option key={item} value={item} />)}</datalist>
@@ -2857,8 +2879,8 @@ export default function Home() {
                 <label className="directory-filter-field"><span>IIML relationship</span><Select value={filters.relationship} onValueChange={value => updateDirectoryFilter("relationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All relationships">All IIML relationships</SelectItem>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               </div>}
               <Table>
-                <TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label="Select current Directory page for intelligence" checked={Boolean(directoryPagination.items.length) && directoryPagination.items.every(person => selectedForIntelligence.includes(person.id))} onChange={event => { const ids = directoryPagination.items.map(person => person.id); setSelectedForIntelligence(current => event.target.checked ? [...new Set([...current, ...ids])] : current.filter(id => !ids.includes(id))) }} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
-                <TableBody>{directoryPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell>{session.canOperate && <input type="checkbox" aria-label={`Select ${person.name} for intelligence`} checked={selectedForIntelligence.includes(person.id)} onChange={() => setSelectedForIntelligence(current => current.includes(person.id) ? current.filter(id => id !== person.id) : [...current, person.id])} />}</TableCell><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(alumni.find(item => item.id === person.id) ?? person, "directory")}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{alumniEducationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell><span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span></TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button></TableCell></TableRow> })}</TableBody>
+                <TableHeader><TableRow><TableHead>{session.canOperate && <input type="checkbox" aria-label="Select current Directory page for intelligence" checked={Boolean(directoryPagination.items.filter(person => person.intakeStatus !== "PROVISIONAL").length) && directoryPagination.items.filter(person => person.intakeStatus !== "PROVISIONAL").every(person => selectedForIntelligence.includes(person.id))} onChange={event => { const ids = directoryPagination.items.filter(person => person.intakeStatus !== "PROVISIONAL").map(person => person.id); setSelectedForIntelligence(current => event.target.checked ? [...new Set([...current, ...ids])] : current.filter(id => !ids.includes(id))) }} />}</TableHead><TableHead>Alumnus</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Location</TableHead><TableHead>Data confidence</TableHead><TableHead>Placement relevance</TableHead><TableHead>Outreach</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
+                <TableBody>{directoryPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell>{session.canOperate && person.intakeStatus !== "PROVISIONAL" && <input type="checkbox" aria-label={`Select ${person.name} for intelligence`} checked={selectedForIntelligence.includes(person.id)} onChange={() => setSelectedForIntelligence(current => current.includes(person.id) ? current.filter(id => id !== person.id) : [...current, person.id])} />}</TableCell><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(alumni.find(item => item.id === person.id) ?? person, "directory")}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small className={person.intakeStatus === "PROVISIONAL" ? "provisional-status" : ""}>{person.intakeStatus === "PROVISIONAL" ? "UNVERIFIED / PROVISIONAL · alumni facts pending" : person.intakeStatus === "VERIFIED" ? "VERIFIED ALUMNUS" : "NEEDS REVIEW"}</small><small>{alumniEducationLabel(person)}</small></span></button></TableCell><TableCell><span className="stacked-cell"><strong>{person.company}</strong><small>{person.title}</small></span></TableCell><TableCell>{person.function}</TableCell><TableCell>{person.location}</TableCell><TableCell>{person.intakeStatus === "PROVISIONAL" ? "Not assessed" : <span className={`score-pill ${scoreTone(person.confidence)}`}>{person.confidence}%</span>}</TableCell><TableCell>{person.intakeStatus === "PROVISIONAL" ? "Not assessed" : <span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span>}</TableCell><TableCell><StatusBadge status={person.status} /></TableCell><TableCell>{person.intakeStatus === "PROVISIONAL" ? <span>Review required before outreach</span> : <Button size="sm" variant="outline" onClick={() => void recommendRoute(person.id)}><Network /> Recommend Route</Button>}</TableCell></TableRow> })}</TableBody>
               </Table>
               <PaginationFooter model={directoryPagination} label="Alumni Directory pagination" />
               {!directoryLoading && directoryTotal === 0 && <div className="empty-state"><Search /><h3>No mapped alumni match these filters</h3><p>{session.canOperate ? "Adjust or clear the internal filters, or use the separate external discovery area below." : "No authorized records match the selected filters."}</p></div>}
@@ -2869,7 +2891,7 @@ export default function Home() {
               <div className="external-discovery-criteria">
                 <label><span>Alumni status</span><Select value={discoveryFilters.alumniStatus} onValueChange={value => updateDiscoveryFilter("alumniStatus", value as DiscoveryFilters["alumniStatus"])}><SelectTrigger aria-label="External discovery alumni status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Past alumni only">Past alumni only</SelectItem><SelectItem value="All graduation statuses">All graduation statuses (review only)</SelectItem></SelectContent></Select></label>
                 <label><span>Programme / degree labels</span><Popover><PopoverTrigger asChild><Button type="button" variant="outline" role="combobox" className="programme-multiselect-trigger" aria-label="Programme or degree labels to discover"><span>{programmeSelectionSummary(discoveryFilters.discoveryProgrammes)}</span><ChevronDown aria-hidden="true" /></Button></PopoverTrigger><PopoverContent className="programme-multiselect-content" align="start"><div role="group" aria-label="Supported programme and degree labels">{DISCOVERY_PROGRAMME_OPTIONS.map(option => <label key={option.value}><input type="checkbox" checked={discoveryFilters.discoveryProgrammes.includes(option.value)} onChange={() => toggleDiscoveryProgramme(option.value)} /><span>{option.label}</span></label>)}{discoveryFilters.discoveryProgrammes.filter(value => !DISCOVERY_PROGRAMME_OPTIONS.some(option => option.value === value)).map(value => <label key={value}><input type="checkbox" checked onChange={() => toggleDiscoveryProgramme(value)} /><span>{value} (exact label)</span></label>)}</div><div className="programme-custom-label"><Input aria-label="Other exact programme or degree label" placeholder="Other exact provider label" value={customDiscoveryProgramme} onChange={event => setCustomDiscoveryProgramme(event.target.value)} /><Button type="button" variant="outline" onClick={addCustomDiscoveryProgramme}>Add label</Button></div></PopoverContent></Popover><small>Optional. Multiple labels use OR inside the same IIML education entry; other selected dimensions use AND.</small><small>MBA and PGDM remain distinct from PGP. Custom and ambiguous labels require evidence review.</small></label>
-                <label><span>Company</span><Input value={discoveryFilters.company} onChange={event => updateDiscoveryFilter("company", event.target.value)} placeholder="Any company" aria-label="Discovery company" /></label>
+                <CompanySearchCombobox options={companyDirectory} value={discoveryFilters.company} selectionKey={discoveryFilters.companySelectionKey} onValueChange={selectDiscoveryCompany} label="Company" />
                 <label><span>Role / designation</span><Input value={discoveryFilters.role} onChange={event => updateDiscoveryFilter("role", event.target.value)} placeholder="Any role" aria-label="Discovery role or designation" /></label>
                 <label><span>Function</span><Select value={discoveryFilters.function} onValueChange={value => updateDiscoveryFilter("function", value)}><SelectTrigger aria-label="Discovery function"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All functions">All functions</SelectItem>{functionFilterOptions.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label>
                 <label><span>Seniority</span><Popover><PopoverTrigger asChild><Button type="button" variant="outline" role="combobox" className="programme-multiselect-trigger" aria-label="Discovery seniority"><span>{discoverySenioritySummary(discoveryFilters)}</span><ChevronDown aria-hidden="true" /></Button></PopoverTrigger><PopoverContent className="programme-multiselect-content" align="start"><div role="group" aria-label="Discovery seniority levels"><label><input type="checkbox" checked={!selectedDiscoverySeniorities(discoveryFilters).length} onChange={() => setDiscoverySeniorities([])} /><span>All levels</span></label>{seniorityFilterOptions.map(item => <label key={item}><input type="checkbox" checked={selectedDiscoverySeniorities(discoveryFilters).includes(item)} onChange={() => toggleDiscoverySeniority(item)} /><span>{item}</span></label>)}</div></PopoverContent></Popover><small>Matches any selected level locally from the returned Preview title.</small></label>
@@ -2886,7 +2908,7 @@ export default function Home() {
               </div>
               {discoveryCoverageError && <small className="discovery-coverage-error">{discoveryCoverageError}</small>}
               {discoveryCountControl("Discover More Alumni")}
-              <div className="coresignal-id-search"><div className="coresignal-id-search-copy"><strong>Find Alumni on Coresignal (ID-only)</strong><p>Discover potential IIM Lucknow alumni using education and verified company criteria. Search returns candidate Employee IDs for review, not complete professional profiles.</p><div className="coresignal-search-flow" aria-label="Coresignal Search workflow"><span><strong>Search</strong>Candidate Employee IDs</span><span><strong>Collect</strong>Separately authorized full-profile retrieval</span><span><strong>Review</strong>Human verification before canonical changes</span></div><div className="coresignal-search-safety"><span>Verified company mapping required when selected</span><span>Status: provider-free preparation available</span><span>{regularSearchStatus.enabled ? "LIVE execution gate enabled" : "LIVE execution gate disabled"}</span><span>Maximum {regularSearchStatus.maxRequests} request</span><span>Pagination {regularSearchStatus.automaticPagination ? "enabled" : "disabled"}</span><span>No automatic Collect or canonical update</span></div><small>Graduation year is optional. Programme, role, function, seniority and location remain local qualification filters. Missing, unverified, conflicting or invalid company mappings block before any provider request.</small></div><div className="coresignal-id-search-action"><Button variant="outline" title={discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear) ? "Enter an exact four-digit graduation year or leave it blank for all years." : "Prepare and inspect the Search contract without calling Coresignal."} disabled={discovering || Boolean(discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear)) || !discoveryCountValidation.ok} onClick={() => void prepareRegularSearch(discoveryFilters)}><Search /> {discovering ? "Preparing…" : "Review Search Criteria"}</Button><small>This provider-free action opens confirmation; it does not call Search, Preview or Collect.</small></div></div>
+              <div className="coresignal-id-search"><div className="coresignal-id-search-copy"><strong>Find Alumni on Coresignal (ID-only)</strong><p>Discover potential IIM Lucknow alumni using education and controlled company criteria. Search returns candidate Employee IDs for review, not complete professional profiles.</p><div className="coresignal-search-flow" aria-label="Coresignal Search workflow"><span><strong>Search</strong>Candidate Employee IDs</span><span><strong>Collect</strong>Separately authorized full-profile retrieval</span><span><strong>Review</strong>Human verification before canonical changes</span></div><div className="coresignal-search-safety"><span>Verified provider ID preferred; exact-name fallback is unverified</span><span>Status: provider-free preparation available</span><span>{regularSearchStatus.enabled ? "LIVE execution gate enabled" : "LIVE execution gate disabled"}</span><span>Maximum {regularSearchStatus.maxRequests} request</span><span>Pagination {regularSearchStatus.automaticPagination ? "enabled" : "disabled"}</span><span>No automatic Collect or canonical update</span></div><small>Graduation year is optional. Programme, role, function, seniority and location remain local qualification filters. Conflicting, invalid, or stale saved selections block before any provider request; name fallback remains subject to human identity review.</small></div><div className="coresignal-id-search-action"><Button variant="outline" title={discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear) ? "Enter an exact four-digit graduation year or leave it blank for all years." : "Prepare and inspect the Search contract without calling Coresignal."} disabled={discovering || Boolean(discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear)) || !discoveryCountValidation.ok} onClick={() => void prepareRegularSearch(discoveryFilters)}><Search /> {discovering ? "Preparing…" : "Review Search Criteria"}</Button><small>This provider-free action opens confirmation; it does not call Search, Preview or Collect.</small></div></div>
             </section>}
 
             {session.canOperate && <section className="panel previous-discovery-runs" aria-labelledby="discovery-history-heading" aria-busy={discoveryHistoryLoading}>
@@ -2897,7 +2919,7 @@ export default function Home() {
                     : <div role="status"><small>No saved discovery runs yet.</small></div>}
             </section>}
 
-            {session.canAdminister && <BrightDataWorkflow apiUrl={API_ROUTES.brightData} />}
+            {session.canAdminister && <BrightDataWorkflow apiUrl={API_ROUTES.brightData} target={brightProfileTarget} />}
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">
@@ -2946,16 +2968,18 @@ export default function Home() {
               <div className="credit-notice"><Activity /><span>External discovery consumes the configured application allowance separately from provider-account usage. If Coresignal does not report account usage, it remains unknown until reconciled. Internal search remains free.</span></div>
               {discoveryMessage && <div className="discovery-message">{discoveryMessage}</div>}
               {selectedDiscoveryIds.length > 0 && <div className="batch-approval"><span>{selectedDiscoveryIds.length} clearly new profile{selectedDiscoveryIds.length === 1 ? "" : "s"} selected</span><Button onClick={() => void approveDiscoveryResults(selectedDiscoveryIds)} disabled={discovering}><Plus /> Add Selected to {appConfig.name}</Button></div>}
+              {selectedProvisionalIds.length > 0 && <div className="batch-approval"><span>{selectedProvisionalIds.length} provider candidate{selectedProvisionalIds.length === 1 ? "" : "s"} selected; eligibility and exclusions will be checked before intake.</span><Button onClick={() => void prepareProvisionalIntake(selectedProvisionalIds)} disabled={provisionalIntakeBusy}><UserPlus /> Add eligible selected profiles</Button></div>}
               <div className="discovery-table-wrap"><Table>
                 <TableHeader><TableRow><TableHead>Select</TableHead><TableHead>Name and education</TableHead><TableHead>Company and role</TableHead><TableHead>Function</TableHead><TableHead>Seniority</TableHead><TableHead>Location</TableHead><TableHead>Database match</TableHead><TableHead>Identity match confidence</TableHead><TableHead>Professional profile</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                 <TableBody>{discoveryResults.map(result => {
                   const provenanceConsistent = result.providerIntegrity === "consistent"
                   const actionableReview = result.actionableReview !== false
                   const canAdd = provenanceConsistent && actionableReview && result.reviewStatus === "Pending review" && (result.provider === "coresignal" ? result.humanQualified === true : result.matchStatus === "New" && result.eligibleForAddition === true)
+                  const canPrepareProvisional = provenanceConsistent && result.provider === "coresignal" && result.reviewStatus === "Pending review"
                   const added = ADDED_DISCOVERY_STATUSES.has(result.reviewStatus) && result.linkedInternalAlumnusId
                   const professionalProfileUrl = normalizeProfessionalProfileUrl(result.linkedinUrl)
                   return <TableRow key={result.id}>
-                    <TableCell><input type="checkbox" aria-label={`Select ${result.name}`} disabled={!canAdd} checked={selectedDiscoveryIds.includes(result.id)} onChange={() => toggleDiscoverySelection(result.id)} /></TableCell>
+                    <TableCell>{canAdd && <input type="checkbox" aria-label={`Select ${result.name} for verified intake`} checked={selectedDiscoveryIds.includes(result.id)} onChange={() => toggleDiscoverySelection(result.id)} />}{canPrepareProvisional && <input type="checkbox" aria-label={`Select ${result.name} for provisional intake`} checked={selectedProvisionalIds.includes(result.id)} onChange={() => setSelectedProvisionalIds(current => current.includes(result.id) ? current.filter(id => id !== result.id) : [...current, result.id])} />}</TableCell>
                     <TableCell><span className="stacked-cell"><strong>{result.name}</strong><small>Search #{result.searchId} · {(result.provider || "Provider unavailable").toUpperCase()} · {(result.searchMode || "mode unavailable").toUpperCase()}</small><small>Provider person ID: {result.providerPersonId || "Not returned"} · Retrieved: {result.retrievedAt ? displayEventDate(result.retrievedAt) : "Not recorded"}</small>{!provenanceConsistent && <small className="provider-integrity-warning">Provider mismatch — review actions blocked</small>}<small>Raw Preview education: {result.education === "Education not returned" ? "Not returned" : result.education}</small><small>Raw programme: {result.educationProgramme || "Not returned by Coresignal"}</small><small>Corporate Network programme: {result.normalizedProgramme || result.programmeStatus || "Programme not provider-verified"}</small><small>Raw Preview graduation: {result.graduationYear || "Not returned"} · {result.alumniStatus || "Graduation status unknown — review required"}</small><small>{result.affiliationStatus ?? "Potential alumnus — review required"}</small>{result.qualification && <span className="qualification-evidence"><em>Graduation-year evidence · {result.qualification.graduationYear.result.replaceAll("_", " ")}</em>{result.qualification.graduationYear.evidence && <small>Provider query evidence: {result.qualification.graduationYear.evidence}</small>}<small>{result.qualification.graduationYear.rationale}</small>{result.qualification.graduationYear.source === "SEARCH_CONSTRAINT" && <><small>Underlying education record was not included in Preview.</small><small>Independent verification is pending reviewer evidence.</small></>}<em>Programme · {result.qualification.programme.result.replaceAll("_", " ")}</em><small>{result.qualification.programme.rationale}</small></span>}</span></TableCell>
                     <TableCell><span className="stacked-cell"><strong>{result.currentRoleAmbiguous ? "Multiple current roles — review required" : result.currentCompany}</strong><small>{result.currentRoleAmbiguous ? "No current employer selected automatically" : result.role}</small>{result.qualification && <span className="qualification-evidence"><em>Company · {result.qualification.company.result.replaceAll("_", " ")}</em><small>{result.qualification.company.evidence || result.qualification.company.rationale}</small><em>Seniority · {result.qualification.seniority.result.replaceAll("_", " ")}</em><small>{result.qualification.seniority.evidence || result.qualification.seniority.rationale}</small></span>}</span></TableCell>
                     <TableCell>{result.function}</TableCell><TableCell>{result.seniority}</TableCell><TableCell>{result.location}</TableCell>
@@ -2964,9 +2988,11 @@ export default function Home() {
                     <TableCell>{professionalProfileUrl ? <span className="stacked-cell"><a className="professional-link" href={professionalProfileUrl} target="_blank" rel="noopener noreferrer">View LinkedIn Profile <ArrowUpRight /></a><small>{result.provider?.toLowerCase() === "pdl" ? "Historical PDL" : "Coresignal"} sourced professional profile</small></span> : <span className="muted-cell">Not returned or invalid</span>}</TableCell>
                     <TableCell><div className="row-actions">
                       {canAdd && <Button size="sm" onClick={() => void approveDiscoveryResults([result.id])}><Plus /> Add</Button>}
+                      {canPrepareProvisional && <Button size="sm" variant="outline" onClick={() => void prepareProvisionalIntake([result.id])}><UserPlus /> Add provisional profile</Button>}
+                      {result.reviewStatus === "Added provisionally" && result.linkedInternalAlumnusId && <Button size="sm" variant="outline" onClick={() => navigateWorkspace(alumnusProfileUrl(window.location.href, result.linkedInternalAlumnusId!, "directory"))}>View Directory profile</Button>}
                       {provenanceConsistent && ((actionableReview && result.reviewStatus === "Pending review") || Boolean(result.humanEvidence?.length)) && <Button size="sm" variant="outline" onClick={event => { comparisonTriggerRef.current = event.currentTarget; openComparison(result) }}>{result.reviewStatus !== "Pending review" ? <Eye /> : result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate" ? <GitCompare /> : <Eye />}{result.reviewStatus !== "Pending review" ? "View saved evidence" : result.matchStatus === "Already in database" || result.matchStatus === "Possible duplicate" ? "Compare" : "Review evidence"}</Button>}
                       {provenanceConsistent && actionableReview && result.provider === "pdl" && result.reviewStatus === "Pending review" && result.affiliationStatus !== "Confirmed degree alumnus" && <Select value={result.affiliationStatus ?? "Potential alumnus — review required"} onValueChange={value => void qualifyDiscoveryResult(result, value as NonNullable<DiscoveryResult["affiliationStatus"]>)}><SelectTrigger aria-label={`Classify ${result.name} affiliation`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Confirmed degree alumnus">Confirmed degree alumnus</SelectItem><SelectItem value="Potential alumnus — review required">Potential alumnus — review required</SelectItem><SelectItem value="Short-term / exchange affiliation">Short-term / exchange affiliation</SelectItem></SelectContent></Select>}
-                      {added && (() => { const person = alumni.find(item => item.id === result.linkedInternalAlumnusId); return person ? providerModes.lusha === "live" ? <><Button size="sm" variant="outline" onClick={() => prepareLushaReveal(person, "email")}>Prepare Email Reveal</Button><Button size="sm" variant="outline" onClick={() => prepareLushaReveal(person, "phone")}>Prepare Phone Reveal</Button></> : <><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email", "phone"])}>Get Both Contacts</Button></> : null })()}
+                      {added && result.reviewStatus !== "Added provisionally" && (() => { const person = alumni.find(item => item.id === result.linkedInternalAlumnusId); return person ? providerModes.lusha === "live" ? <><Button size="sm" variant="outline" onClick={() => prepareLushaReveal(person, "email")}>Prepare Email Reveal</Button><Button size="sm" variant="outline" onClick={() => prepareLushaReveal(person, "phone")}>Prepare Phone Reveal</Button></> : <><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email"])}>Get Email</Button><Button size="sm" variant="outline" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["phone"])}>Get Phone</Button><Button size="sm" onClick={() => void runEnrichment([person.id], ["lusha"], "manual", ["email", "phone"])}>Get Both Contacts</Button></> : null })()}
                       {provenanceConsistent && actionableReview && result.reviewStatus === "Pending review" && <Button size="sm" variant="ghost" onClick={() => { setIgnoreResult(result); setIgnoreReason("Wrong person") }}><XCircle /> Ignore</Button>}
                     </div></TableCell>
                   </TableRow>
@@ -3060,7 +3086,7 @@ export default function Home() {
           <TabsContent value="outreach" className="tab-panel">
             <section className="panel outreach-panel">
               <div className="panel-heading"><div><p className="eyebrow">Relationship workflow</p><h2>Outreach pipeline</h2><span>Updates are saved centrally and shared across committee members.</span></div></div>
-              <div className="pipeline-summary"><button className={`pipeline-all ${outreachStatus === "All alumni" ? "active" : ""}`} onClick={() => { setOutreachStatus("All alumni"); setOutreachPage(1) }}><span>All alumni</span><strong>{alumniSummary.total}</strong></button>{statusOptions.map(status => <button className={outreachStatus === status ? "active" : ""} key={status} onClick={() => { setOutreachStatus(status); setOutreachPage(1) }}><StatusBadge status={status} /><strong>{outreachStatusCounts[status] ?? 0}</strong></button>)}</div>
+              <div className="pipeline-summary"><button className={`pipeline-all ${outreachStatus === "All alumni" ? "active" : ""}`} onClick={() => { setOutreachStatus("All alumni"); setOutreachPage(1) }}><span>Established profiles</span><strong>{alumniSummary.total - alumniSummary.provisional}</strong></button>{statusOptions.map(status => <button className={outreachStatus === status ? "active" : ""} key={status} onClick={() => { setOutreachStatus(status); setOutreachPage(1) }}><StatusBadge status={status} /><strong>{outreachStatusCounts[status] ?? 0}</strong></button>)}</div>
               <div className="outreach-filters"><div className="search-field"><Search /><Input value={outreachSearch} onChange={event => { setOutreachSearch(event.target.value); setOutreachPage(1) }} placeholder="Search alumnus" aria-label="Search outreach alumni" /></div><Select value={outreachCompany} onValueChange={value => { setOutreachCompany(value); setOutreachPage(1) }}><SelectTrigger aria-label="Filter outreach by company"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All companies">All companies</SelectItem>{companies.map(company => <SelectItem key={company} value={company}>{company}</SelectItem>)}</SelectContent></Select><Select value={outreachStatus} onValueChange={value => { setOutreachStatus(value); setOutreachPage(1) }}><SelectTrigger aria-label="Filter by outreach status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="All alumni">All statuses</SelectItem>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><Select value={outreachRelevance} onValueChange={value => { setOutreachRelevance(value); setOutreachPage(1) }}><SelectTrigger aria-label="Filter by Placement Relevance"><SelectValue /></SelectTrigger><SelectContent>{["All", "75–100", "50–74", "Below 50"].map(item => <SelectItem key={item} value={item}>{item === "All" ? "All Placement Relevance" : item}</SelectItem>)}</SelectContent></Select><Button variant="ghost" onClick={clearOutreachFilters}>Clear</Button></div>
               <Table><TableHeader><TableRow><TableHead>Alumnus</TableHead><TableHead>Target company</TableHead><TableHead>Why this alumnus?</TableHead><TableHead>Placement relevance</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{outreachPagination.items.map(person => { const relevance = relevanceBreakdown(person, companyPriorities, engagements).score; return <TableRow key={person.id}><TableCell><button className="person-cell" onClick={() => openAlumnusProfile(person)}><span className="avatar small">{person.initials}</span><span><strong>{person.name}</strong><small>{person.title}</small></span></button></TableCell><TableCell>{person.company}</TableCell><TableCell className="reason-cell">{outreachRationale(person)}</TableCell><TableCell><span className={`score-pill ${scoreTone(relevance)}`}>{relevance}/100</span></TableCell><TableCell><Select value={person.status} onValueChange={value => updateStatus(person.id, value as OutreachStatus)}><SelectTrigger className="status-select"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select></TableCell></TableRow> })}</TableBody></Table>{!visibleOutreach.length && <div className="empty-state"><Search /><h3>No alumni match these Outreach filters</h3><p>Clear or adjust the filters to return to the full pipeline.</p></div>}
               <PaginationFooter model={outreachPagination} label="Outreach pipeline pagination" />
@@ -3089,7 +3115,7 @@ export default function Home() {
               <article className="panel manual-entry-card"><div className="manual-entry-icon"><UserPlus /></div><div><p className="eyebrow">Manual entry</p><h2>Add one alumnus</h2><span>Best for one or a few known alumni when preparing a CSV is unnecessary.</span></div><Button onClick={() => { setManualForm(current => ({ ...current, programme: activeProgrammeChoices.some(option => option.value === current.programme) ? current.programme : activeProgrammeChoices[0]?.value ?? "" })); setManualOpen(true); setManualSaved(null); setManualMatches([]); setManualMessage("") }}><UserPlus /> Add Alumnus</Button><small>Duplicate checking runs before any record is saved. Provider calls remain optional.</small></article>
 
               <aside className="panel database-panel">
-                <div className="database-hero"><Database /><div><p className="eyebrow">Shared alumni database</p><h2>{alumniSummary.total} alumni · {companies.length} companies</h2><span>One governed workspace</span></div></div>
+                <div className="database-hero"><Database /><div><p className="eyebrow">Shared alumni database</p><h2>{alumniSummary.total} profiles · {companies.length} companies</h2><span>{alumniSummary.verified} verified · {alumniSummary.provisional} provisional · {alumniSummary.needsReview} need review</span></div></div>
                 <div className="database-facts"><div><span>Maximum import</span><strong>10,000 rows · 8 MB</strong></div><div><span>Identity matching</span><strong>Stable source ID, canonical ID, profile URL, or verified email</strong></div><div><span>Weak matches</span><strong>Review only · never auto-merged</strong></div><div><span>Latest CSV/Excel import</span><strong>{latestImport?.filename ?? "None yet"}</strong></div></div>
                 <div className="latest-import"><CheckCircle2 /><div><strong>{latestImport ? "Latest import completed" : "Database ready"}</strong><span>{latestImport ? `${latestImport.rowCount} records by ${latestImport.importedBy}` : "No uploaded file has been recorded yet."}</span></div></div>
               </aside>
@@ -3147,19 +3173,21 @@ export default function Home() {
 
       <Sheet open={Boolean(selected)}>
         <SheetContent className="profile-sheet sm:max-w-xl" onClose={closeAlumnusProfile}>
-          {selected && session.canOperate && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button title={!selected.email ? "Requires an eligible stored email." : undefined} size="sm" variant="outline" disabled={!selected.email} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
-          {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
-            <div className="profile-scores profile-order-summary"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.confidence}%</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selectedBreakdown.score}/100</strong><small>How valuable is this alumnus for outreach?</small></div></div>
+          {selected && session.canOperate && selected.intakeStatus !== "PROVISIONAL" && <div className="profile-direct-mail"><div><strong>Controlled institutional email</strong><small>Draft, edit, review, and explicitly approve before any send.</small></div><Button title={!selected.email ? "Requires an eligible stored email." : undefined} size="sm" variant="outline" disabled={!selected.email} onClick={() => startProfileEmailDraft(selected)}><Mail /> Draft Email</Button>{!selected.email && <small>A valid stored email is required before drafting.</small>}</div>}
+          {selected && selectedBreakdown && <><SheetHeader className="profile-header"><div className="profile-avatar">{selected.initials}</div><div><SheetTitle>{selected.name}</SheetTitle><SheetDescription>{selected.intakeStatus === "PROVISIONAL" ? "UNVERIFIED / PROVISIONAL — alumni facts and outreach eligibility require review" : selected.intakeStatus === "VERIFIED" ? "Verified alumnus" : "Needs review"}</SheetDescription><SheetDescription>{selected.title} at {selected.company}</SheetDescription></div></SheetHeader><div className="profile-scroll">
+            <div className="profile-scores profile-order-summary"><div><span>Data confidence</span><strong className={scoreTone(selected.confidence)}>{selected.intakeStatus === "PROVISIONAL" ? "Not assessed" : `${selected.confidence}%`}</strong><small>Can we trust the information?</small></div><div><span>Placement relevance</span><strong className={scoreTone(selectedBreakdown.score)}>{selected.intakeStatus === "PROVISIONAL" ? "Not assessed" : `${selectedBreakdown.score}/100`}</strong><small>How valuable is this alumnus for outreach?</small></div></div>
             {selected.privacy?.generalContactStatus === "Do not contact" && <div className="do-not-contact-banner profile-order-dnc"><Ban /><div><strong>Do not contact</strong><span>All birthday, professional and outreach sends are blocked server-side for this alumnus.</span></div></div>}
             {session.canOperate && <details className="profile-section data-quality-section profile-order-quality"><summary>Professional data quality</summary><p className="section-help">Provider success does not prove freshness. Conflicts remain visible until reviewed.</p><label className="data-quality-status"><span>Status</span><Select value={selected.professionalDataStatus || "Needs assessment"} onValueChange={value => void updateProfessionalDataQuality(selected, value, professionalNoteDrafts[selected.id] ?? selected.professionalDataNote ?? "")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Needs assessment", "Reviewed", "Current", "Conflict — manual verification required", "Manually verified"].map(item => <SelectItem key={item} value={item}>{item === "Reviewed" ? "Reviewed (legacy)" : item}</SelectItem>)}</SelectContent></Select></label>{(selected.professionalDataStatus === "Conflict — manual verification required" || Boolean(selected.professionalDataNote)) && <label className="data-quality-note"><span>Verification / conflict note</span><Textarea value={professionalNoteDrafts[selected.id] ?? selected.professionalDataNote ?? ""} placeholder="Explain conflicting sources and what should be checked." onChange={event => setProfessionalNoteDrafts(current => ({ ...current, [selected.id]: event.target.value }))} onBlur={event => void updateProfessionalDataQuality(selected, selected.professionalDataStatus || "Needs assessment", event.target.value)} /></label>}</details>}
-            <details className="score-breakdown profile-order-score"><summary>Why this score?</summary><div className="breakdown-list">{selectedBreakdown.items.map(item => <div key={item.label}><span>{item.label}<small>{item.weight}% weight</small></span><strong>{item.score}</strong><em>{(item.score * item.weight / 100).toFixed(1)}</em></div>)}</div><p>Placement Relevance uses the established weighted factors and rounds the total to the nearest whole number.</p></details>
-            <details className="profile-section assessment-details profile-order-assessment"><summary>Edit assessment</summary><p className="section-help">Choose the relationship evidence requiring committee judgment. System-derived factors remain read-only.</p><div className="assessment-grid">
+            {selected.intakeStatus !== "PROVISIONAL" && <details className="score-breakdown profile-order-score"><summary>Why this score?</summary><div className="breakdown-list">{selectedBreakdown.items.map(item => <div key={item.label}><span>{item.label}<small>{item.weight}% weight</small></span><strong>{item.score}</strong><em>{(item.score * item.weight / 100).toFixed(1)}</em></div>)}</div><p>Placement Relevance uses the established weighted factors and rounds the total to the nearest whole number.</p></details>}
+            {selected.intakeStatus !== "PROVISIONAL" && <details className="profile-section assessment-details profile-order-assessment"><summary>Edit assessment</summary><p className="section-help">Choose the relationship evidence requiring committee judgment. System-derived factors remain read-only.</p><div className="assessment-grid">
               <label><span>Hiring influence</span><Select disabled={!session.canOperate} value={selected.assessment.hiringInfluence} onValueChange={value => updateAssessment(selected.id, "hiringInfluence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{hiringOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>IIML relationship</span><Select disabled={!session.canOperate} value={selected.assessment.iimlRelationship} onValueChange={value => updateAssessment(selected.id, "iimlRelationship", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{relationshipOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
               <label><span>Warm-introduction potential</span><Select disabled={!session.canOperate} value={selected.assessment.warmIntroPotential} onValueChange={value => updateAssessment(selected.id, "warmIntroPotential", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{warmIntroOptions.map(([label]) => <SelectItem key={label} value={label}>{label}</SelectItem>)}</SelectContent></Select></label>
-            </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company] || "Secondary Target"}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></details>
+            </div><div className="derived-grid"><div><span>Company priority</span><strong>{companyPriorities[selected.company] || "Secondary Target"}</strong><small>Inherited from company settings</small></div><div><span>Seniority</span><strong>{seniorityLabel(selected)}</strong><small>Derived from designation</small></div><div><span>Past responsiveness</span><strong>{derivedResponsiveness(selected, engagements)}</strong><small>{selectedEngagementHistory.some(event => event.responseReceived) ? "Derived from shared engagement history" : "Uses current outreach evidence"}</small></div></div><div className="calculated-score"><span>Calculated Placement Relevance</span><strong>{selectedBreakdown.score}/100</strong></div></details>}
             <section className="profile-section profile-order-professional"><div className="profile-engagement-heading"><h3>Professional profile</h3>{session.canOperate && <Button size="sm" variant="outline" onClick={() => openProfileEdit(selected)}><Pencil /> Edit profile</Button>}</div><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Current designation<strong>{selected.title}</strong><small>Normalized seniority: {selected.seniority || "Unclassified"}</small></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}{Boolean(selected.employmentHistory?.length) && <details className="permission-details"><summary>Provider employment evidence ({selected.employmentHistory!.length})</summary><div className="verification-history">{selected.employmentHistory!.map(position => <div key={position.id}><strong>{position.originalJobTitle || "Title not returned"} · {position.originalCompanyName || "Company not returned"}</strong><span>{position.isCurrent ? "Current evidence" : "Historical evidence"}{position.startDate || position.endDate ? ` · ${position.startDate || "Unknown start"}–${position.endDate || "Present"}` : ""}</span><small>{position.evidenceSource} · {position.verificationStatus} · observed {new Date(position.observedAt).toLocaleDateString()}</small></div>)}</div></details>}{Boolean(selected.profileProposals?.filter(item => item.status === "PENDING").length) && <details className="permission-details" open><summary>Pending protected corrections ({selected.profileProposals!.filter(item => item.status === "PENDING").length})</summary><div className="verification-history">{selected.profileProposals!.filter(item => item.status === "PENDING").map(proposal => <div key={proposal.id}><strong>{proposal.field}: {proposal.oldValue || "Empty"} → {proposal.proposedValue || "Empty"}</strong><span>{proposal.source} · proposed by {proposal.proposedBy}</span>{session.canAdminister && <span className="profile-opportunity-actions"><Button size="sm" onClick={() => void decideProfileProposal(selected, proposal.id, "accept_proposal")}>Accept</Button><Button size="sm" variant="outline" onClick={() => void decideProfileProposal(selected, proposal.id, "reject_proposal")}>Reject</Button></span>}</div>)}</div></details>}</section>
             <ProfileIntelligencePanel alumnusId={selected.id} canOperate={session.canOperate} onOpenIntelligence={view => { closeAlumnusProfile(); window.setTimeout(() => changeIntelligenceView(view), 0) }} />
+            {session.canAdminister && <section className="profile-section"><h3>Manual provider refresh</h3><p className="section-help">Prepare the exact saved provider identity. Opening either workflow makes no provider request; entitlement and cost are checked before separate confirmation.</p><div className="profile-opportunity-actions"><Button size="sm" variant="outline" disabled={!selectedProfessionalProfileUrl} onClick={() => { if (!selectedProfessionalProfileUrl) return; setBrightProfileTarget({ alumnusId: selected.id, profileUrl: selectedProfessionalProfileUrl }); closeAlumnusProfile(); changeWorkspaceTab("directory"); window.setTimeout(() => document.getElementById("brightdata-workflow")?.scrollIntoView({ behavior: "smooth" }), 100) }}>Refresh with Bright Data</Button><Button size="sm" variant="outline" disabled={!selected.coresignalEmployeeId || collectBusy} onClick={() => { const id = selected.id; closeAlumnusProfile(); void reviewKnownCollectEligibility(id) }}>Review Coresignal Collect eligibility</Button></div>{!selectedProfessionalProfileUrl && <small>A valid stored LinkedIn profile URL is required for Bright Data.</small>}{!selected.coresignalEmployeeId && <small>A saved Coresignal Employee ID is required for Collect.</small>}</section>}
+            <AlumniHistoryPanel alumnusId={selected.id} />
             {session.canOperate && <section className="profile-section profile-opportunities"><div><h3>Corporate opportunities</h3><p className="section-help">Create or review accountable opportunities linked to this alumnus and company.</p></div><div className="profile-opportunity-actions"><Button variant="outline" onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => viewOpportunities(company, id), 0) }}><Eye /> View linked opportunities</Button><Button onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => createOpportunity(company, id), 0) }}><BriefcaseBusiness /> Create opportunity</Button></div></section>}
             <section className="profile-section profile-order-iiml"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{alumniEducationLabel(selected)}</strong></span></div><div><Network /><span>Placement Committee relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior Placement Committee engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{placementContext(selected)}</p></div><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></>}</section>
             {session.canOperate && <section className="profile-section privacy-section profile-order-permissions"><h3>Contact permissions</h3><p className="section-help">Unknown is not permission. The server checks the overall ceiling and the purpose-specific permission before every send.</p><div className="assessment-grid"><label><span>Overall contact permission</span><Select value={selected.privacy?.generalContactStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { generalContactStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "Birthday engagement allowed", "No birthday engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Professional outreach</span><Select value={selected.privacy?.professionalEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { professionalEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Standard engagement allowed", "Professional engagement only", "No professional engagement", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Birthday outreach</span><Select value={selected.privacy?.birthdayEngagementStatus || "Unknown"} onValueChange={value => void updatePrivacy(selected, { birthdayEngagementStatus: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Birthday engagement allowed", "No birthday engagement", "Professional engagement only", "Do not contact", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label><span>Permission source</span><Select value={selected.privacy?.consentSource || "Unknown"} onValueChange={value => void updatePrivacy(selected, { consentSource: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced", "Unknown"].map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><details className="permission-details"><summary>More details</summary><label><span>Permission note</span><Textarea value={privacyNoteDrafts[selected.id] ?? selected.privacy?.notes ?? ""} onChange={event => setPrivacyNoteDrafts(current => ({ ...current, [selected.id]: event.target.value }))} onBlur={event => void updatePrivacy(selected, { notes: event.target.value })} /></label></details></section>}
@@ -3171,8 +3199,8 @@ export default function Home() {
               <div><span>Email · {selected.email || "Not enriched"}</span><strong className={verificationTone(selected.verification.email)}>{contactDataLabel(selected, "email").status} · {contactDataLabel(selected, "email").detail}</strong></div>
               <div><span>Phone · {selected.phone || "Not enriched"}</span><strong className={verificationTone(selected.verification.phone)}>{contactDataLabel(selected, "phone").status} · {contactDataLabel(selected, "phone").detail}</strong></div>
               <div><span>Location</span><strong className={verificationTone(selected.verification.location)}>{selected.verification.location}</strong></div>
-            </div><p className="verified-copy">{session.canViewContacts ? "A stored Verified status reflects the recorded workflow state. Provider-sourced data is identified separately and does not imply independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p>{session.canOperate && <Button className="verification-review-button" variant="outline" onClick={() => void openProfessionalVerification(selected)}><UserRoundCheck /> Review verification evidence</Button>}<div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastProfessionalDataRefresh || selected.lastPdlRefresh ? new Date(selected.lastProfessionalDataRefresh || selected.lastPdlRefresh!).toLocaleString() : "Not refreshed yet"}. Coresignal professional data is staged for review; email and phone remain Lusha-owned.</span></div>{session.canOperate && (() => { const missing = missingLushaChannels(selected); const contactBlocked = selected.privacy?.generalContactStatus === "Do not contact"; return <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.coresignal.remaining < 1 || (providerModes.coresignal === "live" && !providerUsage.coresignal.configured)} onClick={() => compareProfessionalProfile(selected)}>Refresh Profile via Coresignal</Button>{providerModes.lusha === "live" ? <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored; no additional email credit is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.email === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "email")}>Prepare Email Reveal</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored; no repeat provider call is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.phone === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "phone")}>Prepare Phone Reveal</Button></> : <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored." : undefined} disabled={selected.verification.email === "Verified" || enriching || providerUsage.lusha.remaining < 1} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored." : undefined} disabled={selected.verification.phone === "Verified" || enriching || providerUsage.lusha.remaining < 5} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button title={!missing.length ? "Verified email and phone are already stored." : `Only missing or unverified channels will be requested: ${missing.join(" and ")}.`} disabled={!missing.length || enriching || providerUsage.lusha.remaining < (missing.includes("phone") ? 5 : 0) + (missing.includes("email") ? 1 : 0)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", missing)}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div> })()}</section>
-            {session.canOperate && <section className="profile-section profile-order-status"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>}
+            </div><p className="verified-copy">{session.canViewContacts ? "A stored Verified status reflects the recorded workflow state. Provider-sourced data is identified separately and does not imply independent deliverability or ownership verification." : "Contact values are masked for the Developer role and were never sent to this browser in full."}</p>{session.canOperate && <Button className="verification-review-button" variant="outline" onClick={() => void openProfessionalVerification(selected)}><UserRoundCheck /> Review verification evidence</Button>}<div className="refresh-note"><strong>Last profile refresh</strong><span>{selected.lastProfessionalDataRefresh || selected.lastPdlRefresh ? new Date(selected.lastProfessionalDataRefresh || selected.lastPdlRefresh!).toLocaleString() : "Not refreshed yet"}. Coresignal professional data is staged for review; email and phone remain Lusha-owned.</span></div>{session.canOperate && selected.intakeStatus !== "PROVISIONAL" && (() => { const missing = missingLushaChannels(selected); const contactBlocked = selected.privacy?.generalContactStatus === "Do not contact"; return <div className="manual-enrichment"><Button variant="outline" disabled={enriching || providerUsage.coresignal.remaining < 1 || (providerModes.coresignal === "live" && !providerUsage.coresignal.configured)} onClick={() => compareProfessionalProfile(selected)}>Refresh Profile via Coresignal</Button>{providerModes.lusha === "live" ? <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored; no additional email credit is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.email === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "email")}>Prepare Email Reveal</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored; no repeat provider call is needed." : contactBlocked ? "Contact enrichment is blocked by do-not-contact." : undefined} disabled={selected.verification.phone === "Verified" || contactBlocked || enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => prepareLushaReveal(selected, "phone")}>Prepare Phone Reveal</Button></> : <><Button variant="outline" title={selected.verification.email === "Verified" ? "A verified email is already stored." : undefined} disabled={selected.verification.email === "Verified" || enriching || providerUsage.lusha.remaining < 1} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["email"])}>Get Email via Lusha</Button><Button variant="outline" title={selected.verification.phone === "Verified" ? "A verified phone is already stored." : undefined} disabled={selected.verification.phone === "Verified" || enriching || providerUsage.lusha.remaining < 5} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", ["phone"])}>Get Phone via Lusha</Button><Button title={!missing.length ? "Verified email and phone are already stored." : `Only missing or unverified channels will be requested: ${missing.join(" and ")}.`} disabled={!missing.length || enriching || providerUsage.lusha.remaining < (missing.includes("phone") ? 5 : 0) + (missing.includes("email") ? 1 : 0)} onClick={() => void runEnrichment([selected.id], ["lusha"], "manual", missing)}>{enriching ? <LoaderCircle className="spin" /> : <Zap />} Get Both Contacts</Button></>}</div> })()}</section>
+            {session.canOperate && selected.intakeStatus !== "PROVISIONAL" && <section className="profile-section profile-order-status"><h3>Update outreach status</h3><Select value={selected.status} onValueChange={value => updateStatus(selected.id, value as OutreachStatus)}><SelectTrigger className="profile-status"><SelectValue /></SelectTrigger><SelectContent>{statusOptions.map(status => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select><p className="verified-copy">Saved centrally. Last updated by {selected.updatedBy ?? "the committee"}.</p></section>}
           </div></>}
         </SheetContent>
       </Sheet>
@@ -3335,7 +3363,7 @@ export default function Home() {
         <DialogContent className="refresh-confirm-dialog discovery-confirm-dialog" onCloseAutoFocus={event => { event.preventDefault(); discoveryConfirmationTriggerRef.current?.focus() }}>
           <DialogHeader className="discovery-confirm-header">
             <DialogTitle>Run live Coresignal employee search?</DialogTitle>
-            <DialogDescription>{pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) ? "Confirm one constrained Base Employee ES-DSL Preview request. Corporate Network qualifies the complete bounded Preview page before selecting the requested result count." : "Confirm this controlled legacy Filter Preview search before it reaches Coresignal. Corporate Network qualifies the complete bounded Preview page before selecting the requested result count."}</DialogDescription>
+            <DialogDescription>Confirm one Base Employee ES-DSL Preview request. Corporate Network qualifies the complete bounded Preview page before selecting the requested result count.</DialogDescription>
           </DialogHeader>
           <div className="discovery-confirm-body" tabIndex={0} aria-label="Live Coresignal search details">
             <section className="discovery-confirm-section" aria-labelledby="discovery-confirm-summary-heading">
@@ -3352,7 +3380,7 @@ export default function Home() {
             <section className="discovery-confirm-section" aria-labelledby="discovery-confirm-conditions-heading">
               <h3 id="discovery-confirm-conditions-heading">Provider search conditions</h3>
               <div className="refresh-confirm-summary discovery-confirm-detail-grid">
-                <div><span>Provider</span><strong>{pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) && !exactYearPreviewStatus.enabled ? "Coresignal — constrained Preview LIVE path blocked" : "Coresignal — LIVE"}</strong></div>
+                <div><span>Provider</span><strong>{exactYearPreviewStatus.enabled ? "Coresignal — Base Employee ES-DSL Preview" : "Coresignal — Preview LIVE path blocked"}</strong></div>
                 <div><span>Alumni status</span><strong>{pendingDiscoveryFilters?.alumniStatus ?? "Past alumni only"}</strong></div>
                 <div><span>Exact requested year</span><strong>{pendingDiscoveryFilters?.graduationYear || "Any year"}</strong></div>
                 <div><span>Programme / degree labels</span><strong>{pendingDiscoveryFilters?.discoveryProgrammes.join(", ") || "None selected"}</strong></div>
@@ -3360,15 +3388,15 @@ export default function Home() {
                 <div><span>Function</span><strong>{pendingDiscoveryFilters?.function ?? "All functions"}</strong></div>
                 <div><span>Location</span><strong>{pendingDiscoveryFilters?.location || "Any location"}</strong></div>
                 <div><span>Seniority qualification</span><strong>{pendingDiscoveryFilters ? discoverySenioritySummary(pendingDiscoveryFilters) : "All levels"} · qualified locally from current title</strong></div>
-                <div><span>Provider query semantics</span><strong>{pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) ? `Same-row nested education · institution_id=25919228${pendingDiscoveryFilters.graduationYear ? ` AND date_to_year=${pendingDiscoveryFilters.graduationYear}` : ""}${pendingDiscoveryFilters.discoveryProgrammes.length ? " AND education.program matches any selected validated programme term" : ""}; selected seniority narrows experience.title on a current, non-deleted row` : "Legacy Filter Preview · no supported ES-DSL constraint requested"}</strong></div>
-                <div><span>Current-company semantics</span><strong>{pendingDiscoveryFilters?.graduationYear && pendingDiscoveryFilters.company ? `Verified provider company ID preferred; otherwise exact company_name.exact=${JSON.stringify(pendingDiscoveryFilters.company)} AND is_current=1 AND deleted=0 in one nested experience row` : pendingDiscoveryFilters?.company ? "Legacy provider company-name filter plus local validation" : "No company constraint"}</strong></div>
+                <div><span>Provider query semantics</span><strong>{`Same-row nested education · institution_id=25919228${pendingDiscoveryFilters?.graduationYear ? ` AND date_to_year=${pendingDiscoveryFilters.graduationYear}` : ""}${pendingDiscoveryFilters?.discoveryProgrammes.length ? " AND education.program matches any selected validated programme term" : ""}; selected seniority narrows experience.title on a current, non-deleted row`}</strong></div>
+                <div><span>Current-company semantics</span><strong>{pendingDiscoveryFilters?.company ? `Verified provider company ID preferred; otherwise exact company_name.exact=${JSON.stringify(pendingDiscoveryFilters.company)} AND is_current=1 AND deleted=0 in one nested experience row` : "No company constraint"}</strong></div>
               </div>
             </section>
 
             <section className="discovery-confirm-section" aria-labelledby="discovery-confirm-limitations-heading">
               <h3 id="discovery-confirm-limitations-heading">Verification limitations</h3>
               <div className="refresh-confirm-summary discovery-confirm-detail-grid">
-                <div><span>Company identity limitation</span><strong>{pendingDiscoveryFilters?.graduationYear && pendingDiscoveryFilters.company ? "Exact-name fallback does not establish a verified provider company ID; returned company identity evidence remains subject to human review" : "Not applicable"}</strong></div>
+                <div><span>Company identity limitation</span><strong>{pendingDiscoveryFilters?.company ? "Exact-name fallback does not establish a verified provider company ID; returned company identity evidence remains subject to human review" : "Not applicable"}</strong></div>
                 <div><span>Remaining unverified conditions</span><strong>Degree award · identity · profile freshness · programme where not returned</strong></div>
               </div>
             </section>
@@ -3376,18 +3404,18 @@ export default function Home() {
             <section className="discovery-confirm-section" aria-labelledby="discovery-confirm-safety-heading">
               <h3 id="discovery-confirm-safety-heading">Usage and safety controls</h3>
               <div className="refresh-confirm-summary discovery-confirm-detail-grid">
-                <div><span>Preview page bound</span><strong>{pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) ? `Up to ${exactYearPreviewStatus.maximumPreviewResults}` : "Provider bounded page"}</strong></div>
-                <div><span>Maximum provider calls</span><strong>{pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) ? "1 Preview · 0 Collect" : `${1 + Number(discoveryLimit)} · 1 Preview + up to ${discoveryLimit} Collect`}</strong></div>
+                <div><span>Preview page bound</span><strong>Up to {exactYearPreviewStatus.maximumPreviewResults}</strong></div>
+                <div><span>Maximum provider calls</span><strong>1 Preview · 0 Collect</strong></div>
                 <div><span>Automatic pagination / retries</span><strong>0 / 0</strong></div>
                 <div><span>Application units remaining</span><strong>{providerUsage.coresignal.remaining}</strong></div>
-                <div><span>Maximum application usage</span><strong>{pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) ? 1 : discoveryMaximumApplicationUsage}</strong></div>
+                <div><span>Maximum application usage</span><strong>{discoveryMaximumApplicationUsage}</strong></div>
               </div>
-              <div className="credit-notice"><Activity /><span>{pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) ? exactYearPreviewStatus.enabled ? "Constrained ES-DSL Preview is independently enabled. One confirmed request may consume provider usage; exact provider cost remains unresolved." : `No provider call can run: Base Employee ES-DSL Preview entitlement is ${exactYearPreviewStatus.entitlement} and/or its independent gate is off. Account endpoint access and billing must be confirmed first.` : "The legacy Preview request does not enforce an exact graduation year. Maximum usage includes one Preview plus bounded Collect operations."} Application usage and provider-account usage remain separate. No result is added automatically.</span></div>
+              <div className="credit-notice"><Activity /><span>{exactYearPreviewStatus.enabled ? "One confirmed Preview request." : `No provider call can run: Base Employee ES-DSL Preview entitlement is ${exactYearPreviewStatus.entitlement} and/or its independent gate is off. Account endpoint access and billing must be confirmed first. If separately enabled and confirmed, one Preview request may incur provider usage.`} Expected provider cost: {exactYearPreviewStatus.providerCost}. Application usage and provider-account usage remain separate. No result is added automatically.</span></div>
             </section>
           </div>
           <DialogFooter className="discovery-confirm-footer">
             <Button variant="outline" onClick={() => setPendingDiscoveryFilters(null)}>Cancel — No Provider Call</Button>
-            <Button title={pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) && !exactYearPreviewStatus.enabled ? "Account access/billing confirmation and the independent ES-DSL Preview gate are required." : undefined} disabled={discovering || !pendingDiscoveryFilters || !discoveryCountValidation.ok || Boolean(pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) && (!exactYearPreviewStatus.enabled || !session.canAdminister))} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {pendingDiscoveryFilters && (pendingDiscoveryFilters.graduationYear || pendingDiscoveryFilters.discoveryProgrammes.length || selectedDiscoverySeniorities(pendingDiscoveryFilters).length) && !exactYearPreviewStatus.enabled ? "Constrained Search Blocked" : "Confirm Live Search"}</Button>
+            <Button title={!exactYearPreviewStatus.enabled ? "Account access/billing confirmation and the independent ES-DSL Preview gate are required." : undefined} disabled={discovering || !pendingDiscoveryFilters || !discoveryCountValidation.ok || !exactYearPreviewStatus.enabled || !session.canAdminister} onClick={() => pendingDiscoveryFilters && void runDiscovery(pendingDiscoveryFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {!exactYearPreviewStatus.enabled ? "Preview Search Blocked" : "Confirm One Preview Request"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3401,7 +3429,7 @@ export default function Home() {
       </Dialog>
 
       <Dialog open={Boolean(collectPreflightView)} onOpenChange={open => { if (!open) { setCollectPreflightView(null); setCollectConfirmationToken("") } }}>
-        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Review Coresignal Collect eligibility</DialogTitle><DialogDescription>This provider-free preflight validates the retained Search evidence, exact Employee ID, Admin authorization, application allowance, independent Collect gate and account entitlement.</DialogDescription></DialogHeader>{collectPreflightView && <><div className="refresh-confirm-summary"><div><span>Employee ID</span><strong>{collectPreflightView.candidate.employeeId}</strong></div><div><span>Origin Search</span><strong>Provider History {collectPreflightView.candidate.searchHistoryId}</strong></div><div><span>Identity state</span><strong>{collectPreflightView.candidate.identityResolutionStatus.replaceAll("_", " ")}</strong></div><div><span>Collect entitlement</span><strong>{collectPreflightView.runtime.entitlement}</strong></div><div><span>Execution transport</span><strong>{collectPreflightView.runtime.transportMode === "mock" ? "Isolated local mock" : "Live provider"}</strong></div><div><span>Collect execution gate</span><strong>{collectPreflightView.runtime.collectGateEnabled ? "Enabled" : "Disabled"}</strong></div><div><span>Application capacity</span><strong>{collectPreflightView.runtime.applicationUnitsRemaining} units remaining</strong></div><div><span>Request ceiling</span><strong>1 Collect · 0 retries</strong></div><div><span>Automatic actions</span><strong>0 Search · 0 Preview · 0 attachment · 0 canonical updates</strong></div></div>{collectPreflightView.blockers.length ? <div className="enrichment-message" role="alert"><Ban /><span>{collectPreflightView.blockers.join(" ")}</span></div> : <div className="credit-notice"><Activity /><span>A successful Base Employee Collect is documented as one collection credit. Provider-account entitlement must be confirmed separately; internal application units are not the provider balance.</span></div>}</>}
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Review Coresignal Collect eligibility</DialogTitle><DialogDescription>This provider-free preflight validates the saved Employee ID, Admin authorization, application allowance, independent Collect gate and account entitlement.</DialogDescription></DialogHeader>{collectPreflightView && <><div className="refresh-confirm-summary"><div><span>Employee ID</span><strong>{collectPreflightView.candidate.employeeId}</strong></div><div><span>Origin</span><strong>{collectPreflightView.candidate.sourceAlumnusId ? `Saved alumnus #${collectPreflightView.candidate.sourceAlumnusId}` : `Search History #${collectPreflightView.candidate.searchHistoryId}`}</strong></div><div><span>Identity state</span><strong>{collectPreflightView.candidate.identityResolutionStatus.replaceAll("_", " ")}</strong></div><div><span>Collect entitlement</span><strong>{collectPreflightView.runtime.entitlement}</strong></div><div><span>Execution transport</span><strong>{collectPreflightView.runtime.transportMode === "mock" ? "Isolated local mock" : "Live provider"}</strong></div><div><span>Collect execution gate</span><strong>{collectPreflightView.runtime.collectGateEnabled ? "Enabled" : "Disabled"}</strong></div><div><span>Application capacity</span><strong>{collectPreflightView.runtime.applicationUnitsRemaining} units remaining</strong></div><div><span>Request ceiling</span><strong>1 Collect · 0 retries</strong></div><div><span>Automatic actions</span><strong>0 Search · 0 Preview · 0 attachment · 0 canonical updates</strong></div></div>{collectPreflightView.blockers.length ? <div className="enrichment-message" role="alert"><Ban /><span>{collectPreflightView.blockers.join(" ")}</span></div> : <div className="credit-notice"><Activity /><span>A successful Base Employee Collect is documented as one collection credit. Provider-account entitlement must be confirmed separately; internal application units are not the provider balance.</span></div>}</>}
           <DialogFooter><Button variant="outline" onClick={() => { setCollectPreflightView(null); setCollectConfirmationToken("") }}>Cancel — No Provider Call</Button><Button disabled={collectBusy || !collectPreflightView?.allowed || !collectConfirmationToken} onClick={() => void executeCollectOnly()}>{collectBusy ? <LoaderCircle className="spin" /> : <Cloud />} Confirm One Collect Request</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3459,6 +3487,12 @@ export default function Home() {
             {comparisonAlumnus && <Button variant="ghost" onClick={() => { openAlumnusProfile(comparisonAlumnus); setComparisonResult(null) }}><Eye /> View existing record</Button>}
             {comparisonResult?.reviewStatus !== "Pending review" ? <Button onClick={() => setComparisonResult(null)}>Close evidence</Button> : comparisonAlumnus ? <Button onClick={() => void applyComparison()} disabled={discovering || (comparisonResult?.provider === "coresignal" && comparisonResult.humanEvidence?.at(-1)?.reviewerDecision !== "SUPPORTS")}>{comparisonResult?.matchStatus === "Possible duplicate" ? selectedComparisonFields.length ? "Same person · Apply Updates" : "Same person · Keep Internal" : selectedComparisonFields.length ? "Apply Selected Updates" : "Keep Internal Values"}</Button> : <Button onClick={() => setComparisonResult(null)}>Keep Pending Review</Button>}
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(provisionalPreflight)} onOpenChange={open => { if (!open) setProvisionalPreflight(null) }}>
+        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Confirm provisional Directory intake</DialogTitle><DialogDescription>This saves only eligible selected Coresignal candidates. It makes no provider call and does not verify alumni facts.</DialogDescription></DialogHeader>
+          {provisionalPreflight && <><div className="refresh-confirm-summary"><div><span>Selected candidates</span><strong>{provisionalPreflight.selectedCount}</strong></div><div><span>Eligible provisional profiles</span><strong>{provisionalPreflight.eligibleCount}</strong></div><div><span>Excluded for review</span><strong>{provisionalPreflight.excludedCount}</strong></div><div><span>Provider operations</span><strong>0 Search · 0 Preview · 0 Collect</strong></div></div><p className="credit-notice">{provisionalPreflight.consequences}</p><div className="provisional-intake-assessments">{provisionalPreflight.assessments.map(item => <p key={item.resultId}><strong>Result #{item.resultId}: {item.decision.replaceAll("_", " ")}</strong> — {item.reason}</p>)}</div></>}
+          <DialogFooter><Button variant="outline" onClick={() => setProvisionalPreflight(null)}>Cancel</Button><Button variant="outline" onClick={() => { setDiscoveryMessage("Review exceptions in the saved discovery results; no candidate was added."); setProvisionalPreflight(null) }}>Review exceptions</Button><Button disabled={!provisionalPreflight?.eligibleCount || provisionalIntakeBusy} onClick={() => void confirmProvisionalIntake()}><UserPlus /> Confirm add eligible profiles</Button></DialogFooter>
         </DialogContent>
       </Dialog>
       <Dialog open={directoryExportOpen} onOpenChange={setDirectoryExportOpen}>

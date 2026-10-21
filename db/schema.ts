@@ -50,6 +50,7 @@ export const alumni = sqliteTable("alumni", {
   professionalDataStatus: text("professional_data_status").notNull().default("Needs assessment"),
   professionalDataNote: text("professional_data_note").notNull().default(""),
   verified: text("verified_label").notNull().default("Not yet verified"),
+  intakeStatus: text("intake_status").notNull().default("REVIEW_REQUIRED"),
   status: text("outreach_status").notNull().default("Not contacted"),
   note: text("note").notNull().default("No placement context recorded."),
   hiringInfluence: text("hiring_influence").notNull().default("Unknown / Not assessed"),
@@ -74,6 +75,7 @@ export const alumni = sqliteTable("alumni", {
   index("idx_alumni_pdl_person_id").on(table.pdlPersonId),
   index("idx_alumni_coresignal_employee_id").on(table.coresignalEmployeeId),
   uniqueIndex("idx_alumni_coresignal_employee_id_unique").on(table.coresignalEmployeeId).where(sql`${table.coresignalEmployeeId} != ''`),
+  index("idx_alumni_intake_status").on(table.intakeStatus),
 ]);
 
 export const companyPriorities = sqliteTable("company_priorities", {
@@ -191,6 +193,22 @@ export const importRuns = sqliteTable("import_runs", {
   mutationRequestKey: text("mutation_request_key").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("idx_import_run_mutation").on(table.mutationRequestKey).where(sql`${table.mutationRequestKey} != ''`)]);
+
+export const alumniSourceObservations = sqliteTable("alumni_source_observations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  mutationRequestKey: text("mutation_request_key").notNull(),
+  sourceRowKey: text("source_row_key").notNull(),
+  filename: text("filename").notNull(),
+  sourceSystem: text("source_system").notNull(),
+  sourceDate: text("source_date").notNull().default(""),
+  observedJson: text("observed_json").notNull().default("{}"),
+  importedBy: text("imported_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_alumni_source_observation_request_row").on(table.mutationRequestKey, table.sourceRowKey),
+  index("idx_alumni_source_observation_alumnus_date").on(table.alumnusId, table.createdAt),
+]);
 
 export const activityLog = sqliteTable("activity_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -396,7 +414,7 @@ export const providerResponseHistory = sqliteTable("provider_response_history", 
   errorMessage: text("error_message").notNull().default(""),
   requestedBy: text("requested_by").notNull().default("Public workspace user"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [index("idx_provider_response_history_alumnus_date").on(table.alumnusId, table.createdAt)]);
 
 export const providerRefreshReviews = sqliteTable("provider_refresh_reviews", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -468,6 +486,33 @@ export const externalDiscoveryResults = sqliteTable("external_discovery_results"
   uniqueIndex("idx_external_result_search_provider").on(table.searchId, table.providerResultId),
   index("idx_external_result_search").on(table.searchId),
   index("idx_external_result_match_status").on(table.matchStatus),
+  index("idx_external_result_linked_alumnus_date").on(table.linkedInternalAlumnusId, table.createdAt),
+]);
+
+// Immutable intake snapshot. Search constraints and provider observations are
+// retained separately from the deliberately unknown canonical alumni fields.
+export const provisionalAlumniIntakes = sqliteTable("provisional_alumni_intakes", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  discoveryResultId: integer("discovery_result_id").notNull().references(() => externalDiscoveryResults.id),
+  searchId: integer("search_id").notNull().references(() => externalDiscoverySearches.id),
+  provider: text("provider").notNull(),
+  providerPersonId: text("provider_person_id").notNull(),
+  sourceProfileUrl: text("source_profile_url").notNull(),
+  normalizedProfileKey: text("normalized_profile_key").notNull(),
+  providerObservationsJson: text("provider_observations_json").notNull(),
+  queryConstraintsJson: text("query_constraints_json").notNull(),
+  verificationStateJson: text("verification_state_json").notNull(),
+  intakeActorUserId: integer("intake_actor_user_id").notNull().references(() => applicationUsers.id),
+  intakeActorName: text("intake_actor_name").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_provisional_intake_alumnus").on(table.alumnusId),
+  uniqueIndex("idx_provisional_intake_result").on(table.discoveryResultId),
+  uniqueIndex("idx_provisional_intake_provider_person").on(table.provider, table.providerPersonId),
+  uniqueIndex("idx_provisional_intake_profile").on(table.normalizedProfileKey),
+  index("idx_provisional_intake_search").on(table.searchId),
+  check("provisional_intake_provider_check", sql`${table.provider} = 'coresignal'`),
 ]);
 
 // A later review appends another record; provider data and earlier observations stay intact.
@@ -582,10 +627,35 @@ export const providerCollectionAttempts = sqliteTable("provider_collection_attem
   uniqueIndex("idx_provider_collection_job").on(table.provider, table.providerJobId).where(sql`${table.providerJobId} != ''`),
   uniqueIndex("idx_provider_collection_active_target").on(table.provider, table.targetFingerprint).where(sql`${table.status} in ('CLAIMED', 'TRIGGER_IN_PROGRESS', 'SNAPSHOT_PENDING', 'SNAPSHOT_RUNNING', 'SNAPSHOT_READY', 'RESULT_RETRIEVED')`),
   index("idx_provider_collection_target").on(table.provider, table.targetFingerprint, table.createdAt),
+  index("idx_provider_collection_alumnus_date").on(table.alumnusId, table.createdAt),
   index("idx_provider_collection_status").on(table.provider, table.status, table.updatedAt),
   check("provider_collection_attempt_count_check", sql`${table.attemptCount} = 1`),
   check("provider_collection_generation_check", sql`${table.generation} > 0`),
   check("provider_collection_status_check", sql`${table.status} in ('CLAIMED', 'TRIGGER_IN_PROGRESS', 'SNAPSHOT_PENDING', 'SNAPSHOT_RUNNING', 'SNAPSHOT_READY', 'RESULT_RETRIEVED', 'EVIDENCE_STORED', 'REVIEW_REQUIRED', 'FAILED_BEFORE_TRIGGER', 'TRIGGER_OUTCOME_UNKNOWN', 'FAILED_AFTER_TRIGGER', 'BLOCKED')`),
+]);
+
+export const brightdataSnapshotEvidence = sqliteTable("brightdata_snapshot_evidence", {
+  attemptId: integer("attempt_id").primaryKey().references(() => providerCollectionAttempts.id),
+  provider: text("provider").notNull().default("brightdata"),
+  snapshotId: text("snapshot_id").notNull(),
+  datasetId: text("dataset_id").notNull(),
+  requestedUrl: text("requested_url").notNull(),
+  returnedUrl: text("returned_url").notNull().default(""),
+  canonicalReturnedUrl: text("canonical_returned_url").notNull().default(""),
+  identityUrlStatus: text("identity_url_status").notNull().default("UNVERIFIED"),
+  requestedAt: text("requested_at").notNull(),
+  retrievedAt: text("retrieved_at").notNull(),
+  providerTimestampJson: text("provider_timestamp_json").notNull().default(""),
+  normalizerVersion: integer("normalizer_version").notNull(),
+  rawJson: text("raw_json").notNull(),
+  rawSha256: text("raw_sha256").notNull(),
+  normalizedJson: text("normalized_json").notNull(),
+  retentionUntil: text("retention_until").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_brightdata_snapshot_evidence_snapshot").on(table.snapshotId),
+  index("idx_brightdata_snapshot_evidence_retention").on(table.retentionUntil),
+  check("brightdata_snapshot_identity_status_check", sql`${table.identityUrlStatus} in ('MATCH', 'MISMATCH', 'UNVERIFIED')`),
 ]);
 
 export const securityAuditEvents = sqliteTable("security_audit_events", {
@@ -730,4 +800,94 @@ export const corporateOpportunityHistory = sqliteTable("corporate_opportunity_hi
 }, (table) => [
   index("idx_corporate_opportunity_history_opportunity").on(table.opportunityId, table.createdAt),
   index("idx_corporate_opportunity_history_actor").on(table.actorUserId),
+]);
+
+// Additive, CN-owned monitoring state. Provider observations never update alumni here.
+export const coresignalWebhookSubscriptions = sqliteTable("coresignal_webhook_subscriptions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  cohortType: text("cohort_type").notNull(),
+  selectionJson: text("selection_json").notNull(),
+  selectionVersion: text("selection_version").notNull(),
+  membershipJson: text("membership_json").notNull(),
+  providerSubscriptionId: text("provider_subscription_id").notNull().default(""),
+  providerMode: text("provider_mode").notNull().default("mock"),
+  status: text("status").notNull().default("DRAFT"),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  activatedAt: text("activated_at").notNull().default(""),
+  expiresAt: text("expires_at").notNull().default(""),
+  lastReconciledAt: text("last_reconciled_at").notNull().default(""),
+  lastError: text("last_error").notNull().default(""),
+}, (table) => [
+  uniqueIndex("idx_csw_provider_subscription").on(table.providerSubscriptionId).where(sql`${table.providerSubscriptionId} != ''`),
+  index("idx_csw_status_expiry").on(table.status, table.expiresAt),
+]);
+
+export const coresignalWebhookIdentities = sqliteTable("coresignal_webhook_identities", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  employeeId: text("employee_id").notNull(),
+  namespace: text("namespace").notNull().default("employee_base"),
+  status: text("status").notNull().default("VERIFIED"),
+  evidenceReference: text("evidence_reference").notNull(),
+  verifiedBy: text("verified_by").notNull(),
+  verifiedAt: text("verified_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_csw_identity_alumnus").on(table.alumnusId),
+  uniqueIndex("idx_csw_identity_employee").on(table.employeeId),
+]);
+
+export const coresignalWebhookCoverage = sqliteTable("coresignal_webhook_coverage", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  subscriptionId: integer("subscription_id").notNull().references(() => coresignalWebhookSubscriptions.id),
+  alumnusId: integer("alumnus_id").notNull().references(() => alumni.id),
+  employeeId: text("employee_id").notNull(),
+  status: text("status").notNull().default("ACTIVE"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_csw_coverage_subscription_employee").on(table.subscriptionId, table.employeeId),
+  uniqueIndex("idx_csw_coverage_employee_active").on(table.employeeId).where(sql`${table.status} = 'ACTIVE'`),
+  index("idx_csw_coverage_alumnus").on(table.alumnusId, table.status),
+  index("idx_csw_coverage_employee").on(table.employeeId, table.status),
+]);
+
+export const coresignalWebhookOperations = sqliteTable("coresignal_webhook_operations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  subscriptionId: integer("subscription_id").notNull().references(() => coresignalWebhookSubscriptions.id),
+  action: text("action").notNull(),
+  requestKey: text("request_key").notNull(),
+  actor: text("actor").notNull(),
+  status: text("status").notNull(),
+  requestJson: text("request_json").notNull().default("{}"),
+  responseJson: text("response_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_csw_operation_request").on(table.requestKey),
+  index("idx_csw_operation_subscription").on(table.subscriptionId, table.createdAt),
+]);
+
+export const coresignalWebhookEvents = sqliteTable("coresignal_webhook_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  provider: text("provider").notNull().default("coresignal"),
+  dataset: text("dataset").notNull().default("employee_base_experience"),
+  sourceProvenance: text("source_provenance").notNull().default("Base Employee Experience webhook"),
+  subscriptionId: integer("subscription_id").notNull().references(() => coresignalWebhookSubscriptions.id),
+  alumnusId: integer("alumnus_id").references(() => alumni.id),
+  employeeId: text("employee_id").notNull(),
+  changeType: text("change_type").notNull(),
+  changedFieldsJson: text("changed_fields_json").notNull().default("[]"),
+  providerAt: text("provider_at").notNull().default(""),
+  receivedAt: text("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  payloadDigest: text("payload_digest").notNull(),
+  dedupeWindow: text("dedupe_window").notNull(),
+  status: text("status").notNull(),
+  reviewOutcome: text("review_outcome").notNull().default(""),
+  errorState: text("error_state").notNull().default(""),
+  collectHistoryId: integer("collect_history_id").references(() => providerResponseHistory.id),
+}, (table) => [
+  uniqueIndex("idx_csw_event_dedupe").on(table.subscriptionId, table.payloadDigest, table.dedupeWindow),
+  index("idx_csw_event_alumnus_date").on(table.alumnusId, table.receivedAt),
+  index("idx_csw_event_status_date").on(table.status, table.receivedAt),
 ]);

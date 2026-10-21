@@ -26,13 +26,13 @@ test("UX-02 explains Search, Collect, and Review without changing the provider-f
 })
 
 test("UX-02 retains the fail-closed company and execution safety disclosures", () => {
-  for (const copy of ["Verified company mapping required when selected", "LIVE execution gate disabled", "Maximum ", "Pagination ", "No automatic Collect or canonical update", "remain local qualification filters"]) assert.match(page, new RegExp(copy))
+  for (const copy of ["Verified provider ID preferred; exact-name fallback is unverified", "LIVE execution gate disabled", "Maximum ", "Pagination ", "No automatic Collect or canonical update", "remain local qualification filters"]) assert.match(page, new RegExp(copy))
 })
 
 test("UI-03 gives both history columns a shared padded body and accurate empty states", () => {
-  assert.match(history, /<section><h3>Schedules<\/h3>/)
+  assert.match(history, /<section><h3>Saved policies<\/h3>/)
   assert.match(history, /<section><h3>Recent runs<\/h3>/)
-  assert.match(history, /No refresh jobs have been created/)
+  assert.match(history, /No refresh policies have been saved/)
   assert.match(history, /No scheduled runs have executed/)
   assert.match(styles, /\.intelligence-history > \.intelligence-history-grid \{ padding: 1\.1rem 1\.35rem 1\.35rem; \}/)
 })

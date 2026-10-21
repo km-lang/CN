@@ -61,7 +61,7 @@ test("acceptance 8: Lusha is not offered before a new discovery result is added"
   assert.match(page, /DISCOVERY_REVIEW_STATUS\.added/)
   assert.match(page, /DISCOVERY_REVIEW_STATUS\.addedSeparate/)
   assert.match(page, /DISCOVERY_REVIEW_STATUS\.legacyAdded/)
-  assert.match(page, /\{added && \(\(\) =>/)
+  assert.match(page, /\{added && result\.reviewStatus !== "Added provisionally" && \(\(\) =>/)
 })
 
 test("acceptance 9: added discovery results expose controlled live Lusha channel preparation", () => {

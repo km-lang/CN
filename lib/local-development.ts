@@ -18,6 +18,10 @@ type LocalDevelopmentEnvironment = {
   BRIGHTDATA_API_TOKEN?: string
   BRIGHTDATA_DATASET_ID?: string
   BRIGHTDATA_MOCK_TRANSPORT?: string
+  BRIGHTDATA_HUMAN_TRIAL_ENABLED?: string
+  BRIGHTDATA_HUMAN_TRIAL_TARGET?: string
+  LOCAL_DEV_D1_PERSIST_PATH?: string
+  CORESIGNAL_WEBHOOK_MOCK_TRANSPORT?: string
 }
 
 export function localBrightDataLiveDemoEnabled(values: LocalDevelopmentEnvironment = process.env) {
@@ -35,6 +39,16 @@ export function localBrightDataMockTransportEnabled(values: LocalDevelopmentEnvi
     && values.LOCAL_DEV_AUTH_ROLE === "ADMIN"
     && isLoopbackHost(values.LOCAL_PROVIDER_LIVE_DEMO_HOST)
     && values.BRIGHTDATA_MOCK_TRANSPORT === "true"
+}
+
+export function localBrightDataHumanTrialEnabled(values: LocalDevelopmentEnvironment = process.env) {
+  const path = values.LOCAL_DEV_D1_PERSIST_PATH?.trim() ?? ""
+  return localBrightDataLiveDemoEnabled(values)
+    && values.BRIGHTDATA_HUMAN_TRIAL_ENABLED === "true"
+    && values.BRIGHTDATA_MOCK_TRANSPORT !== "true"
+    && values.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true"
+    && (path.startsWith("/tmp/") || path.startsWith("/private/tmp/"))
+    && Boolean(values.BRIGHTDATA_HUMAN_TRIAL_TARGET?.trim())
 }
 
 export function localCoresignalCollectMockTransportEnabled(

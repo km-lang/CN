@@ -561,8 +561,8 @@ button { cursor: pointer; }
 .previous-discovery-runs > div:first-child strong { color: #213746; font-size: .8rem; }
 .previous-discovery-runs > div:first-child small { color: #71818e; font-size: .68rem; }
 .previous-discovery-runs > div:last-child { display: flex; gap: .5rem; flex-wrap: wrap; }
-.previous-discovery-runs button { height: auto; align-items: flex-start; display: grid; justify-items: start; gap: .12rem; padding: .55rem .7rem; }
-.previous-discovery-runs button small { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #71818e; font-weight: 400; }
+.previous-discovery-runs button { height: auto; max-width: 100%; min-width: 0; align-items: flex-start; display: grid; justify-items: start; gap: .12rem; padding: .55rem .7rem; }
+.previous-discovery-runs button small { max-width: min(320px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #71818e; font-weight: 400; }
 .discovery-run-again { display: grid; justify-items: end; gap: .12rem; }
 .discovery-run-again > strong { color: #213746; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
 .discovery-run-again > small { color: #71818e; font-size: .66rem; }
@@ -844,6 +844,15 @@ button { cursor: pointer; }
 .profile-timeline p { color: #3e5666; font-size: .73rem; line-height: 1.4; }
 .profile-timeline strong { color: #1f3645; font-size: .7rem; }
 .profile-timeline small { color: #7b8994; font-size: .65rem; margin-top: .1rem; }
+.alumni-history-panel { min-width: 0; }
+.alumni-history-event { display: grid; grid-template-columns: minmax(95px, 130px) minmax(0, 1fr); gap: .75rem; padding: .8rem 0; border-bottom: 1px solid #edf0f2; }
+.alumni-history-event > span { font-size: .68rem; font-weight: 700; color: #8c1d2c; overflow-wrap: anywhere; }
+.alumni-history-event > div { min-width: 0; }
+.alumni-history-observed { display: flex; flex-wrap: wrap; gap: .25rem .7rem; margin: .4rem 0; }
+.alumni-history-table-wrap { max-width: 100%; overflow-x: auto; }
+.alumni-history-table-wrap table { width: 100%; border-collapse: collapse; font-size: .72rem; }
+.alumni-history-table-wrap th, .alumni-history-table-wrap td { padding: .35rem .5rem; text-align: left; border-bottom: 1px solid #edf0f2; vertical-align: top; }
+@media (max-width: 600px) { .alumni-history-event { grid-template-columns: 1fr; gap: .2rem; } }
 
 .route-planner { overflow: visible; }
 .route-controls { display: grid; grid-template-columns: .7fr 1fr 1.4fr auto; align-items: end; gap: .75rem; padding: 1rem 1.35rem 1.25rem; }
@@ -882,6 +891,9 @@ button { cursor: pointer; }
 .company-combobox-options small { margin-top: .12rem; color: #71818e; font-size: .68rem; }
 .company-combobox-options button > svg { width: 15px; color: #8c1d2c; flex: 0 0 auto; }
 .company-combobox-options > p { margin: 0; padding: .8rem; color: #71818e; font-size: .76rem; text-align: center; }
+.company-search-combobox-content { min-width: min(420px, calc(100vw - 2rem)); }
+.company-search-combobox-content .company-combobox-options button > span { min-width: 0; flex: 1; }
+.company-search-combobox-content .company-combobox-options button > svg + svg { margin-left: -.45rem; }
 .route-controls button { min-height: 40px; }
 .route-message { margin: 0 1.35rem 1rem; color: #8c1d2c; font-size: .78rem; }
 .company-route-card { display: grid; align-content: start; gap: .65rem; padding-bottom: 1.1rem; }
@@ -1326,3 +1338,6 @@ button { cursor: pointer; }
   .provider-history-detail-body dl { grid-template-columns: minmax(0, 1fr); }
   .provider-history-detail-body .provider-history-wide { grid-column: 1; }
 }
+.provisional-status { color: #a45b00; font-weight: 700; }
+.provisional-intake-assessments { max-height: min(34vh, 280px); overflow-y: auto; padding: 0.5rem; border: 1px solid var(--border); border-radius: 0.5rem; }
+.provisional-intake-assessments p { margin: 0.25rem 0; font-size: 0.85rem; }

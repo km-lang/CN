@@ -130,12 +130,12 @@ test("External Discovery owns every provider-search control", () => {
   assert.match(page, /value=\{discoveryFilters\.graduationYear\}/)
 })
 
-test("ID-only Search preparation clearly confirms institution, year, and verified-company constraints", () => {
+test("ID-only Search preparation clearly confirms institution, year, and controlled company identity", () => {
   assert.match(page, /Graduation year is optional/)
   assert.match(page, /Find Alumni on Coresignal \(ID-only\)/)
   assert.match(page, /Search returns candidate Employee IDs for review, not complete professional profiles/)
-  assert.match(page, /Verified company mapping required when selected/)
-  assert.match(page, /Missing, unverified, conflicting or invalid company mappings block before any provider request/)
+  assert.match(page, /Verified provider ID preferred; exact-name fallback is unverified/)
+  assert.match(page, /Conflicting, invalid, or stale saved selections block before any provider request/)
   assert.match(page, /Review Search Criteria/)
   assert.match(page, /Status: provider-free preparation available/)
   assert.match(page, /LIVE execution gate disabled/)
@@ -190,7 +190,8 @@ test("live Search confirmation retains criteria, limitations, billing, and provi
     "Maximum provider calls",
     "Automatic pagination / retries",
     "Maximum application usage",
-    "exact provider cost remains unresolved",
+    "Expected provider cost:",
+    "Account endpoint access and billing must be confirmed first",
     "Application usage and provider-account usage remain separate",
   ]) assert.match(page, new RegExp(copy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
 })
@@ -240,7 +241,7 @@ test("Rajat acceptance filters produce the exact-year confirmation model without
   assert.match(page, /Maximum provider calls/)
   assert.match(page, /1 Preview · 0 Collect/)
   assert.match(page, /Automatic pagination \/ retries/)
-  assert.match(page, /exact provider cost remains unresolved/)
+  assert.match(page, /Application usage and provider-account usage remain separate/)
   assert.match(page, /Degree award · identity · profile freshness/)
 })
 

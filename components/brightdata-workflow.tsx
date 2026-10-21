@@ -43,6 +43,12 @@ type Attempt = {
   errorCategory: string
   usageState: string
   evidenceJson: Evidence | null
+  rawEvidenceStored?: boolean
+  identityUrlStatus?: "MATCH" | "MISMATCH" | "UNVERIFIED"
+  evidenceRetrievedAt?: string
+  providerTimestamp?: unknown
+  normalizerVersion?: number | null
+  rawRetentionUntil?: string
   createdAt: string
 }
 
@@ -61,7 +67,7 @@ async function responseJson<T>(response: Response) {
   return data
 }
 
-export function BrightDataWorkflow({ apiUrl }: { apiUrl: string }) {
+export function BrightDataWorkflow({ apiUrl, target }: { apiUrl: string; target?: { alumnusId: number; profileUrl: string } | null }) {
   const [runtime, setRuntime] = useState<Runtime | null>(null)
   const [attempts, setAttempts] = useState<Attempt[]>([])
   const [profileUrl, setProfileUrl] = useState("")
@@ -69,6 +75,17 @@ export function BrightDataWorkflow({ apiUrl }: { apiUrl: string }) {
   const [preflight, setPreflight] = useState<Preflight | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState("")
+
+  useEffect(() => {
+    if (!target) return
+    const timer = window.setTimeout(() => {
+      setProfileUrl(target.profileUrl)
+      setAlumnusId(String(target.alumnusId))
+      setPreflight(null)
+      setMessage("Target loaded from the selected Directory profile. Validate it before any provider confirmation.")
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [target])
 
   const load = useCallback(async () => {
     const data = await responseJson<{ runtime: Runtime; attempts: Attempt[] }>(await fetch(apiUrl, { cache: "no-store" }))
@@ -122,7 +139,7 @@ export function BrightDataWorkflow({ apiUrl }: { apiUrl: string }) {
     ["Provider billing", "Unknown — verify in Bright Data account"],
   ] : []
 
-  return <section className="panel collect-candidate-panel brightdata-workflow" aria-label="Bright Data known profile collection">
+  return <section id="brightdata-workflow" className="panel collect-candidate-panel brightdata-workflow" aria-label="Bright Data known profile collection">
     <div className="panel-heading"><div><p className="eyebrow">External discovery · Bright Data</p><h2>Collect one known professional profile</h2><span>Bright Data accepts one validated LinkedIn profile target. It does not run a people search and never updates canonical alumni data automatically.</span></div><Cloud /></div>
     {runtime && <div className="external-search-summary">{readiness.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>}
     <div className="external-discovery-criteria">
@@ -132,7 +149,7 @@ export function BrightDataWorkflow({ apiUrl }: { apiUrl: string }) {
     <div className="batch-actions"><Button variant="outline" disabled={busy || !profileUrl.trim()} onClick={() => void prepare()}>{busy ? <LoaderCircle className="spin" /> : <ShieldCheck />} Validate target and review collection</Button></div>
     {message && <div className="enrichment-message" role="status"><Activity /><span>{message}</span></div>}
     <p className="verified-copy">No automatic polling or paid retries. Trigger, status check, and completed-result retrieval are separate explicit Admin actions.</p>
-    {attempts.length > 0 && <div className="collect-candidate-list">{attempts.map(attempt => <article key={attempt.id}><div><strong>Attempt #{attempt.id} · {attempt.status.replaceAll("_", " ")}</strong><span>{attempt.targetReference}</span><small>Snapshot: {attempt.providerJobId || "not returned"} · usage: {attempt.usageState.replaceAll("_", " ")} · {new Date(attempt.createdAt).toLocaleString()}</small>{attempt.errorCategory && <small>Operator attention: {attempt.errorCategory.replaceAll("_", " ")}</small>}{attempt.evidenceJson && !attempt.evidenceJson.unavailable && <small>Evidence: {attempt.evidenceJson.fullName || "name not returned"} · {attempt.evidenceJson.currentTitle || "title not returned"} at {attempt.evidenceJson.currentCompany || "company not returned"}</small>}</div><div className="batch-actions">{["SNAPSHOT_PENDING", "SNAPSHOT_RUNNING"].includes(attempt.status) && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("status", attempt.id)}><Activity /> Check collection status</Button>}{attempt.status === "SNAPSHOT_READY" && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("retrieve", attempt.id)}><Eye /> Retrieve completed result</Button>}{attempt.status === "REVIEW_REQUIRED" && <span className="configured"><CheckCircle2 /> Identity matched · review protected corrections</span>}{attempt.status === "EVIDENCE_STORED" && <span className="role-restriction">Identity review required before association</span>}</div></article>)}</div>}
+    {attempts.length > 0 && <div className="collect-candidate-list">{attempts.map(attempt => <article key={attempt.id}><div><strong>Attempt #{attempt.id} · {attempt.status.replaceAll("_", " ")}</strong><span>{attempt.targetReference}</span><small>Snapshot: {attempt.providerJobId || "not returned"} · usage: {attempt.usageState.replaceAll("_", " ")} · {new Date(attempt.createdAt).toLocaleString()}</small>{attempt.errorCategory && <small>Operator attention: {attempt.errorCategory.replaceAll("_", " ")}</small>}{attempt.evidenceJson && !attempt.evidenceJson.unavailable && <small>Evidence: {attempt.evidenceJson.fullName || "name not returned"} · {attempt.evidenceJson.currentTitle || "title not returned"} at {attempt.evidenceJson.currentCompany || "company not returned"}</small>}{attempt.rawEvidenceStored && <small>Original response retained for Admin audit · normalizer v{attempt.normalizerVersion} · returned URL: {attempt.identityUrlStatus?.toLowerCase() || "unverified"} · retrieved {attempt.evidenceRetrievedAt || "time unavailable"} · source timestamp {typeof attempt.providerTimestamp === "string" ? attempt.providerTimestamp : "not reported"}. These timestamps do not verify employment freshness.</small>}{!attempt.rawEvidenceStored && attempt.evidenceJson && <small>Normalized evidence only; original response not retained.</small>}</div><div className="batch-actions">{["SNAPSHOT_PENDING", "SNAPSHOT_RUNNING"].includes(attempt.status) && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("status", attempt.id)}><Activity /> Check collection status</Button>}{attempt.status === "SNAPSHOT_READY" && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("retrieve", attempt.id)}><Eye /> Retrieve completed result</Button>}{attempt.status === "REVIEW_REQUIRED" && <span className="configured"><CheckCircle2 /> Identity matched · review protected corrections</span>}{attempt.status === "EVIDENCE_STORED" && <span className="role-restriction">Identity review required before association</span>}</div></article>)}</div>}
     <Dialog open={Boolean(preflight)} onOpenChange={open => { if (!open && !busy) setPreflight(null) }}><DialogContent><DialogHeader><DialogTitle>Confirm one Bright Data collection</DialogTitle><DialogDescription>This is the only action that can submit a new provider collection. A refresh or status check never re-triggers it.</DialogDescription></DialogHeader>{preflight && <div className="refresh-confirm-summary"><div><span>Target</span><strong>{preflight.profileUrl}</strong></div><div><span>Provider mode</span><strong>{preflight.runtime.mode.toUpperCase()}</strong></div><div><span>Dataset</span><strong>{preflight.runtime.datasetConfigured ? "Configured server-side" : "Missing"}</strong></div><div><span>Maximum targets</span><strong>1</strong></div><div><span>Automatic retries</span><strong>0</strong></div><div><span>Application allowance remaining</span><strong>{preflight.runtime.applicationBudget.remaining}</strong></div><div><span>Provider-account cost</span><strong>Unknown</strong></div>{preflight.blockers.map(blocker => <div key={blocker}><span>Blocked</span><strong>{blocker}</strong></div>)}</div>}<DialogFooter><Button variant="outline" disabled={busy} onClick={() => setPreflight(null)}>Cancel</Button><Button disabled={busy || !preflight?.allowed} onClick={() => void trigger()}>{busy ? <LoaderCircle className="spin" /> : <Cloud />} Confirm single collection</Button></DialogFooter></DialogContent></Dialog>
   </section>
 }

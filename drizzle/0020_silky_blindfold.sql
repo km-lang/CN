@@ -1,0 +1,2 @@
+CREATE INDEX `idx_external_result_linked_alumnus_date` ON `external_discovery_results` (`linked_internal_alumnus_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_provider_response_history_alumnus_date` ON `provider_response_history` (`alumnus_id`,`created_at`);

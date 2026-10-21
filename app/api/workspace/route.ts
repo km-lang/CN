@@ -1,11 +1,13 @@
 import { asc, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns, programmeOptions } from "@/db/schema";
+import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns, programmeOptions, providerCompanyAliases, providerCompanyMappings } from "@/db/schema";
 import type { ApplicationRole } from "@/lib/access-types";
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { validateManualAlumnusInput } from "@/lib/manual-alumnus";
 import { defaultDirectoryFilters } from "@/lib/alumni-search";
 import { runDirectoryQuery } from "@/lib/directory-data";
+import { buildCompanyDirectory } from "@/lib/company-directory";
+import { effectiveIntakeStatus, effectiveIntakeStatusSql } from "@/lib/intake-status";
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
 
 const allowedStatuses = new Set(["Not contacted", "Contacted", "Responded", "Meeting set"]);
@@ -158,6 +160,7 @@ function toApiAlumnus(row: typeof alumni.$inferSelect, role: ApplicationRole, pr
     professionalDataStatus: row.professionalDataStatus,
     professionalDataNote: operationalDetailsAllowed ? row.professionalDataNote : "Restricted for Developer role",
     verified: row.verified,
+    intakeStatus: effectiveIntakeStatus(row),
     status: row.status,
     note: operationalDetailsAllowed ? row.note : "Restricted for Developer role",
     assessment: {
@@ -264,18 +267,21 @@ export async function GET(request: Request) {
     const db = getDb();
     const url = new URL(request.url);
     const includeAlumni = url.searchParams.get("includeAlumni") === "true";
-    const [alumniRows, priorityRows, latestImports, privacyRows, lifecycleRows, programmeRows, companyRows, countRows, activeOutreachRows, contactReadyRows, outreachStatusRows, topResult] = await Promise.all([
+    const [alumniRows, priorityRows, latestImports, privacyRows, lifecycleRows, programmeRows, companyRows, mappingRows, aliasRows, countRows, intakeCountRows, activeOutreachRows, contactReadyRows, outreachStatusRows, topResult] = await Promise.all([
       includeAlumni ? db.select().from(alumni).orderBy(alumni.name).limit(500) : Promise.resolve([]),
       db.select().from(companyPriorities).orderBy(companyPriorities.company),
       db.select().from(importRuns).orderBy(desc(importRuns.createdAt), desc(importRuns.id)).limit(1),
       includeAlumni ? db.select().from(alumniPrivacyControls) : Promise.resolve([]),
       includeAlumni ? db.select().from(alumniDataLifecycle) : Promise.resolve([]),
       db.select().from(programmeOptions).orderBy(programmeOptions.sortOrder, programmeOptions.name),
-      db.selectDistinct({ company: alumni.company }).from(alumni).where(sql`trim(${alumni.company}) != ''`).orderBy(asc(alumni.company)).limit(1000),
+      db.selectDistinct({ company: alumni.company }).from(alumni).where(sql`${alumni.intakeStatus} != 'PROVISIONAL' and trim(${alumni.company}) != ''`).orderBy(asc(alumni.company)).limit(1000),
+      db.select().from(providerCompanyMappings).orderBy(providerCompanyMappings.displayName, providerCompanyMappings.id),
+      db.select().from(providerCompanyAliases).orderBy(providerCompanyAliases.displayAlias),
       db.select({ count: sql<number>`count(*)` }).from(alumni),
-      db.select({ count: sql<number>`count(*)` }).from(alumni).where(sql`${alumni.status} in ('Contacted','Responded','Meeting set')`),
-      db.select({ count: sql<number>`count(*)` }).from(alumni).where(sql`${alumni.profileMatch} = 'Confirmed' and ${alumni.currentCompanyVerification} = 'Verified' and ${alumni.designationVerification} in ('Verified','Likely') and (${alumni.emailVerification} = 'Verified' or ${alumni.phoneVerification} = 'Verified')`),
-      db.select({ status: alumni.status, count: sql<number>`count(*)` }).from(alumni).groupBy(alumni.status),
+      db.select({ status: effectiveIntakeStatusSql, count: sql<number>`count(*)` }).from(alumni).groupBy(effectiveIntakeStatusSql),
+      db.select({ count: sql<number>`count(*)` }).from(alumni).where(sql`${alumni.intakeStatus} != 'PROVISIONAL' and ${alumni.status} in ('Contacted','Responded','Meeting set')`),
+      db.select({ count: sql<number>`count(*)` }).from(alumni).where(sql`${alumni.intakeStatus} != 'PROVISIONAL' and ${alumni.profileMatch} = 'Confirmed' and ${alumni.currentCompanyVerification} = 'Verified' and ${alumni.designationVerification} in ('Verified','Likely') and (${alumni.emailVerification} = 'Verified' or ${alumni.phoneVerification} = 'Verified')`),
+      db.select({ status: alumni.status, count: sql<number>`count(*)` }).from(alumni).where(sql`${alumni.intakeStatus} != 'PROVISIONAL'`).groupBy(alumni.status),
       runDirectoryQuery({ filters: defaultDirectoryFilters(), page: 1, pageSize: 10, sort: "relevance" }),
     ]);
     const privacyByAlumnus = new Map(privacyRows.map(row => [row.alumnusId, row]));
@@ -284,10 +290,11 @@ export async function GET(request: Request) {
       alumni: alumniRows.map(row => toApiAlumnus(row, context.role, privacyByAlumnus.get(row.id), lifecycleByAlumnus.get(row.id))),
       companyPriorities: Object.fromEntries(priorityRows.map(row => [row.company, row.priority])),
       companyOptions: companyRows.map(row => row.company),
+      companyDirectory: buildCompanyDirectory({ mappings: mappingRows, aliases: aliasRows, organizationNames: companyRows.map(row => row.company), priorityNames: priorityRows.map(row => row.company) }),
       alumniCount: Number(countRows[0]?.count ?? 0),
-      alumniSummary: { total: Number(countRows[0]?.count ?? 0), activeOutreach: Number(activeOutreachRows[0]?.count ?? 0), contactReady: Number(contactReadyRows[0]?.count ?? 0) },
+      alumniSummary: { total: Number(countRows[0]?.count ?? 0), verified: Number(intakeCountRows.find(row => row.status === "VERIFIED")?.count ?? 0), provisional: Number(intakeCountRows.find(row => row.status === "PROVISIONAL")?.count ?? 0), needsReview: Number(intakeCountRows.find(row => row.status === "REVIEW_REQUIRED")?.count ?? 0), activeOutreach: Number(activeOutreachRows[0]?.count ?? 0), contactReady: Number(contactReadyRows[0]?.count ?? 0) },
       outreachStatusCounts: Object.fromEntries(outreachStatusRows.map(item => [item.status, Number(item.count)])),
-      topAlumni: topResult.items.slice(0, 5),
+      topAlumni: topResult.items.filter(person => person.intakeStatus !== "PROVISIONAL").slice(0, 5),
       alumniIncluded: includeAlumni,
       latestImport: latestImports[0] ?? null,
       programmeOptions: programmeRows,
@@ -412,6 +419,9 @@ export async function PATCH(request: Request) {
     if (payload.action === "update_alumnus" && Number.isInteger(payload.id)) {
       const context = await authorizeRequest(request, "OPERATE_PCOM");
       const actor = context.displayName;
+      const [existing] = await db.select({ intakeStatus: alumni.intakeStatus }).from(alumni).where(eq(alumni.id, payload.id!)).limit(1);
+      if (!existing) return Response.json({ error: "Alumnus not found." }, { status: 404 });
+      if (existing.intakeStatus === "PROVISIONAL" && payload.status) return Response.json({ error: "Provisional profiles require review before outreach status can change." }, { status: 409 });
       const updates: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: now };
       if (payload.status && allowedStatuses.has(payload.status)) updates.status = payload.status;
       if (payload.assessment) {

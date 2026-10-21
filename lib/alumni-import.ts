@@ -52,6 +52,24 @@ function decodeXml(value: string) { return value.replace(/&lt;/g, "<").replace(/
 function xmlText(value: string) { return [...value.matchAll(/<(?:[A-Za-z_][\w.-]*:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?t>/g)].map(match => decodeXml(match[1])).join("") }
 function columnIndex(reference: string) { const letters = reference.match(/^[A-Z]+/i)?.[0].toUpperCase() ?? "A"; return [...letters].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0) - 1 }
 function decodeEntry(entries: Record<string, Uint8Array>, name: string) { const entry = entries[name]; if (!entry) throw new Error("The Excel workbook is missing required worksheet data."); return new TextDecoder().decode(entry) }
+function dateStyleIndexes(styles: string) {
+  const customDates = new Set<number>()
+  for (const match of styles.matchAll(/<(?:[A-Za-z_][\w.-]*:)?numFmt\b([^>]*)\/?\s*>/g)) {
+    const id = Number(match[1].match(/\bnumFmtId="(\d+)"/)?.[1]); const format = decodeXml(match[1].match(/\bformatCode="([^"]*)"/)?.[1] ?? "")
+    if (/[yd]/i.test(format.replace(/"[^"]*"|\\.|\[[^\]]*\]/g, ""))) customDates.add(id)
+  }
+  const cellXfs = styles.match(/<(?:[A-Za-z_][\w.-]*:)?cellXfs\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?cellXfs>/)?.[1] ?? ""
+  return new Set([...cellXfs.matchAll(/<(?:[A-Za-z_][\w.-]*:)?xf\b([^>]*)\/?\s*>/g)].flatMap((match, index) => {
+    const id = Number(match[1].match(/\bnumFmtId="(\d+)"/)?.[1]); return (id >= 14 && id <= 17) || id === 22 || customDates.has(id) ? [index] : []
+  }))
+}
+function excelDate(value: string, date1904: boolean) {
+  const serial = Number(value)
+  if (!Number.isInteger(serial) || serial < (date1904 ? 0 : 1) || (!date1904 && serial === 60)) return ""
+  const days = date1904 ? serial : serial < 60 ? serial + 1 : serial
+  const date = new Date(Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 30) + days * 86_400_000)
+  return Number.isFinite(date.getTime()) && date.getUTCFullYear() <= 9999 ? date.toISOString().slice(0, 10) : ""
+}
 export function parseXlsx(input: ArrayBuffer | Uint8Array): { records: ImportRecord[]; sheetName: string } {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input)
   if (bytes.byteLength > MAX_IMPORT_BYTES) throw new Error("The file exceeds the 8 MB import limit.")
@@ -62,8 +80,10 @@ export function parseXlsx(input: ArrayBuffer | Uint8Array): { records: ImportRec
   const name = decodeXml(sheet[1].match(/\bname="([^"]*)"/)?.[1] ?? "First worksheet"); const relationshipId = sheet[1].match(/\br:id="([^"]+)"/)?.[1]; let sheetPath = "xl/worksheets/sheet1.xml"
   if (relationshipId && entries["xl/_rels/workbook.xml.rels"]) { const relationships = decodeEntry(entries, "xl/_rels/workbook.xml.rels"); const relationship = [...relationships.matchAll(/<Relationship\b([^>]*)\/?\s*>/g)].find(match => match[1].includes(`Id="${relationshipId}"`)); const target = relationship?.[1].match(/\bTarget="([^"]+)"/)?.[1]; if (target) sheetPath = target.startsWith("/") ? target.slice(1) : `xl/${target.replace(/^\.\//, "")}` }
   const shared = entries["xl/sharedStrings.xml"] ? [...decodeEntry(entries, "xl/sharedStrings.xml").matchAll(/<(?:[A-Za-z_][\w.-]*:)?si>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?si>/g)].map(match => xmlText(match[1])) : []
+  const dateStyles = entries["xl/styles.xml"] ? dateStyleIndexes(decodeEntry(entries, "xl/styles.xml")) : new Set<number>()
+  const date1904 = /<(?:[A-Za-z_][\w.-]*:)?workbookPr\b[^>]*\bdate1904="(?:1|true)"/i.test(workbook)
   const worksheet = decodeEntry(entries, sheetPath)
-  const rows = [...worksheet.matchAll(/<(?:[A-Za-z_][\w.-]*:)?row\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>/g)].map(rowMatch => { const row: string[] = []; for (const cell of rowMatch[1].matchAll(/<(?:[A-Za-z_][\w.-]*:)?c\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?c>/g)) { const reference = cell[1].match(/\br="([^"]+)"/)?.[1] ?? "A1"; const type = cell[1].match(/\bt="([^"]+)"/)?.[1] ?? "n"; const raw = cell[2].match(/<(?:[A-Za-z_][\w.-]*:)?v>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?v>/)?.[1] ?? ""; const value = type === "s" ? shared[Number(raw)] ?? "" : type === "inlineStr" ? xmlText(cell[2]) : decodeXml(raw); row[columnIndex(reference)] = type === "d" && /^\d{4}-\d{2}-\d{2}T/.test(value) ? value.slice(0, 10) : value } return row })
+  const rows = [...worksheet.matchAll(/<(?:[A-Za-z_][\w.-]*:)?row\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>/g)].map(rowMatch => { const row: string[] = []; for (const cell of rowMatch[1].matchAll(/<(?:[A-Za-z_][\w.-]*:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?c>)/g)) { const reference = cell[1].match(/\br="([^"]+)"/)?.[1] ?? "A1"; const type = cell[1].match(/\bt="([^"]+)"/)?.[1] ?? "n"; const raw = cell[2]?.match(/<(?:[A-Za-z_][\w.-]*:)?v>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?v>/)?.[1] ?? ""; const value = type === "s" ? shared[Number(raw)] ?? "" : type === "inlineStr" ? xmlText(cell[2] ?? "") : decodeXml(raw); const style = Number(cell[1].match(/\bs="(\d+)"/)?.[1]); row[columnIndex(reference)] = type === "d" && /^\d{4}-\d{2}-\d{2}T/.test(value) ? value.slice(0, 10) : type === "n" && dateStyles.has(style) && raw ? excelDate(value, date1904) || value : value } return row })
   if (rows.length > MAX_IMPORT_ROWS + 1) throw new Error(`The workbook contains more than the ${MAX_IMPORT_ROWS.toLocaleString()}-row import limit.`)
   return { records: recordsFromRows(rows), sheetName: name }
 }

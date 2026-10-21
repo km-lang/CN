@@ -134,6 +134,62 @@
       "when": 1792392713746,
       "tag": "0018_boring_meltdown",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1792468963652,
+      "tag": "0019_bored_jackal",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1792473812526,
+      "tag": "0020_silky_blindfold",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1792475722401,
+      "tag": "0021_unknown_thor_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1792481467502,
+      "tag": "0022_fearless_impossible_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1792496059004,
+      "tag": "0023_bent_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1792496389132,
+      "tag": "0024_great_gwen_stacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1792497637326,
+      "tag": "0025_spooky_lorna_dane",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1792525703405,
+      "tag": "0026_green_ben_parker",
+      "breakpoints": true
     }
   ]
 }

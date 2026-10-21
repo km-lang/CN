@@ -1,13 +1,14 @@
 import { and, desc, eq, sql } from "drizzle-orm"
 import { getDb } from "@/db"
-import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, fieldChangeHistory, mutationCommitGuards, mutationRequests, securityAuditEvents } from "@/db/schema"
+import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, coresignalWebhookEvents, fieldChangeHistory, mutationCommitGuards, mutationRequests, securityAuditEvents } from "@/db/schema"
 import { planProfileUpdate } from "@/lib/alumni-profile-update"
+import { effectiveIntakeStatus } from "@/lib/intake-status"
 import { existingMutation, mutationConflictResponse, mutationIdentity, mutationPendingResponse, mutationRequestInsert, replayMutationResponse } from "@/lib/mutation-idempotency"
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, safeAuditMetadata } from "@/lib/security"
 
 function alumnusResponse(row: typeof alumni.$inferSelect, role: "ADMIN" | "PCOM" | "DEVELOPER") {
   const contacts = hasPermission(role, "VIEW_CONTACTS")
-  return { ...row, email: contacts ? row.email : maskEmail(row.email), phone: contacts ? row.phone : maskPhone(row.phone), batch: row.graduationYear || row.batch, assessment: { hiringInfluence: row.hiringInfluence, iimlRelationship: row.iimlRelationship, warmIntroPotential: row.warmIntroPotential }, verification: { profileMatch: row.profileMatch, currentCompany: row.currentCompanyVerification, designation: row.designationVerification, email: row.emailVerification, phone: row.phoneVerification, location: row.locationVerification } }
+  return { ...row, intakeStatus: effectiveIntakeStatus(row), email: contacts ? row.email : maskEmail(row.email), phone: contacts ? row.phone : maskPhone(row.phone), batch: row.graduationYear || row.batch, assessment: { hiringInfluence: row.hiringInfluence, iimlRelationship: row.iimlRelationship, warmIntroPotential: row.warmIntroPotential }, verification: { profileMatch: row.profileMatch, currentCompany: row.currentCompanyVerification, designation: row.designationVerification, email: row.emailVerification, phone: row.phoneVerification, location: row.locationVerification } }
 }
 
 async function alumnusId(params: Promise<{ id: string }>) {
@@ -125,10 +126,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const change: Record<string, unknown> = { [proposalColumn]: proposalValue, recordVersion: current.recordVersion + 1, lastMutationRequestKey: identity.requestKey, updatedBy: context.displayName, updatedAt: now }
     if (graduationProposal) change.batch = proposalValue
     const responseBody = { status: "ACCEPTED", recordVersion: current.recordVersion + 1 }
+    const collectHistoryId = /^coresignal-collect:(\d+)$/.exec(proposal.mutationRequestKey)?.[1]
     const updates = [
       mutationRequestInsert(identity, context, now),
       db.update(alumni).set(change).where(and(eq(alumni.id, id), eq(alumni.recordVersion, current.recordVersion))),
       db.update(alumniProfileChangeProposals).set({ status: "ACCEPTED", reviewedBy: context.displayName, reviewedAt: now, reviewNote: String(payload.note ?? "").trim().slice(0, 1000), decisionMutationRequestKey: identity.requestKey }).where(and(eq(alumniProfileChangeProposals.id, proposal.id), eq(alumniProfileChangeProposals.status, "PENDING"))),
+      ...(collectHistoryId ? [db.update(coresignalWebhookEvents).set({ status: "UPDATE_APPLIED", reviewOutcome: `Approved ${proposal.field} proposal #${proposal.id} by ${context.displayName}` }).where(and(eq(coresignalWebhookEvents.alumnusId, id), eq(coresignalWebhookEvents.collectHistoryId, Number(collectHistoryId)), eq(coresignalWebhookEvents.status, "PROFILE_COLLECTED")))] : []),
       db.insert(mutationCommitGuards).values({ requestKey: identity.requestKey, alumnusId: id, operation: "proposal_accept", valid: sql<number>`(select case when exists (select 1 from alumni where id = ${id} and record_version = ${current.recordVersion + 1} and last_mutation_request_key = ${identity.requestKey}) and exists (select 1 from alumni_profile_change_proposals where id = ${proposal.id} and status = 'ACCEPTED' and decision_mutation_request_key = ${identity.requestKey}) then 1 else 0 end)` }),
       db.insert(fieldChangeHistory).values({ alumnusId: id, field: proposal.field, oldValue: proposal.oldValue, newValue: proposal.proposedValue, source: proposal.source, providerAction: "Approved profile correction", initiatedBy: context.displayName, mutationRequestKey: identity.requestKey }),
       db.insert(securityAuditEvents).values({ actorUserId: context.userId, actorIdentity: context.externalIdentity, actorName: context.displayName, actorRole: context.role, action: "alumnus_profile_proposal_accepted", entityType: "alumnus", entityId: String(id), metadataJson: safeAuditMetadata({ proposalId: proposal.id, field: proposal.field, resultingVersion: current.recordVersion + 1 }), result: "success", source: "application", mutationRequestKey: identity.requestKey }),

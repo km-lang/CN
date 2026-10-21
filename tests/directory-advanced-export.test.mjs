@@ -50,6 +50,13 @@ test("invalid year filters fail closed", () => {
   assert.throws(() => query.normalizeDirectoryQuery({ sort: "raw_sql" }), /sort is unsupported/)
 })
 
+test("default relevance ordering reuses its selected alias within D1 expression limits", async () => {
+  const source = await readFile(new URL("../lib/directory-data.ts", import.meta.url), "utf8")
+  assert.match(source, /relevance: relevance\.as\("relevance"\)/)
+  assert.match(source, /desc\(sql`relevance`\)/)
+  assert.doesNotMatch(source, /\[desc\(relevance\), asc\(alumni\.name\)/)
+})
+
 test("selected seniorities use OR while minimum seniority uses the configured rank", () => {
   assert.equal(matches({ seniorityMode: "selected", seniorities: ["VP", "Director"] }), true)
   assert.equal(matches({ seniorityMode: "selected", seniorities: ["VP"] }), false)

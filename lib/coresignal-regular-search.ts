@@ -2,11 +2,12 @@ import type { DiscoveryFilters } from "@/lib/alumni-search"
 import {
   CoresignalProviderError,
   coresignalEmployeeEsDslSearchContract,
+  coresignalExactCompanyNameEsDslSearchContract,
   coresignalVerifiedCompanyEsDslSearchContract,
   searchCoresignalEmployeeIds,
   type CoresignalRegularSearchTransportResult,
 } from "@/lib/coresignal-client"
-import { resolveProviderCompanyMapping, type ProviderCompanyMappingStore, type ProviderCompanyResolution } from "@/lib/provider-company-mapping"
+import { resolveProviderCompanySelection, type ProviderCompanyMappingStore, type ProviderCompanyResolution } from "@/lib/provider-company-mapping"
 import type { CoresignalSearchIdLookupStore } from "@/lib/coresignal-search-id-dedupe"
 import { planCoresignalRegularSearchRouting } from "@/lib/coresignal-search-routing"
 import { coresignalRegularSearchEnabled } from "@/lib/provider-runtime"
@@ -22,6 +23,7 @@ export type CoresignalRegularSearchExecution = {
   automaticPagination: false
   searchMode: "INSTITUTION_ONLY" | "EXACT_GRADUATION_YEAR" | "CURRENT_COMPANY" | "CURRENT_COMPANY_EXACT_GRADUATION_YEAR"
   companyMapping: Pick<ProviderCompanyResolution, "state" | "displayName" | "normalizedCompanyKey" | "providerCompanyId">
+  companyIdentityMode: "NONE" | "VERIFIED_ID" | "EXACT_NAME"
   providerCreditsRemaining: number | null
   upstreamHttpStatus: number
   routing: Awaited<ReturnType<typeof planCoresignalRegularSearchRouting>>
@@ -46,29 +48,31 @@ export async function prepareCoresignalRegularSearch(
       contract,
       companyMapping: { state: "MISSING" as const, displayName: "", normalizedCompanyKey: "", providerCompanyId: null },
       companyMappingRequired: false,
+      companyIdentityMode: "NONE" as const,
     }
   }
   if (!dependencies.companyMappingStore) {
     throw new CoresignalProviderError("Company Search is blocked because provider-company mapping resolution is unavailable.", "invalid_request", 409)
   }
-  const companyMapping = await resolveProviderCompanyMapping(companyName, "Coresignal", dependencies.companyMappingStore)
-  if (companyMapping.state !== "VERIFIED" || companyMapping.providerCompanyId === null) {
+  const companyMapping = await resolveProviderCompanySelection(companyName, input.filters.companySelectionKey, "Coresignal", dependencies.companyMappingStore)
+  if (companyMapping.state === "CONFLICT" || (input.filters.companySelectionKey && companyMapping.state === "MISSING")) {
     throw new CoresignalProviderError(`Company Search blocked: ${companyMapping.reason}`, "invalid_request", 409)
   }
-  const contract = coresignalVerifiedCompanyEsDslSearchContract({
-    companyId: companyMapping.providerCompanyId,
-    graduationYear: input.filters.graduationYear || undefined,
-    itemsPerPage: input.itemsPerPage,
-  })
+  const authoritativeName = companyMapping.mapping?.displayName || companyName
+  const verified = companyMapping.state === "VERIFIED" && companyMapping.providerCompanyId !== null
+  const contract = verified
+    ? coresignalVerifiedCompanyEsDslSearchContract({ companyId: companyMapping.providerCompanyId, graduationYear: input.filters.graduationYear || undefined, itemsPerPage: input.itemsPerPage })
+    : coresignalExactCompanyNameEsDslSearchContract({ companyName: authoritativeName, graduationYear: input.filters.graduationYear || undefined, itemsPerPage: input.itemsPerPage })
   return {
     contract,
     companyMapping: {
       state: companyMapping.state,
-      displayName: companyMapping.displayName,
+      displayName: authoritativeName,
       normalizedCompanyKey: companyMapping.normalizedCompanyKey,
       providerCompanyId: companyMapping.providerCompanyId,
     },
     companyMappingRequired: true,
+    companyIdentityMode: verified ? "VERIFIED_ID" as const : "EXACT_NAME" as const,
   }
 }
 
@@ -115,6 +119,7 @@ export async function executeCoresignalRegularSearch(
     automaticPagination: false,
     searchMode: contract.searchMode,
     companyMapping: prepared.companyMapping,
+    companyIdentityMode: prepared.companyIdentityMode,
     providerCreditsRemaining: response.providerCreditsRemaining,
     upstreamHttpStatus: response.upstreamHttpStatus,
     routing,

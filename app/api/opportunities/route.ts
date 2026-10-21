@@ -40,15 +40,17 @@ async function validateLinks(company: string, alumnusId: number | null, engageme
   let alumnus = null
   let engagement = null
   if (alumnusId) {
-    ;[alumnus] = await db.select({ id: alumni.id, name: alumni.name, company: alumni.company }).from(alumni).where(eq(alumni.id, alumnusId)).limit(1)
+    ;[alumnus] = await db.select({ id: alumni.id, name: alumni.name, company: alumni.company, intakeStatus: alumni.intakeStatus }).from(alumni).where(eq(alumni.id, alumnusId)).limit(1)
     if (!alumnus) throw new Error("The selected alumnus does not exist.")
+    if (alumnus.intakeStatus === "PROVISIONAL") throw new Error("Provisional profiles cannot be treated as verified company relationships.")
     if (alumnus.company.trim().toLowerCase() !== company.toLowerCase()) throw new Error("The selected alumnus is not linked to this company.")
   }
   if (engagementId) {
     ;[engagement] = await db.select({ id: engagementEvents.id, alumnusId: engagementEvents.alumnusId, company: engagementEvents.company, title: engagementEvents.eventTitle })
       .from(engagementEvents).where(eq(engagementEvents.id, engagementId)).limit(1)
     if (!engagement) throw new Error("The selected engagement does not exist.")
-    const [engagementAlumnus] = await db.select({ id: alumni.id, company: alumni.company }).from(alumni).where(eq(alumni.id, engagement.alumnusId)).limit(1)
+    const [engagementAlumnus] = await db.select({ id: alumni.id, company: alumni.company, intakeStatus: alumni.intakeStatus }).from(alumni).where(eq(alumni.id, engagement.alumnusId)).limit(1)
+    if (engagementAlumnus?.intakeStatus === "PROVISIONAL") throw new Error("Provisional profiles cannot be used as verified engagement relationships.")
     const engagementCompany = engagement.company.trim() || engagementAlumnus?.company.trim() || ""
     if (engagementCompany.toLowerCase() !== company.toLowerCase()) throw new Error("The selected engagement belongs to another company.")
     if (alumnusId && engagement.alumnusId !== alumnusId) throw new Error("The selected engagement belongs to another alumnus.")
@@ -106,7 +108,7 @@ async function supportData() {
   const db = getDb()
   const [owners, people, events, priorities, opportunityCompanies] = await Promise.all([
     db.select({ id: applicationUsers.id, displayName: applicationUsers.displayName, role: applicationUsers.role }).from(applicationUsers).where(eq(applicationUsers.enabled, true)).orderBy(asc(applicationUsers.displayName)),
-    db.select({ id: alumni.id, name: alumni.name, company: alumni.company, title: alumni.title }).from(alumni).orderBy(asc(alumni.name)),
+    db.select({ id: alumni.id, name: alumni.name, company: alumni.company, title: alumni.title }).from(alumni).where(sql`${alumni.intakeStatus} != 'PROVISIONAL'`).orderBy(asc(alumni.name)),
     db.select({ id: engagementEvents.id, alumnusId: engagementEvents.alumnusId, company: engagementEvents.company, title: engagementEvents.eventTitle, status: engagementEvents.status }).from(engagementEvents).orderBy(desc(engagementEvents.eventDate)),
     db.select({ company: companyPriorities.company }).from(companyPriorities),
     db.selectDistinct({ company: corporateOpportunities.company }).from(corporateOpportunities),

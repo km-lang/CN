@@ -1,12 +1,12 @@
 import { env } from "cloudflare:workers"
-import { and, desc, eq, gte, sql } from "drizzle-orm"
+import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
-import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, providerCollectionAttempts, providerResponseHistory } from "@/db/schema"
+import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, brightdataSnapshotEvidence, providerCollectionAttempts, providerResponseHistory, securityAuditEvents } from "@/db/schema"
 import { BrightDataClient, BrightDataProviderError } from "@/lib/brightdata-client"
-import { BRIGHTDATA_OPERATION, createBrightConfirmation, normalizeBrightLinkedinUrl, normalizeBrightProfile, sanitizedBrightEvidence, targetFingerprint, verifyBrightConfirmation, type NormalizedBrightProfile } from "@/lib/brightdata-collection"
-import { brightDataDatasetId, brightDataMockTransportEnabled, brightDataRuntimeStatus, brightDataSecret } from "@/lib/provider-runtime"
-import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
+import { BRIGHTDATA_HUMAN_TRIAL_AUDIT_ACTION, BRIGHTDATA_HUMAN_TRIAL_AUDIT_KEY, BRIGHTDATA_OPERATION, brightProfileChanges, createBrightConfirmation, humanTrialRequestKey, normalizeBrightLinkedinUrl, normalizeBrightProfile, prepareBrightRawEvidence, sanitizedBrightEvidence, targetFingerprint, verifyBrightConfirmation, type NormalizedBrightProfile } from "@/lib/brightdata-collection"
+import { brightDataDatasetId, brightDataHumanTrialTarget, brightDataMockTransportEnabled, brightDataRuntimeStatus, brightDataSecret } from "@/lib/provider-runtime"
+import { accessErrorResponse, authorizeRequest, safeAuditMetadata, writeSecurityAudit, type SecurityContext } from "@/lib/security"
 import { classifyCurrentTitle } from "@/lib/seniority-classifier"
 
 type AttemptRow = typeof providerCollectionAttempts.$inferSelect
@@ -19,7 +19,8 @@ function parseEvidence(value: string) {
   if (!value) return null
   try { return JSON.parse(value) as unknown } catch { return { unavailable: true, reason: "Stored evidence could not be parsed." } }
 }
-function publicAttempt(row: AttemptRow) {
+type SnapshotMetadata = Pick<typeof brightdataSnapshotEvidence.$inferSelect, "attemptId" | "returnedUrl" | "canonicalReturnedUrl" | "identityUrlStatus" | "requestedAt" | "retrievedAt" | "providerTimestampJson" | "normalizerVersion" | "rawSha256" | "retentionUntil">
+function publicAttempt(row: AttemptRow, snapshot?: SnapshotMetadata) {
   return {
     id: row.id, alumnusId: row.alumnusId, targetReference: row.targetReference,
     datasetId: row.datasetId ? "configured" : "missing", providerJobId: row.providerJobId,
@@ -27,7 +28,18 @@ function publicAttempt(row: AttemptRow) {
     completedAt: row.completedAt, errorCategory: row.errorCategory, usageState: row.usageState,
     providerReportedUsage: row.providerReportedUsage, evidenceJson: parseEvidence(row.evidenceJson),
     createdAt: row.createdAt, updatedAt: row.updatedAt,
+    rawEvidenceStored: Boolean(snapshot), identityUrlStatus: snapshot?.identityUrlStatus ?? "UNVERIFIED", originalReturnedUrl: snapshot?.returnedUrl ?? "", canonicalReturnedUrl: snapshot?.canonicalReturnedUrl ?? "",
+    providerTimestamp: snapshot?.providerTimestampJson ? JSON.parse(snapshot.providerTimestampJson) as unknown : null, evidenceRequestedAt: snapshot?.requestedAt ?? "", evidenceRetrievedAt: snapshot?.retrievedAt ?? "",
+    normalizerVersion: snapshot?.normalizerVersion ?? null, rawSha256: snapshot?.rawSha256 ?? "", rawRetentionUntil: snapshot?.retentionUntil ?? "",
   }
+}
+
+async function snapshotMetadata(attemptId: number) {
+  const [snapshot] = await getDb().select({ attemptId: brightdataSnapshotEvidence.attemptId, returnedUrl: brightdataSnapshotEvidence.returnedUrl, canonicalReturnedUrl: brightdataSnapshotEvidence.canonicalReturnedUrl,
+    identityUrlStatus: brightdataSnapshotEvidence.identityUrlStatus, requestedAt: brightdataSnapshotEvidence.requestedAt, retrievedAt: brightdataSnapshotEvidence.retrievedAt,
+    providerTimestampJson: brightdataSnapshotEvidence.providerTimestampJson, normalizerVersion: brightdataSnapshotEvidence.normalizerVersion, rawSha256: brightdataSnapshotEvidence.rawSha256, retentionUntil: brightdataSnapshotEvidence.retentionUntil })
+    .from(brightdataSnapshotEvidence).where(eq(brightdataSnapshotEvidence.attemptId, attemptId)).limit(1)
+  return snapshot
 }
 
 async function capacity() {
@@ -41,6 +53,19 @@ async function capacity() {
 async function runtimeState() {
   const runtime = brightDataRuntimeStatus()
   return { ...runtime, applicationBudget: await capacity(), maximumTargets: 1, automaticRetries: 0, automaticPolling: false, providerBillingKnown: false }
+}
+
+async function eligibleHumanTrial(context: SecurityContext, profileUrl: string, auditId?: number) {
+  const runtime = brightDataRuntimeStatus()
+  if (!runtime.humanTrialEnabled || runtime.mode !== "live" || runtime.entitlement !== "unknown") return null
+  try { if (normalizeBrightLinkedinUrl(brightDataHumanTrialTarget()) !== profileUrl) return null } catch { return null }
+  const [audit] = await getDb().select().from(securityAuditEvents).where(eq(securityAuditEvents.mutationRequestKey, BRIGHTDATA_HUMAN_TRIAL_AUDIT_KEY)).limit(1)
+  if (!audit || (auditId !== undefined && audit.id !== auditId) || audit.action !== BRIGHTDATA_HUMAN_TRIAL_AUDIT_ACTION || audit.actorRole !== "ADMIN" || audit.actorUserId !== context.userId) return null
+  let metadata: Record<string, unknown>
+  try { metadata = JSON.parse(audit.metadataJson) as Record<string, unknown> } catch { return null }
+  if (metadata.attestationSource !== "dashboard" || metadata.datasetId !== brightDataDatasetId() || metadata.profileUrl !== profileUrl || metadata.requestQuantity !== 1 || metadata.confirmationStatus !== "AWAITING_SEPARATE_TRIGGER_APPROVAL" || metadata.billingUncertainty !== "actual_account_charge_unverified") return null
+  const [used] = await getDb().select({ id: providerCollectionAttempts.id }).from(providerCollectionAttempts).where(eq(providerCollectionAttempts.requestKey, humanTrialRequestKey(audit.id))).limit(1)
+  return used ? null : audit
 }
 
 async function findAttempt(id: number) {
@@ -89,7 +114,7 @@ async function persistEvidence(attempt: AttemptRow, profile: NormalizedBrightPro
   let canonicalUrlMatches = false
   let returnedUrlMatches = !profile.returnedUrl
   try { canonicalUrlMatches = Boolean(linkedAlumnus?.linkedinUrl) && normalizeBrightLinkedinUrl(linkedAlumnus!.linkedinUrl) === attempt.targetReference } catch { canonicalUrlMatches = false }
-  try { returnedUrlMatches = !profile.returnedUrl || normalizeBrightLinkedinUrl(profile.returnedUrl) === attempt.targetReference } catch { returnedUrlMatches = false }
+  returnedUrlMatches = profile.identityUrlStatus === "MATCH"
   const identityVerified = Boolean(linkedAlumnus && canonicalUrlMatches && returnedUrlMatches)
   const source = `Bright Data snapshot ${attempt.providerJobId}`
   const evidence = profile.experience.map(position => db.insert(alumniEmploymentEvidence).values({
@@ -99,37 +124,56 @@ async function persistEvidence(attempt: AttemptRow, profile: NormalizedBrightPro
     startDate: position.startDate, endDate: position.endDate, isCurrent: position.current, isDeleted: false, observedAt: now(), evidenceVersion: "1",
     verificationStatus: "UNVERIFIED", reviewerStatus: "PENDING",
   }).onConflictDoNothing())
-  const proposals: Array<{ field: string; oldValue: string; proposedValue: string }> = []
-  if (identityVerified && linkedAlumnus) {
-    if (profile.currentCompany && profile.currentCompany !== linkedAlumnus.company) proposals.push({ field: "company", oldValue: linkedAlumnus.company, proposedValue: profile.currentCompany })
-    if (profile.currentTitle && profile.currentTitle !== linkedAlumnus.title) proposals.push({ field: "title", oldValue: linkedAlumnus.title, proposedValue: profile.currentTitle })
-    if (profile.location && profile.location !== linkedAlumnus.location) proposals.push({ field: "location", oldValue: linkedAlumnus.location, proposedValue: profile.location })
-  }
+  const proposals = identityVerified && linkedAlumnus ? brightProfileChanges(profile, linkedAlumnus) : []
   const mutationKey = `brightdata:${attempt.id}:evidence`
   const proposalWrites = proposals.map(item => db.insert(alumniProfileChangeProposals).values({ alumnusId: linkedAlumnus!.id, field: item.field, oldValue: item.oldValue, proposedValue: item.proposedValue, source, expectedRecordVersion: linkedAlumnus!.recordVersion, proposedBy: actor, mutationRequestKey: mutationKey }).onConflictDoNothing())
   if (evidence.length || proposalWrites.length) await db.batch([...evidence, ...proposalWrites] as unknown as Parameters<typeof db.batch>[0])
-  return { identityVerified, linkedAlumnusId: identityVerified ? linkedAlumnus!.id : null, proposalsCreated: proposals.length, reviewState: identityVerified ? "REVIEW_REQUIRED" : "IDENTITY_UNRESOLVED" }
+  return { identityVerified, linkedAlumnusId: identityVerified ? linkedAlumnus!.id : null, proposalsCreated: proposals.length, reviewState: !identityVerified ? "IDENTITY_UNRESOLVED" : proposals.length ? "REVIEW_REQUIRED" : "NO_CHANGE" }
 }
 
 export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
     const attempts = await getDb().select().from(providerCollectionAttempts).where(eq(providerCollectionAttempts.provider, "brightdata")).orderBy(desc(providerCollectionAttempts.id)).limit(25)
-    return Response.json({ runtime: await runtimeState(), attempts: attempts.map(publicAttempt) })
+    const metadata = attempts.length ? await getDb().select({ attemptId: brightdataSnapshotEvidence.attemptId, returnedUrl: brightdataSnapshotEvidence.returnedUrl, canonicalReturnedUrl: brightdataSnapshotEvidence.canonicalReturnedUrl,
+      identityUrlStatus: brightdataSnapshotEvidence.identityUrlStatus, requestedAt: brightdataSnapshotEvidence.requestedAt, retrievedAt: brightdataSnapshotEvidence.retrievedAt,
+      providerTimestampJson: brightdataSnapshotEvidence.providerTimestampJson, normalizerVersion: brightdataSnapshotEvidence.normalizerVersion, rawSha256: brightdataSnapshotEvidence.rawSha256, retentionUntil: brightdataSnapshotEvidence.retentionUntil })
+      .from(brightdataSnapshotEvidence).where(inArray(brightdataSnapshotEvidence.attemptId, attempts.map(row => row.id))) : []
+    const byAttempt = new Map(metadata.map(item => [item.attemptId, item]))
+    return Response.json({ runtime: await runtimeState(), attempts: attempts.map(row => publicAttempt(row, byAttempt.get(row.id))) })
   } catch (error) { return accessErrorResponse(error) ?? Response.json({ error: "Unable to load Bright Data readiness." }, { status: 500 }) }
 }
 
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
-    const payload = await request.json() as { action?: "preflight" | "trigger" | "status" | "retrieve"; profileUrl?: string; alumnusId?: number | null; confirmationToken?: string; confirmed?: boolean; attemptId?: number }
+    const payload = await request.json() as { action?: "attest_human_trial" | "preflight" | "trigger" | "status" | "retrieve" | "recover_evidence" | "purge_expired_raw_evidence"; profileUrl?: string; alumnusId?: number | null; datasetId?: string; attestationSource?: string; requestQuantity?: number; billingUncertaintyAcknowledged?: boolean; humanTrial?: boolean; confirmationToken?: string; confirmed?: boolean; attemptId?: number; snapshotId?: string }
+    if (payload.action === "attest_human_trial") {
+      if (!payload.confirmed || !payload.billingUncertaintyAcknowledged || payload.attestationSource !== "dashboard" || payload.requestQuantity !== 1 || payload.alumnusId !== null || payload.datasetId !== brightDataDatasetId()) return Response.json({ error: "Explicit one-profile dashboard attestation and billing-uncertainty acknowledgement are required." }, { status: 400 })
+      const profileUrl = normalizeBrightLinkedinUrl(payload.profileUrl ?? "")
+      const runtime = await runtimeState()
+      let configuredTarget = ""
+      try { configuredTarget = normalizeBrightLinkedinUrl(brightDataHumanTrialTarget()) } catch { /* fail closed */ }
+      if (!runtime.humanTrialEnabled || runtime.mode !== "live" || runtime.entitlement !== "unknown" || !runtime.configured || runtime.applicationBudget.remaining < 1 || profileUrl !== configuredTarget) return Response.json({ error: "The isolated one-profile human-trial gate is unavailable for this exact target." }, { status: 409 })
+      const attestedAt = now()
+      const [audit] = await getDb().insert(securityAuditEvents).values({
+        actorUserId: context.userId, actorIdentity: context.externalIdentity, actorName: context.displayName, actorRole: context.role,
+        action: BRIGHTDATA_HUMAN_TRIAL_AUDIT_ACTION, entityType: "brightdata_human_trial", entityId: targetFingerprint(profileUrl),
+        metadataJson: safeAuditMetadata({ attestationSource: "dashboard", attestedAt, datasetId: brightDataDatasetId(), profileUrl, requestQuantity: 1, advertisedRate: "USD 1.50 per 1,000 successful records", estimatedOneRecordCostUsd: 0.0015, billingUncertainty: "actual_account_charge_unverified", confirmationStatus: "AWAITING_SEPARATE_TRIGGER_APPROVAL", authorizingActorUserId: context.userId }),
+        result: "human_attested_provider_unverified", source: "local_admin_dashboard", mutationRequestKey: BRIGHTDATA_HUMAN_TRIAL_AUDIT_KEY,
+      }).onConflictDoNothing().returning({ id: securityAuditEvents.id })
+      if (!audit) return Response.json({ error: "The one-time dashboard attestation already exists; it cannot be issued twice." }, { status: 409 })
+      return Response.json({ attested: true, attestationId: audit.id, profileUrl, datasetId: brightDataDatasetId(), entitlementBasis: "HUMAN_ATTESTED_PROVIDER_UNVERIFIED", confirmationStatus: "AWAITING_SEPARATE_TRIGGER_APPROVAL", providerCallMade: false })
+    }
     if (payload.action === "preflight") {
       const profileUrl = normalizeBrightLinkedinUrl(payload.profileUrl ?? "")
       const alumnusId = Number.isInteger(payload.alumnusId) ? payload.alumnusId! : null
       const runtime = await runtimeState()
-      const blockers = [!runtime.configured ? "Bright Data server credential and dataset are required." : "", !runtime.executionGateEnabled ? "The local Bright Data execution gate is disabled." : "", runtime.entitlement !== "confirmed" ? `Bright Data access entitlement is ${runtime.entitlement}.` : "", runtime.applicationBudget.remaining < 1 ? "The Bright Data application request allowance is exhausted." : "", await targetAlumnusBlocker(alumnusId, profileUrl)].filter(Boolean)
-      const confirmation = blockers.length ? null : createBrightConfirmation({ actorUserId: context.userId, profileUrl, alumnusId }, confirmationSecret())
-      return Response.json({ allowed: blockers.length === 0, blockers, profileUrl, runtime, confirmationToken: confirmation?.token ?? "", requestKey: confirmation?.confirmation.requestKey ?? "" })
+      const humanAudit = payload.humanTrial === true && alumnusId === null ? await eligibleHumanTrial(context, profileUrl) : null
+      const humanApproved = Boolean(humanAudit)
+      const blockers = [!runtime.configured ? "Bright Data server credential and dataset are required." : "", !runtime.executionGateEnabled ? "The local Bright Data execution gate is disabled." : "", runtime.entitlement !== "confirmed" && !humanApproved ? `Bright Data access entitlement is ${runtime.entitlement}; no eligible one-time human attestation applies.` : "", payload.humanTrial === true && !humanApproved ? "The exact isolated Admin dashboard attestation is missing, invalid or already used." : "", runtime.applicationBudget.remaining < 1 ? "The Bright Data application request allowance is exhausted." : "", await targetAlumnusBlocker(alumnusId, profileUrl)].filter(Boolean)
+      const confirmation = blockers.length ? null : createBrightConfirmation({ actorUserId: context.userId, profileUrl, alumnusId, ...(humanAudit ? { humanTrialAuditId: humanAudit.id } : {}) }, confirmationSecret())
+      return Response.json({ allowed: blockers.length === 0, blockers, profileUrl, runtime, entitlementBasis: humanApproved ? "HUMAN_ATTESTED_PROVIDER_UNVERIFIED" : runtime.entitlement === "confirmed" ? "CONFIGURED_CONFIRMED" : "UNKNOWN", humanTrialAuditId: humanAudit?.id ?? null, confirmationToken: confirmation?.token ?? "", requestKey: confirmation?.confirmation.requestKey ?? "" })
     }
     if (payload.action === "trigger") {
       if (!payload.confirmed || !payload.confirmationToken) return Response.json({ error: "Explicit Bright Data collection confirmation is required." }, { status: 400 })
@@ -138,7 +182,9 @@ export async function POST(request: Request) {
       const identityBlocker = await targetAlumnusBlocker(confirmation.alumnusId, confirmation.profileUrl)
       if (identityBlocker) return Response.json({ error: identityBlocker }, { status: 409 })
       const runtime = await runtimeState()
-      if (!runtime.configured || !runtime.executionGateEnabled || runtime.entitlement !== "confirmed" || runtime.applicationBudget.remaining < 1) return Response.json({ error: "Bright Data execution is blocked by current readiness, entitlement or application budget." }, { status: 409 })
+      const humanAudit = confirmation.humanTrialAuditId ? await eligibleHumanTrial(context, confirmation.profileUrl, confirmation.humanTrialAuditId) : null
+      const humanApproved = Boolean(humanAudit) && confirmation.alumnusId === null
+      if (!runtime.configured || !runtime.executionGateEnabled || (confirmation.humanTrialAuditId ? !humanApproved : runtime.entitlement !== "confirmed") || runtime.applicationBudget.remaining < 1) return Response.json({ error: "Bright Data execution is blocked by current readiness, entitlement or application budget." }, { status: 409 })
       const fingerprint = targetFingerprint(confirmation.profileUrl)
       const claimed = await env.DB.prepare(`INSERT OR IGNORE INTO provider_collection_attempts (provider,operation,actor_user_id,alumnus_id,target_reference,target_fingerprint,request_key,dataset_id,status,usage_state) SELECT 'brightdata',?,?,?,?,?,?,?,'CLAIMED','not_applicable' WHERE (SELECT count(*) FROM provider_collection_attempts WHERE provider='brightdata' AND created_at>=?) < ? RETURNING id,generation`).bind(BRIGHTDATA_OPERATION, context.userId, confirmation.alumnusId, confirmation.profileUrl, fingerprint, confirmation.requestKey, brightDataDatasetId(), monthStart(), runtime.applicationBudget.limit).first<{ id: number; generation: number }>()
       if (!claimed) {
@@ -149,7 +195,7 @@ export async function POST(request: Request) {
         return Response.json({ error: "The Bright Data request could not be claimed because the application allowance is exhausted or another request won the concurrency fence." }, { status: 409 })
       }
       let attempt = await findAttempt(claimed.id)
-      const [history] = await getDb().insert(providerResponseHistory).values({ provider: "brightdata", alumnusId: confirmation.alumnusId, alumnusName: confirmation.alumnusId ? `Alumnus ${confirmation.alumnusId}` : "Unresolved Bright Data target", operation: BRIGHTDATA_OPERATION, mode: runtime.mode, status: "in_progress", requestSummary: "One explicitly confirmed LinkedIn profile target", responseSummary: "Durable claim created; trigger not yet completed.", requestedBy: context.displayName }).returning()
+      const [history] = await getDb().insert(providerResponseHistory).values({ provider: "brightdata", alumnusId: confirmation.alumnusId, alumnusName: confirmation.alumnusId ? `Alumnus ${confirmation.alumnusId}` : "Unresolved Bright Data target", operation: BRIGHTDATA_OPERATION, mode: runtime.mode, status: "in_progress", requestSummary: humanApproved ? `One human-attested, provider-unverified LinkedIn target; audit ${humanAudit!.id}` : "One explicitly confirmed LinkedIn profile target", responseSummary: "Durable claim created; trigger not yet completed.", requestedBy: context.displayName }).returning()
       await guardedUpdate(attempt, ["CLAIMED"], "status='TRIGGER_IN_PROGRESS', result_provider_history_id=?", [history.id])
       attempt = await findAttempt(attempt.id)
       try {
@@ -163,40 +209,71 @@ export async function POST(request: Request) {
         await getDb().update(providerResponseHistory).set({ status: ambiguous ? "ambiguous" : "error", applicationUnits: 1, usageState: "reconciliation_required", errorMessage: providerError.message, responseSummary: ambiguous ? "Trigger outcome is unknown. Automatic re-trigger is prohibited." : "Provider rejected the bounded trigger. No retry was made." }).where(eq(providerResponseHistory.id, history.id))
       }
       attempt = await findAttempt(attempt.id)
-      await writeSecurityAudit(context, { action: "brightdata_collection_triggered", entityType: "provider_collection_attempt", entityId: attempt.id, metadata: { status: attempt.status, providerCalls: 1, automaticRetries: 0, canonicalMutations: 0 } })
+      await writeSecurityAudit(context, { action: "brightdata_collection_triggered", entityType: "provider_collection_attempt", entityId: attempt.id, metadata: { status: attempt.status, providerCalls: 1, automaticRetries: 0, canonicalMutations: 0, humanTrialAuditId: humanAudit?.id ?? null, entitlementBasis: humanApproved ? "HUMAN_ATTESTED_PROVIDER_UNVERIFIED" : "CONFIGURED_CONFIRMED" } })
       return Response.json({ attempt: publicAttempt(attempt), replayed: false, providerCallMade: true })
+    }
+    if (payload.action === "purge_expired_raw_evidence") {
+      if (!payload.confirmed) return Response.json({ error: "Explicit Admin confirmation is required to purge expired raw evidence." }, { status: 400 })
+      const expired = await getDb().select({ attemptId: brightdataSnapshotEvidence.attemptId }).from(brightdataSnapshotEvidence).where(lt(brightdataSnapshotEvidence.retentionUntil, now()))
+      if (expired.length) await getDb().delete(brightdataSnapshotEvidence).where(lt(brightdataSnapshotEvidence.retentionUntil, now()))
+      await writeSecurityAudit(context, { action: "brightdata_raw_evidence_expired_purged", entityType: "brightdata_snapshot_evidence", metadata: { purgedCount: expired.length } })
+      return Response.json({ purgedCount: expired.length, providerCallMade: false })
     }
     if (!Number.isInteger(payload.attemptId)) return Response.json({ error: "A valid Bright Data attempt is required." }, { status: 400 })
     let attempt = await findAttempt(payload.attemptId!)
+    if (payload.action === "recover_evidence") {
+      if (!payload.confirmed || !attempt.providerJobId || payload.snapshotId !== attempt.providerJobId || attempt.alumnusId !== null || !["EVIDENCE_STORED", "REVIEW_REQUIRED"].includes(attempt.status)) return Response.json({ error: "Exact existing unlinked snapshot recovery requires explicit Admin confirmation." }, { status: 409 })
+      const priorSnapshot = await snapshotMetadata(attempt.id)
+      if (priorSnapshot) return Response.json({ attempt: publicAttempt(attempt, priorSnapshot), replayed: true, providerCallMade: false })
+      const records = await providerDownload(attempt)
+      if (records.length !== 1) throw new BrightDataProviderError(`Expected one Bright Data profile result; received ${records.length}.`, 502, "unexpected_result_count")
+      const profile = normalizeBrightProfile(records[0], attempt.targetReference)
+      const normalizedJson = sanitizedBrightEvidence(profile)
+      const prepared = prepareBrightRawEvidence(records[0], attempt.providerJobId, attempt.datasetId, attempt.targetReference, attempt.createdAt, now(), normalizedJson)
+      const [retained] = await getDb().insert(brightdataSnapshotEvidence).values({ attemptId: attempt.id, ...prepared }).onConflictDoNothing().returning({ attemptId: brightdataSnapshotEvidence.attemptId })
+      if (!retained) return Response.json({ error: "Snapshot evidence was retained concurrently; reload the existing attempt before recovery." }, { status: 409 })
+      await getDb().update(providerCollectionAttempts).set({ evidenceJson: normalizedJson, updatedAt: now() }).where(and(eq(providerCollectionAttempts.id, attempt.id), eq(providerCollectionAttempts.status, attempt.status)))
+      await writeSecurityAudit(context, { action: "brightdata_raw_evidence_recovered", entityType: "provider_collection_attempt", entityId: attempt.id, metadata: { snapshotId: attempt.providerJobId, rawSha256: prepared.rawSha256, normalizerVersion: prepared.normalizerVersion, canonicalMutations: 0, providerCalls: brightDataMockTransportEnabled() ? 0 : 1 } })
+      attempt = await findAttempt(attempt.id)
+      return Response.json({ attempt: publicAttempt(attempt, await snapshotMetadata(attempt.id)), recovered: true, providerCallMade: !brightDataMockTransportEnabled(), canonicalMutations: 0 })
+    }
     if (payload.action === "status") {
       if (!["SNAPSHOT_PENDING", "SNAPSHOT_RUNNING"].includes(attempt.status) || !attempt.providerJobId) return Response.json({ error: "This attempt is not awaiting provider status." }, { status: 409 })
       const progress = await providerProgress(attempt)
       const next = progress.status === "ready" ? "SNAPSHOT_READY" : progress.status === "failed" ? "FAILED_AFTER_TRIGGER" : progress.status === "running" ? "SNAPSHOT_RUNNING" : "SNAPSHOT_PENDING"
       await guardedUpdate(attempt, ["SNAPSHOT_PENDING", "SNAPSHOT_RUNNING"], "status=?, last_status_check_at=?, error_category=?", [next, now(), progress.status === "failed" ? "provider_job_failed" : ""])
       attempt = await findAttempt(attempt.id)
-      return Response.json({ attempt: publicAttempt(attempt), providerCallMade: true, triggerCallMade: false })
+      return Response.json({ attempt: publicAttempt(attempt, await snapshotMetadata(attempt.id)), providerCallMade: true, triggerCallMade: false })
     }
     if (payload.action === "retrieve") {
-      if (TERMINAL.has(attempt.status) && attempt.evidenceJson) return Response.json({ attempt: publicAttempt(attempt), replayed: true, providerCallMade: false })
+      if (TERMINAL.has(attempt.status) && attempt.evidenceJson) return Response.json({ attempt: publicAttempt(attempt, await snapshotMetadata(attempt.id)), replayed: true, providerCallMade: false })
       let profile: NormalizedBrightProfile
       let providerCallMade = false
       if (attempt.status === "RESULT_RETRIEVED" && attempt.evidenceJson) profile = JSON.parse(attempt.evidenceJson) as NormalizedBrightProfile
       else {
         if (attempt.status !== "SNAPSHOT_READY" || !attempt.providerJobId) return Response.json({ error: "The Bright Data snapshot is not ready for retrieval." }, { status: 409 })
-        const records = await providerDownload(attempt)
-        providerCallMade = true
-        if (records.length !== 1) throw new BrightDataProviderError(`Expected one Bright Data profile result; received ${records.length}.`, 502, "unexpected_result_count")
-        profile = normalizeBrightProfile(records[0], attempt.targetReference)
+        const [existingRaw] = await getDb().select({ normalizedJson: brightdataSnapshotEvidence.normalizedJson }).from(brightdataSnapshotEvidence).where(eq(brightdataSnapshotEvidence.attemptId, attempt.id)).limit(1)
+        if (existingRaw) profile = JSON.parse(existingRaw.normalizedJson) as NormalizedBrightProfile
+        else {
+          const records = await providerDownload(attempt)
+          providerCallMade = !brightDataMockTransportEnabled()
+          if (records.length !== 1) throw new BrightDataProviderError(`Expected one Bright Data profile result; received ${records.length}.`, 502, "unexpected_result_count")
+          profile = normalizeBrightProfile(records[0], attempt.targetReference)
+          const normalizedJson = sanitizedBrightEvidence(profile)
+          const prepared = prepareBrightRawEvidence(records[0], attempt.providerJobId, attempt.datasetId, attempt.targetReference, attempt.createdAt, now(), normalizedJson)
+          const [retained] = await getDb().insert(brightdataSnapshotEvidence).values({ attemptId: attempt.id, ...prepared }).onConflictDoNothing().returning({ attemptId: brightdataSnapshotEvidence.attemptId })
+          if (!retained) throw new Error("The same snapshot was retained concurrently. Reload the existing attempt before continuing.")
+        }
         const evidenceJson = sanitizedBrightEvidence(profile)
         await guardedUpdate(attempt, ["SNAPSHOT_READY"], "status='RESULT_RETRIEVED', evidence_json=?", [evidenceJson])
         attempt = await findAttempt(attempt.id)
       }
       const persisted = await persistEvidence(attempt, profile, context.displayName)
-      await guardedUpdate(attempt, ["RESULT_RETRIEVED"], "status=?, completed_at=?", [persisted.identityVerified ? "REVIEW_REQUIRED" : "EVIDENCE_STORED", now()])
+      await guardedUpdate(attempt, ["RESULT_RETRIEVED"], "status=?, completed_at=?", [persisted.proposalsCreated ? "REVIEW_REQUIRED" : "EVIDENCE_STORED", now()])
       if (attempt.resultProviderHistoryId) await getDb().update(providerResponseHistory).set({ status: "success", resultCount: 1, responseSummary: `Bright Data professional evidence retained. ${persisted.reviewState}. Canonical mutations: 0.` }).where(eq(providerResponseHistory.id, attempt.resultProviderHistoryId))
       attempt = await findAttempt(attempt.id)
       await writeSecurityAudit(context, { action: "brightdata_evidence_retained", entityType: "provider_collection_attempt", entityId: attempt.id, metadata: { ...persisted, canonicalMutations: 0 } })
-      return Response.json({ attempt: publicAttempt(attempt), persisted, providerCallMade })
+      return Response.json({ attempt: publicAttempt(attempt, await snapshotMetadata(attempt.id)), persisted, providerCallMade })
     }
     return Response.json({ error: "Unsupported Bright Data action." }, { status: 400 })
   } catch (error) {

@@ -2,6 +2,9 @@ import vinext from "vinext";
 import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
+import { isAbsolute, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
@@ -57,12 +60,26 @@ export default defineConfig(async ({ command, mode }) => {
   const localPersistPath = localDevelopment
     ? localEnvironment.LOCAL_DEV_D1_PERSIST_PATH?.trim()
     : "";
+  const absolutePersistPath = localPersistPath && isAbsolute(localPersistPath) ? (() => { try { return realpathSync(localPersistPath); } catch { return ""; } })() : "";
+  const projectRoot = resolve(process.cwd());
+  const temporaryRoots = [tmpdir(), "/private/tmp", "/tmp"].map(root => { try { return realpathSync(root); } catch { return resolve(root); } });
+  const localWebhookMock = localDevelopment
+    && localAuthRole === "ADMIN"
+    && Boolean(absolutePersistPath)
+    && temporaryRoots.some(root => absolutePersistPath.startsWith(`${root}${sep}`))
+    && !absolutePersistPath.startsWith(`${projectRoot}${sep}`)
+    && absolutePersistPath !== projectRoot
+    && localEnvironment.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true";
+  const localWebhookSecret = localWebhookMock ? localEnvironment.CORESIGNAL_WEBHOOK_CALLBACK_SECRET?.trim() ?? "" : "";
   const localCoresignalDemo = localDevelopment
     && localCoresignalLiveDemoEnabled(localEnvironment);
   const localCollectMock = localDevelopment
     && localCoresignalCollectMockTransportEnabled(localEnvironment);
   const localBrightDataDemo = localDevelopment && localBrightDataLiveDemoEnabled(localEnvironment);
   const localBrightDataMock = localDevelopment && localBrightDataMockTransportEnabled(localEnvironment);
+  const localBrightDataHumanTrial = localBrightDataDemo && localWebhookMock
+    && localEnvironment.BRIGHTDATA_HUMAN_TRIAL_ENABLED === "true"
+    && localEnvironment.BRIGHTDATA_MOCK_TRANSPORT !== "true";
   const localBrightDataEntitlement = localEnvironment.BRIGHTDATA_ACCESS_ENTITLEMENT?.trim() ?? "";
   const localRuntimeVariables: Record<string, string> = localDevelopment
     ? {
@@ -87,12 +104,18 @@ export default defineConfig(async ({ command, mode }) => {
           ? localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT
           : "unknown",
         CORESIGNAL_COLLECT_MOCK_TRANSPORT: localCollectMock ? "true" : "false",
+        LOCAL_DEV_D1_PERSIST_PATH: localWebhookMock ? absolutePersistPath : "",
+        CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: localWebhookMock ? "true" : "false",
+        CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: localWebhookMock && localWebhookSecret.length >= 32 && localEnvironment.CORESIGNAL_WEBHOOK_RECEIVE_ENABLED === "true" ? "true" : "false",
+        CORESIGNAL_WEBHOOK_CALLBACK_SECRET: localWebhookSecret.length >= 32 ? localWebhookSecret : "",
         CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "1",
         CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
         LOCAL_PROVIDER_LIVE_DEMO_ENABLED: localBrightDataDemo ? "true" : "false",
         LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1",
         BRIGHTDATA_LIVE_ENABLED: localBrightDataDemo ? "true" : "false",
         BRIGHTDATA_MOCK_TRANSPORT: localBrightDataMock ? "true" : "false",
+        BRIGHTDATA_HUMAN_TRIAL_ENABLED: localBrightDataHumanTrial ? "true" : "false",
+        BRIGHTDATA_HUMAN_TRIAL_TARGET: localBrightDataHumanTrial ? localEnvironment.BRIGHTDATA_HUMAN_TRIAL_TARGET?.trim() ?? "" : "",
         BRIGHTDATA_APPLICATION_REQUEST_LIMIT: localEnvironment.BRIGHTDATA_APPLICATION_REQUEST_LIMIT?.trim() || "5",
         BRIGHTDATA_ACCESS_ENTITLEMENT: ["confirmed", "not_entitled"].includes(localBrightDataEntitlement) ? localBrightDataEntitlement : "unknown",
         ...(localBrightDataDemo ? {
@@ -120,7 +143,7 @@ export default defineConfig(async ({ command, mode }) => {
 
   return {
     server: {
-      host: localCoresignalDemo || localBrightDataDemo ? "127.0.0.1" : "0.0.0.0",
+      host: localCoresignalDemo || localBrightDataDemo || localWebhookMock ? "127.0.0.1" : "0.0.0.0",
       allowedHosts: ["terminal.local"],
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }

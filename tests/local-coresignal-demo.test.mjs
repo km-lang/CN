@@ -126,7 +126,7 @@ test("opening live confirmation is call-free and only its explicit action execut
   assert.match(discoveryEntry, /setPendingDiscoveryFilters\(searchFilters\)/)
   assert.match(discoveryEntry, /return/)
   assert.doesNotMatch(discoveryEntry, /fetch\(/)
-  assert.match(page, /onClick=\{\(\) => pendingDiscoveryFilters && void runDiscovery\(pendingDiscoveryFilters\)\}[\s\S]*Confirm Live Search/)
+  assert.match(page, /onClick=\{\(\) => pendingDiscoveryFilters && void runDiscovery\(pendingDiscoveryFilters\)\}[\s\S]*Confirm One Preview Request/)
   assert.match(page, /onClick=\{\(\) => void runProfileRefresh\(\)\}[\s\S]*Run Refresh/)
 })
 
@@ -138,6 +138,6 @@ test("the validated Coresignal API and review workflow remain unchanged", () => 
   assert.match(client, /apikey:/)
   assert.doesNotMatch(client, /Authorization|Bearer/)
   assert.match(discoveryRoute, /action === "approve"/)
-  assert.match(page, /The legacy Preview request does not enforce an exact graduation year/)
+  assert.match(page, /Confirm one Base Employee ES-DSL Preview request/)
   assert.match(page, /1 Preview · 0 Collect/)
 })

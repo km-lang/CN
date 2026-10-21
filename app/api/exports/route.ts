@@ -1,13 +1,15 @@
+import { sql } from "drizzle-orm"
 import { getDb } from "@/db"
 import { alumni, companyPriorities, corporateOpportunities, corporateOpportunityHistory, engagementEvents, programmeOptions, providerCompanyMappings, providerRefreshReviews } from "@/db/schema"
 import { normalizeDirectoryQuery } from "@/lib/directory-query"
+import { effectiveIntakeStatus } from "@/lib/intake-status"
 import { runDirectoryExportQuery } from "@/lib/directory-data"
 import { datasetCsv, datasetsCsvZip, datasetsXlsx, type ExportDataset } from "@/lib/export-files"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
 
 const MAX_EXPORT_ROWS = 10_000
 const DIRECTORY_COLUMNS = [
-  { key: "id", label: "Alumni ID" }, { key: "name", label: "Alumni Name" }, { key: "programme", label: "Programme" },
+  { key: "id", label: "Alumni ID" }, { key: "name", label: "Alumni Name" }, { key: "intakeStatus", label: "Profile Status" }, { key: "programme", label: "Programme" },
   { key: "graduationYear", label: "Graduation Year" }, { key: "company", label: "Current Company" }, { key: "title", label: "Current Designation" },
   { key: "seniority", label: "Current Seniority" }, { key: "location", label: "Professional Location" }, { key: "contactStatus", label: "Verification Status" },
   { key: "relevance", label: "Placement Relevance" }, { key: "status", label: "Outreach Status" }, { key: "source", label: "Source Status" }, { key: "updatedAt", label: "Last Updated At" },
@@ -26,7 +28,7 @@ function directoryDataset(rows: readonly Record<string, unknown>[], importCompat
   if (importCompatible) return {
     id: "alumni_import_compatible", label: "ALUMNI_IMPORT",
     columns: [{ key: "source_system", label: "source_system" }, { key: "source_alumni_id", label: "source_alumni_id" }, { key: "canonical_alumni_id", label: "canonical_alumni_id" }, { key: "name", label: "name" }, { key: "programme", label: "programme" }, { key: "graduation_year", label: "graduation_year" }, { key: "company", label: "company" }, { key: "title", label: "title" }, { key: "function", label: "function" }, { key: "seniority", label: "seniority" }, { key: "location", label: "location" }, { key: "linkedin_url", label: "linkedin_url" }],
-    rows: rows.map(row => ({ source_system: "corporate_network", source_alumni_id: String(row.id), canonical_alumni_id: String(row.id), name: String(row.name ?? ""), programme: String(row.programme ?? ""), graduation_year: Number(row.graduationYear) || "", company: String(row.company ?? ""), title: String(row.title ?? ""), function: String(row.function ?? ""), seniority: String(row.seniority ?? ""), location: String(row.location ?? ""), linkedin_url: String(row.linkedinUrl ?? "") })),
+    rows: rows.filter(row => row.intakeStatus !== "PROVISIONAL").map(row => ({ source_system: "corporate_network", source_alumni_id: String(row.id), canonical_alumni_id: String(row.id), name: String(row.name ?? ""), programme: String(row.programme ?? ""), graduation_year: Number(row.graduationYear) || "", company: String(row.company ?? ""), title: String(row.title ?? ""), function: String(row.function ?? ""), seniority: String(row.seniority ?? ""), location: String(row.location ?? ""), linkedin_url: String(row.linkedinUrl ?? "") })),
   }
   return { id: "alumni", label: "ALUMNI", columns: DIRECTORY_COLUMNS, rows: rows as ExportDataset["rows"] }
 }
@@ -39,9 +41,9 @@ async function adminDatasets(requested: string[]): Promise<ExportDataset[]> {
   for (const id of requested) {
     if (id === "alumni") {
       const rows = await db.select().from(alumni).orderBy(alumni.id)
-      result.push(directoryDataset(rows.map(row => ({ ...row, contactStatus: row.profileMatch, relevance: "", source: row.source }))))
+      result.push(directoryDataset(rows.map(row => ({ ...row, intakeStatus: effectiveIntakeStatus(row), contactStatus: row.profileMatch, relevance: "", source: row.source }))))
     } else if (id === "companies") {
-      const rows = await db.select({ company: alumni.company }).from(alumni).orderBy(alumni.company)
+      const rows = await db.select({ company: alumni.company }).from(alumni).where(sql`${alumni.intakeStatus} != 'PROVISIONAL'`).orderBy(alumni.company)
       const names = [...new Set(rows.map(row => row.company).filter(Boolean))]
       result.push({ id, label: "COMPANIES", columns: [{ key: "company", label: "Company" }], rows: names.map(company => ({ company })) })
     } else if (id === "priorities") {

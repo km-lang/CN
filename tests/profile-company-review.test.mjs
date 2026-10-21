@@ -5,6 +5,7 @@ import test from "node:test"
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
 const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
 const workspace = await readFile(new URL("../app/api/workspace/route.ts", import.meta.url), "utf8")
+const scorer = await readFile(new URL("../lib/placement-relevance.ts", import.meta.url), "utf8")
 
 test("legacy data-quality state remains visible and controls are labelled", () => {
   assert.match(page, /Professional data quality/)
@@ -18,7 +19,8 @@ test("profile uses progressive disclosure without changing score weights", () =>
   assert.match(page, /<summary>Why this score\?<\/summary>/)
   assert.match(page, /<summary>Edit assessment<\/summary>/)
   assert.match(page, /Company priority[\s\S]*Inherited from company settings/)
-  assert.match(page, /Hiring influence[\s\S]*weight: 30/)
+  assert.match(page, /calculatePlacementRelevance/)
+  assert.match(scorer, /hiringInfluence: 30/)
   assert.match(styles, /\.profile-order-verification\s*\{\s*order:\s*7/)
 })
 

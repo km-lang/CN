@@ -148,6 +148,7 @@ export async function POST(request: Request) {
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
       const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);
       if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
+      if (person.intakeStatus === "PROVISIONAL") return Response.json({ error: "Provisional profiles are not eligible for contact enrichment." }, { status: 409 });
       if (payload.contactChannel === "phone") {
         const [privacy, preferences] = await Promise.all([
           db.select().from(alumniPrivacyControls).where(eq(alumniPrivacyControls.alumnusId, person.id)).limit(1),
@@ -202,6 +203,7 @@ export async function POST(request: Request) {
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
       const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);
       if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
+      if (person.intakeStatus === "PROVISIONAL") return Response.json({ error: "Provisional profiles are not eligible for contact enrichment." }, { status: 409 });
       if (!person.lushaPersonId) return Response.json({ error: "Run the Lusha contact preview first so a stable contact ID can be confirmed." }, { status: 409 });
       const result = await revealLushaEmail(person.lushaPersonId);
       const recordedCredits = result.creditsUsed ?? 0;
@@ -230,6 +232,7 @@ export async function POST(request: Request) {
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
       const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);
       if (!person) return Response.json({ error: "The alumnus could not be found." }, { status: 404 });
+      if (person.intakeStatus === "PROVISIONAL") return Response.json({ error: "Provisional profiles are not eligible for contact enrichment." }, { status: 409 });
       const [privacy, preferences] = await Promise.all([
         db.select().from(alumniPrivacyControls).where(eq(alumniPrivacyControls.alumnusId, person.id)).limit(1),
         db.select().from(communicationPreferences).where(eq(communicationPreferences.alumnusId, person.id)),
@@ -297,6 +300,7 @@ export async function POST(request: Request) {
         return Response.json({ error: "The controlled live Coresignal pilot permits exactly one profile refresh at a time." }, { status: 400 });
       }
       const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
+      if (people.some(person => person.intakeStatus === "PROVISIONAL")) return Response.json({ error: "Provisional profiles cannot enter the professional refresh workflow." }, { status: 409 });
       const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
       const results = [];
       const labels: Record<string, string> = { company: "Current company", title: "Role", rawTitle: "Raw role", function: "Function", seniority: "Seniority", location: "Location", linkedinUrl: "Professional profile", coresignalEmployeeId: "Coresignal employee ID", graduationYear: "IIML education end year", iimlAffiliationStatus: "IIML affiliation qualification", iimlEducationProgramme: "IIML programme", iimlEducationStartDate: "IIML education start", iimlEducationEndDate: "IIML education end", iimlInstitutionId: "Institution ID", iimlInstitutionUrl: "Institution URL", currentCompanyId: "Company ID", currentCompanyUrl: "Company URL", currentRoleStartDate: "Role start date", currentIndustry: "Industry", currentRoleAmbiguous: "Current-role ambiguity", providerFreshnessAt: "Provider freshness" };
@@ -348,6 +352,7 @@ export async function POST(request: Request) {
     if (requestedProviders.includes("coresignal")) return Response.json({ error: "Use Refresh Profiles for Coresignal professional data checks." }, { status: 400 });
     if (requestedProviders.includes("lusha") && enrichmentMode("lusha") === "live") return Response.json({ error: "Use the controlled single-alumnus Lusha contact preview and channel-specific confirmation workflow in LIVE mode." }, { status: 409 });
     const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
+    if (people.some(person => person.intakeStatus === "PROVISIONAL")) return Response.json({ error: "Provisional profiles are not eligible for contact enrichment." }, { status: 409 });
     const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
     const results = [];
     for (const person of people) {

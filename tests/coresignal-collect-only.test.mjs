@@ -80,6 +80,28 @@ test("valid retained Employee ID is eligible evidence without hard-coding the ca
   assert.equal(result.identityResolutionStatus, "IDENTITY_RESOLUTION_REQUIRED")
 })
 
+test("known alumnus Collect derives the exact saved ID without any Search or paid lookup", () => {
+  const known = collect.candidateFromKnownAlumnus({ id: 7, coresignalEmployeeId: "289351894", createdAt: "2026-10-17T00:00:00Z" }, null)
+  assert.equal(known.sourceAlumnusId, 7)
+  assert.equal(known.searchHistoryId, 0)
+  assert.equal(known.searchOperation, "Known alumnus identity")
+  assert.equal(known.employeeId, "289351894")
+  assert.equal(collect.collectPreflight(known, runtime({ entitlement: "unknown" })).allowed, false)
+  assert.throws(() => collect.candidateFromKnownAlumnus({ id: 7, coresignalEmployeeId: "", createdAt: "" }, null), /valid Coresignal Employee ID/)
+})
+
+test("known-ID comparison distinguishes no change, proposals, missing role and conflicting profile identity", () => {
+  const known = collect.candidateFromKnownAlumnus({ id: 7, coresignalEmployeeId: "289351894", createdAt: "2026-10-17T00:00:00Z" }, null)
+  const evidence = collect.sanitizeCollectResponse({ body: profile(), candidate: known, attemptId: "a", requestedAt: "2026-10-17T03:00:00Z", completedAt: "2026-10-17T03:00:01Z", upstreamHttpStatus: 200, providerCreditsRemaining: null })
+  const person = { coresignalEmployeeId: "289351894", linkedinUrl: "https://linkedin.com/in/synthetic-review-candidate/", company: "Lincoln International", title: "Director", location: "Chicago, United States" }
+  assert.equal(collect.knownAlumnusCollectChanges(person, evidence).outcome, "NO_CHANGE")
+  assert.deepEqual(collect.knownAlumnusCollectChanges({ ...person, company: "Old Co" }, evidence).changes.map(item => item.field), ["company"])
+  assert.equal(collect.knownAlumnusCollectChanges({ ...person, linkedinUrl: "https://www.linkedin.com/in/a-different-person" }, evidence).outcome, "IDENTITY_CONFLICT")
+  assert.deepEqual(collect.knownAlumnusCollectChanges({ ...person, linkedinUrl: "https://www.linkedin.com/in/a-different-person" }, evidence).changes, [])
+  const missingRole = { ...evidence, employment: [] }
+  assert.equal(collect.knownAlumnusCollectChanges(person, missingRole).outcome, "INSUFFICIENT_CURRENT_ROLE")
+})
+
 test("unknown or absent Employee IDs and historical Search without evidence fail closed", () => {
   assert.throws(() => candidate({ employeeId: "123456" }), /absent/)
   assert.throws(() => candidate({ responseSummary: "Historical Search succeeded." }), /retained/)
@@ -155,6 +177,25 @@ test("the durable attempt fence follows Employee ID across different retained Se
   const retainedClaim = db.prepare("SELECT search_id, mode FROM provider_response_history").get()
   assert.equal(retainedClaim.search_id, 14)
   assert.equal(retainedClaim.mode, "mock")
+  db.close()
+})
+
+test("known-alumnus and Search Collect share a durable Employee-ID replay fence", () => {
+  const db = new DatabaseSync(":memory:")
+  db.exec(`CREATE TABLE provider_response_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, alumnus_id INTEGER,
+    alumnus_name TEXT NOT NULL, search_id INTEGER, operation TEXT NOT NULL, mode TEXT NOT NULL,
+    status TEXT NOT NULL, credits_used INTEGER NOT NULL, application_units INTEGER NOT NULL,
+    provider_reported_credits INTEGER, usage_state TEXT NOT NULL, result_count INTEGER NOT NULL,
+    request_summary TEXT NOT NULL, response_summary TEXT NOT NULL, error_message TEXT NOT NULL,
+    requested_by TEXT NOT NULL
+  )`)
+  const summary = "Retained Search Collect-only · Employee ID 289351894"
+  const known = db.prepare(collect.CORESIGNAL_KNOWN_COLLECT_CLAIM_SQL)
+  assert.equal(known.get(7, "Alumnus 7", collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary).id, 1)
+  assert.equal(known.get(7, "Alumnus 7", collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary), undefined)
+  assert.equal(db.prepare(collect.CORESIGNAL_COLLECT_CLAIM_SQL).get(14, collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary), undefined)
+  assert.equal(db.prepare("select alumnus_id from provider_response_history").get().alumnus_id, 7)
   db.close()
 })
 
@@ -238,7 +279,9 @@ test("Admin-only route uses atomic durable claim and never reuses Profile Refres
   assert.match(route, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/)
   assert.match(collect.CORESIGNAL_COLLECT_CLAIM_SQL, /INSERT INTO provider_response_history[\s\S]*WHERE NOT EXISTS[\s\S]*RETURNING id/)
   assert.match(route, /WHERE id=\? AND status='in_progress'/)
-  assert.match(route, /status === "ambiguous" \? 1 : 0/)
+  assert.match(route, /status === "ambiguous" \? candidate\.sourceWebhookEventId \? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1 : 0/)
+  assert.match(route, /WEBHOOK_COLLECT_CLAIM_SQL[\s\S]*application_units[\s\S]*WHERE NOT EXISTS/)
+  assert.match(route, /payload\.webhookEventId && \(!coresignalCollectMockTransportEnabled\(\) \|\| !webhookMockEnabled\(\)\)/)
   assert.match(route, /collectCoresignalEmployeeWithMetadata/)
   assert.doesNotMatch(route, /refreshProfile|attachCoresignalIdentity|externalDiscoverySearches/)
 })

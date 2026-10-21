@@ -45,7 +45,7 @@ test("local development forwards intelligence configuration only as server runti
 test("Directory selections are materialized into a fixed intelligence cohort", () => {
   assert.match(page, /selectedForIntelligence/)
   assert.match(page, /Use current page/)
-  assert.match(page, /Use all matching/)
+  assert.match(page, /Use loaded matches only/)
   assert.match(cohort, /sourceId|\/v1\/alumni\/resolve/)
   assert.match(refresh, /cohortType: scope === "dynamic" \? "DYNAMIC_FILTER" : "FIXED_COHORT"/)
 })

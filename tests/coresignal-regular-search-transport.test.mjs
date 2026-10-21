@@ -197,10 +197,26 @@ test("provider-free company preflight remains available while live Search is gat
   assert.equal(prepared.contract.body.query.bool.filter.filter(clause => clause.nested).length, 2)
 })
 
-test("missing, unverified, conflicting, and invalid company mappings stop before transport", async () => {
+test("missing and unverified companies use exact-name fallback without asserting a provider ID", async () => {
   const cases = [
-    { store: { async findByCompany() { return [] } }, message: /No Coresignal mapping exists/ },
-    { store: providerCompanyStore("UNVERIFIED"), message: /has not been verified/ },
+    { store: { async findByCompany() { return [] } }, name: "Unknown Company" },
+    { store: providerCompanyStore("UNVERIFIED"), name: "Lincoln International" },
+  ]
+  for (const item of cases) {
+    let transportCalls = 0
+    const result = await runtime.executeCoresignalRegularSearch({ filters: { ...filters(), company: item.name }, itemsPerPage: 5, operationContext: "exact-name fallback", confirmed: true }, {
+      searchEnabled: () => true,
+      transport: async body => { transportCalls += 1; assert.match(JSON.stringify(body), /experience\.company_name\.exact/); assert.doesNotMatch(JSON.stringify(body), /experience\.company_id/); return { body: [], headers: {}, providerCreditsRemaining: null, upstreamHttpStatus: 200 } },
+      store: mappingStore(),
+      companyMappingStore: item.store,
+    })
+    assert.equal(transportCalls, 1)
+    assert.equal(result.companyIdentityMode, "EXACT_NAME")
+  }
+})
+
+test("conflicting and invalid company mappings stop before transport", async () => {
+  const cases = [
     { store: providerCompanyStore("CONFLICT"), message: /conflicting/ },
     { store: providerCompanyStore("VERIFIED", "not-an-id"), message: /invalid Coresignal company ID/ },
   ]

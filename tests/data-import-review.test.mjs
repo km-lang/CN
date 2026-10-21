@@ -31,6 +31,27 @@ test("XLSX reads cached cell values from the first worksheet", () => {
   assert.deepEqual(result.records, [{ name: "Excel Alumnus", graduation_year: "2019", company: "Example Industries" }])
 })
 
+test("XLSX self-closing blank cells do not consume the following column", () => {
+  const workbook = '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Alumni" r:id="rId1"/></sheets></workbook>'
+  const relationships = '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>'
+  const sheet = '<worksheet><sheetData><row r="1"><c r="A1" t="str"><v>last_reviewed_date</v></c><c r="B1" t="str"><v>note</v></c></row><row r="2"><c r="A2" t="str"/><c r="B2" t="str"><v>Fictional demo record</v></c></row></sheetData></worksheet>'
+  const bytes = zipSync({ "xl/workbook.xml": strToU8(workbook), "xl/_rels/workbook.xml.rels": strToU8(relationships), "xl/worksheets/sheet1.xml": strToU8(sheet) })
+  assert.deepEqual(importer.parseXlsx(bytes).records, [{ last_reviewed_date: "", note: "Fictional demo record" }])
+})
+
+test("XLSX date-typed serials normalize only when an Excel date style is present", () => {
+  const workbook = '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Alumni" r:id="rId1"/></sheets></workbook>'
+  const relationships = '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>'
+  const styles = '<styleSheet><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts><cellXfs count="3"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/></cellXfs></styleSheet>'
+  const sheet = '<worksheet><sheetData><row r="1"><c r="A1" t="str"><v>source_date</v></c><c r="B1" t="str"><v>last_reviewed_date</v></c><c r="C1" t="str"><v>note</v></c></row><row r="2"><c r="A2" s="1"><v>46316</v></c><c r="B2" s="2"><v>46316</v></c><c r="C2"><v>46316</v></c></row></sheetData></worksheet>'
+  const bytes = zipSync({ "xl/workbook.xml": strToU8(workbook), "xl/_rels/workbook.xml.rels": strToU8(relationships), "xl/worksheets/sheet1.xml": strToU8(sheet), "xl/styles.xml": strToU8(styles) })
+  assert.deepEqual(importer.parseXlsx(bytes).records, [{ source_date: "2026-10-21", last_reviewed_date: "2026-10-21", note: "46316" }])
+  const workbook1904 = workbook.replace('<sheets>', '<workbookPr date1904="1"/><sheets>')
+  const sheet1904 = sheet.replaceAll('46316', '44854')
+  const bytes1904 = zipSync({ "xl/workbook.xml": strToU8(workbook1904), "xl/_rels/workbook.xml.rels": strToU8(relationships), "xl/worksheets/sheet1.xml": strToU8(sheet1904), "xl/styles.xml": strToU8(styles) })
+  assert.deepEqual(importer.parseXlsx(bytes1904).records, [{ source_date: "2026-10-21", last_reviewed_date: "2026-10-21", note: "44854" }])
+})
+
 test("published XLSX template is readable by the production parser", async () => {
   const bytes = await readFile(new URL("../docs/import/Corporate Network Alumni Import Template.xlsx", import.meta.url))
   const result = importer.parseXlsx(bytes)
