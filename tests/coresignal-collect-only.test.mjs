@@ -48,7 +48,7 @@ function history(options = {}) {
 }
 
 function candidate(options = {}) { return collect.candidateFromSearchHistory(history(options), options.employeeId ?? "289351894", options.priorCollectStatus ?? null) }
-function runtime(options = {}) { return { configured: true, providerLiveMode: true, transportMode: "mock", collectGateEnabled: true, entitlement: "confirmed", applicationUnitsRemaining: 13, maximumRequests: 1, ...options } }
+function runtime(options = {}) { return { configured: true, providerLiveMode: true, transportMode: "mock", collectGateEnabled: true, entitlement: "confirmed", applicationUnitsRemaining: 25, maximumRequests: 1, ...options } }
 function profile(options = {}) {
   return {
     id: options.id ?? 289351894,
@@ -116,7 +116,7 @@ test("resolved or conflicting provider identity cannot enter Collect-only workfl
 test("preflight fails closed for gate, budget and account entitlement", () => {
   for (const [overrides, message] of [
     [{ collectGateEnabled: false }, /gate is disabled/],
-    [{ applicationUnitsRemaining: 0 }, /allowance is exhausted/],
+    [{ applicationUnitsRemaining: 19 }, /fewer than 20 units/],
     [{ entitlement: "unknown" }, /entitlement is unknown/],
     [{ entitlement: "not_entitled" }, /not entitled/],
     [{ configured: false }, /authentication is not configured/],
@@ -168,12 +168,15 @@ test("the durable attempt fence follows Employee ID across different retained Se
     search_id INTEGER, operation TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
     credits_used INTEGER NOT NULL, application_units INTEGER NOT NULL, provider_reported_credits INTEGER,
     usage_state TEXT NOT NULL, result_count INTEGER NOT NULL, request_summary TEXT NOT NULL,
-    response_summary TEXT NOT NULL, error_message TEXT NOT NULL, requested_by TEXT NOT NULL
-  )`)
+    response_summary TEXT NOT NULL, error_message TEXT NOT NULL, requested_by TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  ); CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, monthly_credit_limit INTEGER)`)
   const statement = db.prepare(collect.CORESIGNAL_COLLECT_CLAIM_SQL)
   const summary = "Retained Search Collect-only · Employee ID 289351894"
-  assert.equal(statement.get(14, collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary).id, 1)
-  assert.equal(statement.get(99, collect.CORESIGNAL_COLLECT_OPERATION, "live", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary), undefined)
+  const bind = [14, collect.CORESIGNAL_COLLECT_OPERATION, "mock", 20, summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary, 20, new Date().toISOString().slice(0, 7) + "-01"]
+  assert.equal(statement.get(...bind).id, 1)
+  assert.equal(statement.get(...bind), undefined)
+  assert.equal(statement.get(99, collect.CORESIGNAL_COLLECT_OPERATION, "live", 20, "Retained Search Collect-only · Employee ID 999", "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, "Retained Search Collect-only · Employee ID 999", 20, bind.at(-1)), undefined)
   const retainedClaim = db.prepare("SELECT search_id, mode FROM provider_response_history").get()
   assert.equal(retainedClaim.search_id, 14)
   assert.equal(retainedClaim.mode, "mock")
@@ -188,13 +191,15 @@ test("known-alumnus and Search Collect share a durable Employee-ID replay fence"
     status TEXT NOT NULL, credits_used INTEGER NOT NULL, application_units INTEGER NOT NULL,
     provider_reported_credits INTEGER, usage_state TEXT NOT NULL, result_count INTEGER NOT NULL,
     request_summary TEXT NOT NULL, response_summary TEXT NOT NULL, error_message TEXT NOT NULL,
-    requested_by TEXT NOT NULL
-  )`)
+    requested_by TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  ); CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, monthly_credit_limit INTEGER)`)
   const summary = "Retained Search Collect-only · Employee ID 289351894"
   const known = db.prepare(collect.CORESIGNAL_KNOWN_COLLECT_CLAIM_SQL)
-  assert.equal(known.get(7, "Alumnus 7", collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary).id, 1)
-  assert.equal(known.get(7, "Alumnus 7", collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary), undefined)
-  assert.equal(db.prepare(collect.CORESIGNAL_COLLECT_CLAIM_SQL).get(14, collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary), undefined)
+  const month = new Date().toISOString().slice(0, 7) + "-01"
+  const knownBind = [7, "Alumnus 7", collect.CORESIGNAL_COLLECT_OPERATION, "mock", 20, summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary, 20, month]
+  assert.equal(known.get(...knownBind).id, 1)
+  assert.equal(known.get(...knownBind), undefined)
+  assert.equal(db.prepare(collect.CORESIGNAL_COLLECT_CLAIM_SQL).get(14, collect.CORESIGNAL_COLLECT_OPERATION, "mock", 20, summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary, 20, month), undefined)
   assert.equal(db.prepare("select alumnus_id from provider_response_history").get().alumnus_id, 7)
   db.close()
 })
@@ -236,7 +241,7 @@ test("missing education/employment and conflicting evidence remain review states
 test("unchanged provider credit header stays separate from documented cost and confirmed debit", () => {
   const evidence = collect.sanitizeCollectResponse({ body: profile(), candidate: candidate(), attemptId: "a", requestedAt: "2026-10-17T03:00:00Z", completedAt: "2026-10-17T03:00:01Z", upstreamHttpStatus: 200, providerCreditsRemaining: 4950 })
   assert.equal(evidence.providerCreditsRemaining, 4950)
-  assert.deepEqual(evidence.applicationAccounting, { applicationUnits: 1, documentedCollectCredits: 1, confirmedDebit: null })
+  assert.deepEqual(evidence.applicationAccounting, { applicationUnits: 20, documentedCollectCredits: 20, confirmedDebit: null })
 })
 
 test("Collect metadata transport is one GET with apikey auth, redirect refusal and retained balance header", async () => {
@@ -279,7 +284,7 @@ test("Admin-only route uses atomic durable claim and never reuses Profile Refres
   assert.match(route, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/)
   assert.match(collect.CORESIGNAL_COLLECT_CLAIM_SQL, /INSERT INTO provider_response_history[\s\S]*WHERE NOT EXISTS[\s\S]*RETURNING id/)
   assert.match(route, /WHERE id=\? AND status='in_progress'/)
-  assert.match(route, /status === "ambiguous" \? candidate\.sourceWebhookEventId \? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1 : 0/)
+  assert.match(route, /status === "ambiguous" \? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 0/)
   assert.match(route, /WEBHOOK_COLLECT_CLAIM_SQL[\s\S]*application_units[\s\S]*WHERE NOT EXISTS/)
   assert.match(route, /payload\.webhookEventId && \(!coresignalCollectMockTransportEnabled\(\) \|\| !webhookMockEnabled\(\)\)/)
   assert.match(route, /collectCoresignalEmployeeWithMetadata/)
@@ -293,11 +298,12 @@ test("the production claim statement admits exactly one durable attempt in an is
     search_id INTEGER, operation TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
     credits_used INTEGER NOT NULL, application_units INTEGER NOT NULL, provider_reported_credits INTEGER,
     usage_state TEXT NOT NULL, result_count INTEGER NOT NULL, request_summary TEXT NOT NULL,
-    response_summary TEXT NOT NULL, error_message TEXT NOT NULL, requested_by TEXT NOT NULL
-  )`)
+    response_summary TEXT NOT NULL, error_message TEXT NOT NULL, requested_by TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  ); CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, monthly_credit_limit INTEGER)`)
   const summary = "Retained Search Collect-only · Employee ID 289351894"
   const statement = db.prepare(collect.CORESIGNAL_COLLECT_CLAIM_SQL)
-  const bind = [14, collect.CORESIGNAL_COLLECT_OPERATION, "mock", summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary]
+  const bind = [14, collect.CORESIGNAL_COLLECT_OPERATION, "mock", 20, summary, "claim", "Admin", collect.CORESIGNAL_COLLECT_OPERATION, summary, 20, new Date().toISOString().slice(0, 7) + "-01"]
   assert.equal(statement.get(...bind).id, 1)
   assert.equal(statement.get(...bind), undefined)
   assert.equal(db.prepare("SELECT count(*) AS count FROM provider_response_history").get().count, 1)

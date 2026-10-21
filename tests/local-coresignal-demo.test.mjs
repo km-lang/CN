@@ -104,6 +104,25 @@ test("normal local development stays mock and the named demo command is loopback
   assert.doesNotMatch(manual, /CORESIGNAL_API_KEY=/)
 })
 
+test("mock discovery cannot write the original local D1 when live execution is off", () => {
+  const normal = {
+    NODE_ENV: "development",
+    LOCAL_DEV_AUTH_ENABLED: "true",
+    LOCAL_DEV_AUTH_ROLE: "ADMIN",
+    CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "false",
+    LOCAL_DEV_D1_PERSIST_PATH: "",
+  }
+  assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled(normal), false)
+  assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-isolated-demo" }), true)
+  assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/../original" }), false)
+  assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-isolated-demo", LOCAL_DEV_AUTH_ROLE: "PCOM" }), false)
+  assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-isolated-demo", NODE_ENV: "production" }), false)
+  assert.match(discoveryRoute, /if \(coresignalProvider\.mode\(\) === "mock" && !localIsolatedDiscoveryMockEnabled\(providerRuntimeEnvironment\)\) return Response\.json\(/)
+  assert.match(discoveryRoute, /reason: "isolated_mock_database_required"/)
+  assert.match(page, /disabled=\{discovering \|\| !discoveryCountValidation\.ok \|\| mockBlocked\}/)
+  assert.match(page, /findMoreForCompany\(activeTargetCompany\)\} disabled=\{discovering \|\| \(providerModes\.coresignal === "mock" && !mockDiscoveryEnabled\)\}/)
+})
+
 test("the local key stays in ignored server-only configuration", () => {
   assert.match(gitignore, /^\.env\*/m)
   assert.match(envExample, /^CORESIGNAL_API_KEY=$/m)

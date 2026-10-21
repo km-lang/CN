@@ -17,6 +17,7 @@ export type ProfessionalSearchResult = {
   totalAvailable: number
   responseSummary: string
   usage: ProviderUsage
+  providerCreditsRemaining?: number | null
   execution?: DiscoveryExecutionResult
 }
 

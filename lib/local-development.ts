@@ -51,6 +51,15 @@ export function localBrightDataHumanTrialEnabled(values: LocalDevelopmentEnviron
     && Boolean(values.BRIGHTDATA_HUMAN_TRIAL_TARGET?.trim())
 }
 
+export function localIsolatedDiscoveryMockEnabled(values: LocalDevelopmentEnvironment = process.env) {
+  const path = values.LOCAL_DEV_D1_PERSIST_PATH?.trim() ?? ""
+  return localDevelopmentAuthEnabled(values)
+    && values.LOCAL_DEV_AUTH_ROLE === "ADMIN"
+    && values.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true"
+    && (path.startsWith("/tmp/") || path.startsWith("/private/tmp/"))
+    && !path.split("/").includes("..")
+}
+
 export function localCoresignalCollectMockTransportEnabled(
   values: LocalDevelopmentEnvironment = process.env,
 ) {

@@ -71,7 +71,7 @@ Provider provenance, field-change history, and security audit infrastructure are
 
 ## Database and migrations
 
-Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0014_wandering_revanche.sql`.
+Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0026_green_ben_parker.sql`. The original local D1 is at 0026; the hosted D1 must be reconciled and backed up before any later migration is authorized.
 
 Migration 0012 adds a partial unique index so one non-empty `coresignal_employee_id` can belong to at most one CN alumnus. The empty string remains the supported unassigned value. Migration 0012 has been validated against repository-local D1 only; this README does **not** claim staging or production migration completion.
 
@@ -97,9 +97,9 @@ npm run db:generate
 | Exact-year ES-DSL request builder | Implemented behind disabled Search gate | Provider-free structure is validated; exact-year Search is live-verified for the IIM Lucknow 2011 case only. Search matches are not freshness or alumni qualification evidence; post-Collect evidence and human review remain authoritative. |
 | Current-company ES-DSL Search | Implemented / disabled by default | A selected company resolves server-side through an Admin-managed verified mapping before one bounded Search. Missing, unverified, conflicting, duplicate, or invalid mappings fail closed before provider transport. Lincoln International is the only currently live-evidenced mapping; no name-only or arbitrary-company mapping is allowed. |
 | Coresignal Real-Time Employee API | Frozen | Previous attempt was unauthorized; later guidance said the API is unavailable. |
-| Coresignal webhooks | Future / support-dependent | No implementation or confirmed entitlement. |
+| Coresignal webhooks | Implemented / mock-validated, live inactive | Support email reports subscriptions available and free; account-specific creation, public HTTPS callback and verified Employee ID mapping remain untested. |
 | Bright execution architecture | Implemented / provider-gated | Secondary, fallback, or corroborating evidence; not primary freshness authority. |
-| PDL | Historical support | Existing provenance remains readable; it is not the current primary strategy. |
+| PDL | Historical records only | Existing provenance remains readable; no active requests, intake, updates, fallback, or production credential. |
 | Lusha Contacts and Professional Signals | Implemented / independently gated | Contact and signal workflows remain separate from professional-profile evidence. |
 | Institutional Gmail | Implemented / independently gated | Mock/off by default; live sending requires all mail safety gates. |
 | Production deployment | Pending | Requires staging, rollback, security, and release approval. |

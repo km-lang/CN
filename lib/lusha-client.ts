@@ -9,6 +9,7 @@ export type LushaAccountUsage = {
   used: number | null
   remaining: number | null
   limit: number | null
+  creditType: "bulk_credits" | "general"
 }
 
 export type LushaContactSearchInput = {
@@ -189,7 +190,9 @@ export async function revealLushaPhone(contactId: string, options: { fetcher?: F
 }
 
 function firstMetric(body: Record<string, unknown>, keys: string[]) {
-  const pools = [body, recordValue(body.data), recordValue(body.usage), recordValue(recordValue(body.data).usage)]
+  const usage = recordValue(body.usage)
+  const dataUsage = recordValue(recordValue(body.data).usage)
+  const pools = [body, recordValue(body.data), usage, dataUsage, recordValue(usage.bulkCredits), recordValue(dataUsage.bulkCredits)]
   for (const pool of pools) {
     for (const key of keys) {
       const value = numericValue(pool[key])
@@ -200,10 +203,13 @@ function firstMetric(body: Record<string, unknown>, keys: string[]) {
 }
 
 export async function getLushaAccountUsage(options: { fetcher?: Fetcher } = {}): Promise<LushaAccountUsage> {
-  const { body } = await lushaRequest("/v3/account/usage", { method: "GET", headers: { "content-type": "application/json" } }, options)
+  const { body } = await lushaRequest("/account/usage", { method: "GET" }, options)
+  const usage = recordValue(body.usage)
+  const dataUsage = recordValue(recordValue(body.data).usage)
   return {
     used: firstMetric(body, ["used", "creditsUsed", "credits_used"]),
     remaining: firstMetric(body, ["remaining", "creditsRemaining", "credits_remaining", "balance"]),
     limit: firstMetric(body, ["limit", "creditLimit", "credits_limit", "total"]),
+    creditType: Object.keys(recordValue(usage.bulkCredits)).length || Object.keys(recordValue(dataUsage.bulkCredits)).length ? "bulk_credits" : "general",
   }
 }

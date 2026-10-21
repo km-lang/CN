@@ -1341,3 +1341,20 @@ button { cursor: pointer; }
 .provisional-status { color: #a45b00; font-weight: 700; }
 .provisional-intake-assessments { max-height: min(34vh, 280px); overflow-y: auto; padding: 0.5rem; border: 1px solid var(--border); border-radius: 0.5rem; }
 .provisional-intake-assessments p { margin: 0.25rem 0; font-size: 0.85rem; }
+
+.provider-credits-dashboard { margin: 1rem 0; }
+.provider-credit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .9rem; margin: 1rem 0; }
+.provider-credit-card { min-width: 0; border: 1px solid var(--border); border-radius: .7rem; padding: 1rem; overflow-wrap: anywhere; }
+.provider-credit-card h3, .provider-credit-internal h3 { margin: 0 0 .5rem; }
+.provider-credit-card p { margin: .35rem 0; }
+.provider-credit-observation { display: grid; gap: .25rem; margin: .75rem 0; padding: .65rem; border: 1px solid var(--border); border-radius: .5rem; font-size: .84rem; }
+.provider-credit-observation span[role="alert"], .provider-credit-message { color: #9a4300; }
+.provider-credit-refresh, .provider-credit-attestation button { border: 1px solid var(--border); border-radius: .45rem; padding: .45rem .7rem; background: transparent; cursor: pointer; }
+.provider-credit-refresh:disabled, .provider-credit-attestation button:disabled { opacity: .5; cursor: not-allowed; }
+.provider-credit-attestation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem; margin: .7rem 0; }
+.provider-credit-attestation label { display: grid; gap: .25rem; min-width: 0; font-size: .85rem; }
+.provider-credit-attestation input, .provider-credit-attestation select { min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: .4rem; padding: .45rem; background: var(--background); color: inherit; }
+.provider-credit-attestation button { align-self: end; }
+.provider-credit-internal { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+@media (max-width: 950px) { .provider-credit-grid, .provider-credit-attestation { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 650px) { .provider-credit-grid, .provider-credit-attestation { grid-template-columns: minmax(0, 1fr); } }

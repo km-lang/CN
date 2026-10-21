@@ -135,8 +135,8 @@ const claimStore: CollectClaimStore = {
     const row = candidate.sourceWebhookEventId
       ? await env.DB.prepare(WEBHOOK_COLLECT_CLAIM_SQL).bind(candidate.sourceAlumnusId, `Alumnus ${candidate.sourceAlumnusId}`, CORESIGNAL_COLLECT_OPERATION, CORESIGNAL_COLLECT_ESTIMATED_CREDITS, summary, `Webhook event #${candidate.sourceWebhookEventId} mock Collect claimed; no provider response retained yet.`, actor, CORESIGNAL_COLLECT_OPERATION, summary, CORESIGNAL_COLLECT_ESTIMATED_CREDITS, monthStart()).first<{ id: number }>()
       : candidate.sourceAlumnusId
-      ? await env.DB.prepare(CORESIGNAL_KNOWN_COLLECT_CLAIM_SQL).bind(candidate.sourceAlumnusId, `Alumnus ${candidate.sourceAlumnusId}`, CORESIGNAL_COLLECT_OPERATION, transportMode, summary, `Collect attempt ${attemptId} claimed; no provider response retained yet.`, actor, CORESIGNAL_COLLECT_OPERATION, summary).first<{ id: number }>()
-      : await env.DB.prepare(CORESIGNAL_COLLECT_CLAIM_SQL).bind(candidate.searchHistoryId, CORESIGNAL_COLLECT_OPERATION, transportMode, summary, `Collect attempt ${attemptId} claimed; no provider response retained yet.`, actor, CORESIGNAL_COLLECT_OPERATION, summary).first<{ id: number }>()
+      ? await env.DB.prepare(CORESIGNAL_KNOWN_COLLECT_CLAIM_SQL).bind(candidate.sourceAlumnusId, `Alumnus ${candidate.sourceAlumnusId}`, CORESIGNAL_COLLECT_OPERATION, transportMode, CORESIGNAL_COLLECT_ESTIMATED_CREDITS, summary, `Collect attempt ${attemptId} claimed; no provider response retained yet.`, actor, CORESIGNAL_COLLECT_OPERATION, summary, CORESIGNAL_COLLECT_ESTIMATED_CREDITS, monthStart()).first<{ id: number }>()
+      : await env.DB.prepare(CORESIGNAL_COLLECT_CLAIM_SQL).bind(candidate.searchHistoryId, CORESIGNAL_COLLECT_OPERATION, transportMode, CORESIGNAL_COLLECT_ESTIMATED_CREDITS, summary, `Collect attempt ${attemptId} claimed; no provider response retained yet.`, actor, CORESIGNAL_COLLECT_OPERATION, summary, CORESIGNAL_COLLECT_ESTIMATED_CREDITS, monthStart()).first<{ id: number }>()
     if (row && candidate.sourceWebhookEventId) {
       const approved = await env.DB.prepare("UPDATE coresignal_webhook_events SET status='PROFILE_COLLECTION_APPROVED',collect_history_id=? WHERE id=? AND alumnus_id=? AND employee_id=? AND status='AWAITING_PROFILE_COLLECTION' RETURNING id").bind(row.id, candidate.sourceWebhookEventId, candidate.sourceAlumnusId, candidate.employeeId).first()
       if (!approved) {
@@ -146,12 +146,12 @@ const claimStore: CollectClaimStore = {
     }
     return row ? { acquired: true as const, claimId: row.id } : { acquired: false as const }
   },
-  async complete({ claimId, candidate, evidence, responseSummary }) {
-    const result = await env.DB.prepare(`UPDATE provider_response_history SET status='success', application_units=?, result_count=1, response_summary=?, usage_state='reconciliation_required', provider_reported_credits=NULL WHERE id=? AND status='in_progress'`).bind(candidate.sourceWebhookEventId ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1, responseSummary, claimId).run() as { meta: { changes?: number } }
+  async complete({ claimId, evidence, responseSummary }) {
+    const result = await env.DB.prepare(`UPDATE provider_response_history SET status='success', application_units=?, result_count=1, response_summary=?, usage_state='reconciliation_required', provider_reported_credits=NULL WHERE id=? AND status='in_progress'`).bind(CORESIGNAL_COLLECT_ESTIMATED_CREDITS, responseSummary, claimId).run() as { meta: { changes?: number } }
     return result.meta.changes === 1 && evidence.providerActions.collectRequests === 1
   },
   async fail({ claimId, candidate, status, message }) {
-    const result = await env.DB.prepare(`UPDATE provider_response_history SET status=?, error_message=?, response_summary='One bounded Collect attempt ended without reviewable evidence. No retry was made.', application_units=?, usage_state=? WHERE id=? AND status='in_progress'`).bind(status, message.slice(0, 500), status === "ambiguous" ? candidate.sourceWebhookEventId ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1 : 0, status === "ambiguous" ? "reconciliation_required" : "not_applicable", claimId).run() as { meta: { changes?: number } }
+    const result = await env.DB.prepare(`UPDATE provider_response_history SET status=?, error_message=?, response_summary='One bounded Collect attempt ended without reviewable evidence. No retry was made.', application_units=?, usage_state=? WHERE id=? AND status='in_progress'`).bind(status, message.slice(0, 500), status === "ambiguous" ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 0, status === "ambiguous" ? "reconciliation_required" : "not_applicable", claimId).run() as { meta: { changes?: number } }
     if (candidate.sourceWebhookEventId) await env.DB.prepare("UPDATE coresignal_webhook_events SET status='REVIEW_REQUIRED',error_state=?,review_outcome='Collect attempt requires reconciliation' WHERE id=? AND collect_history_id=? AND status='PROFILE_COLLECTION_APPROVED'").bind(status === "ambiguous" ? "COLLECT_OUTCOME_AMBIGUOUS" : "COLLECT_FAILED", candidate.sourceWebhookEventId, claimId).run()
     return result.meta.changes === 1
   },
@@ -178,10 +178,10 @@ export async function POST(request: Request) {
       ? await resolveKnownAlumnus(payload.alumnusId!, payload.employeeId, payload.webhookEventId)
       : await resolveCandidate(payload.searchHistoryId!, payload.employeeId!)
     const preflight = collectPreflight(resolved.candidate, await runtimeState())
-    if (payload.webhookEventId && preflight.runtime.applicationUnitsRemaining < CORESIGNAL_COLLECT_ESTIMATED_CREDITS) { preflight.allowed = false; preflight.blockers.push("The application budget has fewer than 10 remaining estimated credits.") }
+    if (payload.webhookEventId && preflight.runtime.applicationUnitsRemaining < CORESIGNAL_COLLECT_ESTIMATED_CREDITS) { preflight.allowed = false; preflight.blockers.push("The application budget cannot cover this full-record Collect.") }
     if (payload.action === "preflight") {
       const token = preflight.allowed ? createCollectConfirmation({ searchHistoryId: resolved.candidate.searchHistoryId, employeeId: resolved.candidate.employeeId, searchAttemptId: resolved.searchAttemptId }, confirmationSecret()) : null
-      return Response.json({ preflight, confirmationToken: token, documentedCollectCredits: payload.webhookEventId ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1, providerBalanceKnown: false, automaticCollect: false })
+      return Response.json({ preflight, confirmationToken: token, documentedCollectCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, providerBalanceKnown: false, automaticCollect: false })
     }
     if (payload.action !== "execute" || payload.confirmed !== true || typeof payload.confirmationToken !== "string") return Response.json({ error: "Explicit Collect confirmation is required." }, { status: 400 })
     const confirmationValid = verifyCollectConfirmation(payload.confirmationToken, { searchHistoryId: resolved.candidate.searchHistoryId, employeeId: resolved.candidate.employeeId, searchAttemptId: resolved.searchAttemptId }, confirmationSecret())
@@ -226,7 +226,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error); if (denied) return denied
     const failure = safeCoresignalError(error)
-    const safeWorkflowMessage = error instanceof Error && /^(The Collect execution confirmation is invalid or expired\.|Collect preflight is blocked\.|A Collect attempt already exists|This notification is not eligible for profile collection\.|Identity review is required before collecting this notification\.|The application budget has fewer than 10 remaining estimated credits\.|Coresignal server authentication is not configured\.|Coresignal live mode is disabled\.|The independent Collect execution gate is disabled\.|The account-specific Base Employee Collect entitlement is unknown\.|The configured account is not entitled to Base Employee Collect\.|The Coresignal application-unit allowance is exhausted\.)/.test(error.message)
+    const safeWorkflowMessage = error instanceof Error && /^(The Collect execution confirmation is invalid or expired\.|Collect preflight is blocked\.|A Collect attempt already exists|This notification is not eligible for profile collection\.|Identity review is required before collecting this notification\.|The application budget cannot cover this full-record Collect\.|Coresignal server authentication is not configured\.|Coresignal live mode is disabled\.|The independent Collect execution gate is disabled\.|The account-specific Base Employee Collect entitlement is unknown\.|The configured account is not entitled to Base Employee Collect\.|The Coresignal application allowance has fewer than)/.test(error.message)
       ? error.message
       : null
     return Response.json({ error: safeWorkflowMessage ?? failure.message }, { status: safeWorkflowMessage ? 409 : failure.status || 409 })

@@ -12,21 +12,25 @@ export const CORESIGNAL_COLLECT_CONFIRMATION_TTL_MS = 5 * 60_000
 export const CORESIGNAL_COLLECT_CLAIM_SQL = `
   INSERT INTO provider_response_history
     (provider, alumnus_name, search_id, operation, mode, status, credits_used, application_units, provider_reported_credits, usage_state, result_count, request_summary, response_summary, error_message, requested_by)
-  SELECT 'coresignal', 'Unresolved Coresignal candidate', ?, ?, ?, 'in_progress', 0, 0, NULL, 'not_applicable', 0, ?, ?, '', ?
+  SELECT 'coresignal', 'Unresolved Coresignal candidate', ?, ?, ?, 'in_progress', 0, ?, NULL, 'reconciliation_required', 0, ?, ?, '', ?
   WHERE NOT EXISTS (
     SELECT 1 FROM provider_response_history
     WHERE provider = 'coresignal' AND operation = ? AND request_summary = ?
   )
+    AND ? + coalesce((SELECT sum(application_units) FROM provider_response_history WHERE provider='coresignal' AND datetime(created_at)>=datetime(?)),0)
+      <= coalesce((SELECT monthly_credit_limit FROM provider_settings WHERE provider='coresignal'),25)
   RETURNING id
 `
 export const CORESIGNAL_KNOWN_COLLECT_CLAIM_SQL = `
   INSERT INTO provider_response_history
     (provider, alumnus_id, alumnus_name, operation, mode, status, credits_used, application_units, provider_reported_credits, usage_state, result_count, request_summary, response_summary, error_message, requested_by)
-  SELECT 'coresignal', ?, ?, ?, ?, 'in_progress', 0, 0, NULL, 'not_applicable', 0, ?, ?, '', ?
+  SELECT 'coresignal', ?, ?, ?, ?, 'in_progress', 0, ?, NULL, 'reconciliation_required', 0, ?, ?, '', ?
   WHERE NOT EXISTS (
     SELECT 1 FROM provider_response_history
     WHERE provider = 'coresignal' AND operation = ? AND request_summary = ?
   )
+    AND ? + coalesce((SELECT sum(application_units) FROM provider_response_history WHERE provider='coresignal' AND datetime(created_at)>=datetime(?)),0)
+      <= coalesce((SELECT monthly_credit_limit FROM provider_settings WHERE provider='coresignal'),25)
   RETURNING id
 `
 
@@ -169,7 +173,7 @@ export function collectPreflight(candidate: RetainedSearchCandidate, runtime: Co
   if (!runtime.collectGateEnabled) blockers.push("The independent Collect execution gate is disabled.")
   if (runtime.entitlement === "unknown") blockers.push("The account-specific Base Employee Collect entitlement is unknown.")
   if (runtime.entitlement === "not_entitled") blockers.push("The configured account is not entitled to Base Employee Collect.")
-  if (runtime.applicationUnitsRemaining < 1) blockers.push("The Coresignal application-unit allowance is exhausted.")
+  if (runtime.applicationUnitsRemaining < CORESIGNAL_COLLECT_ESTIMATED_CREDITS) blockers.push(`The Coresignal application allowance has fewer than ${CORESIGNAL_COLLECT_ESTIMATED_CREDITS} units available for this full-record Collect.`)
   return {
     candidate,
     runtime,
@@ -258,7 +262,7 @@ export function sanitizeCollectResponse(input: { body: unknown; candidate: Retai
       freshnessEvidence: checkedAt || updatedAt ? "NOT_INDEPENDENTLY_VERIFIED" : "MISSING",
     },
     reviewState: "REVIEW_REQUIRED",
-    applicationAccounting: { applicationUnits: input.candidate.sourceWebhookEventId ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1, documentedCollectCredits: input.candidate.sourceWebhookEventId ? CORESIGNAL_COLLECT_ESTIMATED_CREDITS : 1, confirmedDebit: null },
+    applicationAccounting: { applicationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, documentedCollectCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, confirmedDebit: null },
     providerCreditsRemaining: input.providerCreditsRemaining,
     providerActions: { searchRequests: 0, previewRequests: 0, collectRequests: 1, retries: 0, pagination: false, canonicalMutations: 0, identityAttachments: 0 },
     audit: { requestedAt: input.requestedAt, completedAt: input.completedAt, durationMs, provenance: "provider_response_history" },

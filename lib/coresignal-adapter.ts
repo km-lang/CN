@@ -344,6 +344,7 @@ async function searchCandidates(filters: DiscoveryFilters, internal: InternalPro
       totalAvailable: providerResponse.totalResults ?? previewProfiles.length,
       responseSummary: `${previewProfiles.length} ES-DSL Preview candidates returned from page ${providerResponse.page}; ${execution.metrics.previewCountConsidered} considered; 0 Collect operations; provider request cost remains unresolved.`,
       usage: unknownProviderUsage(1),
+      providerCreditsRemaining: providerResponse.providerCreditsRemaining,
       execution,
     }
   }

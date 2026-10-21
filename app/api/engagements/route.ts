@@ -21,7 +21,7 @@ import { resolveEngagementOwner } from "@/lib/engagement-presentation";
 import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
 
 const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Completed", "Skipped"]);
-const actionableBirthdayStates = new Set(["Confirmed internally", "Manually confirmed", "PDL sourced", "Coresignal sourced"]);
+const actionableBirthdayStates = new Set(["Confirmed internally", "Manually confirmed", "Coresignal sourced"]);
 
 async function audit(eventId: number, context: SecurityContext, action: string, details = "") {
   await getDb().insert(engagementAuditLog).values({ eventId, actor: context.displayName, action, details });

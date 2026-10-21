@@ -460,17 +460,24 @@ test("review-before-add, Keep Existing, and selected-field apply remain enforced
   assert.match(discoveryRoute, /affiliationStatus !== "Confirmed degree alumnus"/)
   assert.match(discoveryRoute, /qualificationForResult[\s\S]*eligibleForAddition/)
   assert.match(discoveryRoute, /Approval requires a pending result, independently supported search criteria, a verified LinkedIn profile, and a new stable identity/)
-  assert.match(discoveryRoute, /action === "qualify"/)
+  assert.doesNotMatch(discoveryRoute, /action === "qualify"/)
   assert.match(enrichmentRoute, /status: applied\.length \? "Applied" : "Reviewed — kept existing"/)
   assert.match(page, /Apply Selected Updates/)
   assert.match(page, /Keep existing/)
 })
 
-test("new operations use Coresignal while historical PDL provenance stays readable", () => {
+test("PDL is historical-only while active discovery and intake use Coresignal", () => {
   assert.match(discoveryRoute, /provider: PROFESSIONAL_DATA_PROVIDER/)
   assert.match(enrichmentRoute, /coresignal_profile_refresh/)
   assert.match(schema, /pdlPersonId: text\("pdl_person_id"\)/)
-  assert.match(page, /"PDL sourced", "Coresignal sourced"/)
+  assert.match(page, /Historical PDL/)
+  assert.match(page, /const canAdd = [^\n]*result\.provider === "coresignal"/)
+  assert.doesNotMatch(page, /qualifyDiscoveryResult\(result,/)
+  assert.match(page, /result\.provider === "pdl" \? "View historical evidence"/)
+  assert.match(discoveryRoute, /actionableReview: isActionableDiscoveryReview\(result\)/)
+  assert.match(discoveryRoute, /Historical provider results are read-only\./)
+  assert.match(discoveryRoute, /Historical provider results cannot be added to the active alumni workflow\./)
+  assert.doesNotMatch(enrichmentRoute, /pdl|PDL/i)
   assert.match(admin, /Historical PDL evidence remains readable/)
 })
 

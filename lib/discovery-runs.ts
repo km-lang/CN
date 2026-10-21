@@ -73,7 +73,8 @@ export function resultProviderIntegrity(searchProvider: string, resultProvider: 
 }
 
 export function isActionableDiscoveryReview(result: DiscoveryRunResult) {
-  return result.reviewStatus === "Pending review"
+  return result.provider.toLowerCase() === "coresignal"
+    && result.reviewStatus === "Pending review"
     && !String(result.reviewNote ?? "").startsWith("SKIPPED_FILTER_MISMATCH:")
 }
 

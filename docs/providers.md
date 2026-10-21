@@ -110,7 +110,7 @@ The Search default is five and the hard maximum is twenty, subject to any strict
 
 Real-Time Employee API work is frozen: a controlled attempt was unauthorized and later provider guidance said the API is currently unavailable. It is not active or recommended.
 
-Base Employee Experience webhook intake now has a local-first, mock-only implementation. It reuses the authoritative `cn-selection-v1`/`cn-placement-relevance-v1` cohort contract, exact saved Coresignal Employee IDs, independent Admin attestations, and the existing Collect evidence/review path. Additive migrations 0023–0025 create subscription, attestation, coverage, operation, and notification tables with explicit source provenance. They have **not** been applied to original local D1. This code cannot be used against original D1 until migrations 0019–0025 receive separate authorization.
+Base Employee Experience webhook intake now has a local-first, mock-only implementation. It reuses the authoritative `cn-selection-v1`/`cn-placement-relevance-v1` cohort contract, exact saved Coresignal Employee IDs, independent Admin attestations, and the existing Collect evidence/review path. Additive migrations 0023–0025 create subscription, attestation, coverage, operation, and notification tables with explicit source provenance. The original local D1 has been migrated through 0026; the hosted D1 has not been reconciled or approved for these migrations. No live subscription is active.
 
 ```text
 saved Employee ID + Admin attestation
@@ -125,7 +125,7 @@ Monitoring remains selective. Possessing an Employee ID does not subscribe an al
 
 The receiver is disabled unless `CORESIGNAL_WEBHOOK_RECEIVE_ENABLED=true` and a secret of at least 32 characters is set as `CORESIGNAL_WEBHOOK_CALLBACK_SECRET`. Its URL carries a per-subscription HMAC token; it bounds JSON bodies and batches, ignores replays in a bounded window, quarantines unknown IDs, and retains signals without Collect or canonical writes. No provider callback-signature contract was found in official documentation, so the token mechanism is a local security boundary, not a claim of provider-signed authenticity. Live activation is fail-closed until the exact Base subscription creation payload/callback authentication, account entitlement, public HTTPS endpoint, provider response shape, billing and explicit user authorization are verified. Do not put the callback token in logs or query strings.
 
-Provider-confirmed webhook subscription/notification price is 0 credits; a profile Collect is estimated at 10 credits. Event-specific mock Collect reserves 10 application-budget units atomically and cannot be repeated for the same event. This is an application reservation, not evidence of actual provider credits charged or the provider account balance. Existing non-webhook Collect accounting is unchanged. No automatic Collect, Search, retry, pagination, renewal or onboarding occurs. The provider's weekly notification cadence is separate from CN's inactive monthly calendar policies.
+The support email reports webhook subscriptions/notifications are free; this is not a verified account debit. A full-record profile Collect is reserved at a 20-credit ceiling. Both known-ID and event-specific Collect paths reserve 20 application-budget units atomically and cannot repeat a claimed request. This reservation is not evidence of actual provider credits charged or the provider account balance. No automatic Collect, Search, retry, pagination, renewal or onboarding occurs. The provider's weekly notification cadence is separate from CN's inactive monthly calendar policies.
 
 Official contract references reviewed 2026-10-20: `https://docs.coresignal.com/api-introduction/webhooks.md`, `https://docs.coresignal.com/api-introduction/webhooks/experience-webhooks.md`, `https://docs.coresignal.com/api-introduction/webhooks/subscription-management.md`, `https://docs.coresignal.com/release-notes/november-2025.md`, and `https://docs.coresignal.com/api-introduction/rate-limits.md`. The Base ID endpoint is `/v2/subscriptions/experience_changes/employee_base/ids` under the provider's `/cdapi` path. Multi-source Employee webhook examples must not be assumed to define the Base request body.
 
@@ -141,7 +141,7 @@ Bright Data snapshot fidelity uses additive migration 0026. The Admin-only `brig
 
 ## PDL
 
-PDL remains historical/existing provenance and compatibility support. Historical PDL evidence stays readable, but new professional discovery strategy is Coresignal-led; documentation and UI must not present PDL as the primary current provider.
+PDL is excluded from active integrations. Existing PDL discovery rows, provider evidence, audit history, and identity fields remain readable for provenance, but cannot drive new discovery, alumni intake, profile updates, or engagement actions. Do not configure a PDL key, enable its live gate, use it as a fallback, or list it as an activation dependency.
 
 ## Lusha and Professional Signals
 

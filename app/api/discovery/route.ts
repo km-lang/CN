@@ -27,9 +27,9 @@ import { resolveProviderCompanySelection } from "@/lib/provider-company-mapping"
 import { CoresignalSearchEvidencePersistenceError, createCoresignalSearchEvidence, executeAndPersistCoresignalSearchEvidence, presentProviderHistorySearchEvidence, serializeCoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
 import { candidateEvidenceDecisions, candidateEvidenceOutcome, normalizeCandidateObservation, validateReviewerDecisions, type EvidenceDecisions } from "@/lib/discovery-candidate-evidence"
 import { sha256Text, stableMutationPayload } from "@/lib/mutation-fingerprint"
+import { localIsolatedDiscoveryMockEnabled } from "@/lib/local-development"
 
 const DEFAULT_APPLICATION_LIMIT = 25
-const affiliationStatuses = new Set(["Confirmed degree alumnus", "Potential alumnus — review required", "Short-term / exchange affiliation"])
 const providerRuntimeEnvironment = env as unknown as ProviderRuntimeEnvironment
 let coresignalContinuationInFlight = false
 
@@ -103,7 +103,7 @@ function qualificationForResult(result: typeof externalDiscoveryResults.$inferSe
     programmeStatus: result.educationProgramme ? "Programme matched" : "Programme requires review",
     alumniStatus: result.graduationYear > 0 && result.graduationYear < now.getUTCFullYear() ? "Past alumnus" : "Graduation status unknown — review required",
     programmeMatchesSelection: true,
-    eligibleForAddition: result.affiliationStatus === "Confirmed degree alumnus",
+    eligibleForAddition: false,
   }
   const qualification = discoveryQualification(result.educationProgramme, result.educationEndDate, filters.discoveryProgrammes, now)
   const returnedFiltersMatch = (!filters.company || normalized(result.currentCompany) === normalized(filters.company))
@@ -295,7 +295,7 @@ export async function GET(request: Request) {
     const activeSearchSummary = activeSearch ? discoveryRunSummary(activeSearch, activeResults, activeProviderHistory) : null
     const previousSearches = previousDiscoveryRuns(recentSearches, historyResults, activeSearch?.id ?? null)
     const history = previousDiscoveryRuns(recentSearches, historyResults, null)
-    const common = { pendingCount: actionablePendingResults.length, mode: coresignalProvider.mode(), searches: recentSearches, history, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, exactYearPreview: { enabled: coresignalExactYearPreviewEnabled(providerRuntimeEnvironment), entitlement: coresignalExactYearPreviewEntitlement(providerRuntimeEnvironment), endpoint: "/cdapi/v2/employee_base/search/es_dsl/preview", maximumRequests: 1, maximumPreviewResults: 20, maximumPages: 50, automaticPagination: false, automaticCollect: false, providerCost: "20 search credits per requested Preview page (vendor workbook); account debit remains reconciled separately" }, regularSearch: { enabled: coresignalRegularSearchEnabled(providerRuntimeEnvironment), configured: providerConfigured("coresignal", providerRuntimeEnvironment), maxRequests: CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS, automaticPagination: false } }
+    const common = { pendingCount: actionablePendingResults.length, mode: coresignalProvider.mode(), mockDiscoveryEnabled: localIsolatedDiscoveryMockEnabled(providerRuntimeEnvironment), searches: recentSearches, history, previousSearches, configured: coresignalProvider.configured(), canonicalInstitutionConfigured: true, liveMaximum: coresignalLiveSearchMaximum(), provider: PROFESSIONAL_DATA_PROVIDER, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, exactYearPreview: { enabled: coresignalExactYearPreviewEnabled(providerRuntimeEnvironment), entitlement: coresignalExactYearPreviewEntitlement(providerRuntimeEnvironment), endpoint: "/cdapi/v2/employee_base/search/es_dsl/preview", maximumRequests: 1, maximumPreviewResults: 20, maximumPages: 50, automaticPagination: false, automaticCollect: false, providerCost: "20 search credits per requested Preview page (vendor workbook); account debit remains reconciled separately" }, regularSearch: { enabled: coresignalRegularSearchEnabled(providerRuntimeEnvironment), configured: providerConfigured("coresignal", providerRuntimeEnvironment), maxRequests: CORESIGNAL_REGULAR_SEARCH_MAX_REQUESTS, automaticPagination: false } }
     if (view === "summary") return Response.json(common)
     if (!activeSearch) return Response.json({ ...common, activeSearch: null, results: [], counts: discoveryClassificationCounts([]), filters: defaultDiscoveryFilters(), providerHistory: [], retrieval: "stored", source: null })
     const filters = storedDiscoveryFilters(activeSearch.filtersJson)
@@ -333,6 +333,7 @@ export async function POST(request: Request) {
       if (!Number.isInteger(payload.resultId) || Number(payload.resultId) <= 0) return Response.json({ error: "A discovery result ID is required." }, { status: 400 })
       const [result] = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.id, payload.resultId!)).limit(1)
       const [search] = result ? await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, result.searchId)).limit(1) : []
+      if (result && result.provider !== PROFESSIONAL_DATA_PROVIDER) return Response.json({ error: "Historical provider evidence is read-only." }, { status: 409 })
       if (!result || !search || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending || resultProviderIntegrity(search.provider, result.provider) !== "consistent" || !result.providerPersonId) return Response.json({ error: "Only a pending result with consistent provider identity can receive review evidence." }, { status: 409 })
       const observation = normalizeCandidateObservation(payload.observation)
       const decisions = validateReviewerDecisions(payload.decisions, candidateEvidenceDecisions(observation, storedDiscoveryFilters(search.filtersJson), result.linkedinUrl, nowDate))
@@ -435,7 +436,7 @@ export async function POST(request: Request) {
       await db.update(externalDiscoverySearches).set({ resultCount: search.resultCount + providerCandidatesReturned, existingCount: counts.existing, newCount: counts.new, duplicateCount: counts.possibleDuplicate }).where(eq(externalDiscoverySearches.id, search.id))
       const executionAudit = response.execution?.metrics ? ` · Selective execution ${JSON.stringify(response.execution.metrics)}` : ""
       const [history] = await db.insert(providerResponseHistory).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: "ES-DSL Preview continuation", mode: "live", status: "success", creditsUsed: 0, applicationUnits: 1, providerReportedCredits: null, usageState: "reconciliation_required", resultCount: providerCandidatesReturned, requestSummary: `${criteriaSummary(filters)} · page=${nextPage} · explicit confirmation · same-row nested education and current-employment constraints · no retry · no automatic pagination · no Collect`, responseSummary: `${response.responseSummary} ${uniqueProfiles.length} new unique candidates persisted; ${response.profiles.length - uniqueProfiles.length} duplicates omitted.${executionAudit}`, requestedBy: actor }).returning()
-      await writeSecurityAudit(context, { action: "coresignal_discovery_continuation", entityType: "discovery_search", entityId: search.id, metadata: { page: nextPage, providerCandidatesReturned, uniqueCandidatesPersisted: uniqueProfiles.length, duplicatesOmitted: response.profiles.length - uniqueProfiles.length, applicationUnits: 1 } })
+      await writeSecurityAudit(context, { action: "coresignal_discovery_continuation", entityType: "discovery_search", entityId: search.id, metadata: { page: nextPage, providerCandidatesReturned, uniqueCandidatesPersisted: uniqueProfiles.length, duplicatesOmitted: response.profiles.length - uniqueProfiles.length, applicationUnits: 1, providerCreditsRemaining: response.providerCreditsRemaining ?? null, mode: coresignalProvider.mode() } })
       return Response.json({ continued: true, searchId: search.id, page: nextPage, returnedCount: providerCandidatesReturned, uniqueCandidatesStored: uniqueProfiles.length, duplicatesOmitted: response.profiles.length - uniqueProfiles.length, applicationUnits: 1, providerReportedCredits: null, providerHistoryId: history.id, automaticPagination: false, automaticRetry: false })
       } finally {
         coresignalContinuationInFlight = false
@@ -553,6 +554,7 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "search") {
+      if (coresignalProvider.mode() === "mock" && !localIsolatedDiscoveryMockEnabled(providerRuntimeEnvironment)) return Response.json({ error: "Mock discovery requires an isolated local demo database. No search was run.", blocked: true, reason: "isolated_mock_database_required", providerCallMade: false, applicationUnits: 0 }, { status: 403 })
       const programmeValidation = validateDiscoveryProgrammeSelections(payload.filters && typeof payload.filters === "object" ? (payload.filters as { discoveryProgrammes?: unknown }).discoveryProgrammes ?? [] : [])
       if (!programmeValidation.ok) return Response.json({ error: programmeValidation.message, blocked: true, reason: "invalid_programme_selection", providerCallMade: false, applicationUnits: 0 }, { status: 400 })
       const filters = normalizedDiscoveryFilters(payload.filters)
@@ -627,26 +629,8 @@ export async function POST(request: Request) {
       const recentSearchIds = recentSearches.map(item => item.id)
       const recentResults = recentSearchIds.length ? await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, recentSearchIds)) : []
       const previousSearches = previousDiscoveryRuns(recentSearches, recentResults, search.id)
-      await writeSecurityAudit(context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.totalAvailable, storedResultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, mode: coresignalProvider.mode(), selectiveExecution: response.execution?.metrics ?? null } })
+      await writeSecurityAudit(context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: search.id, metadata: { resultCount: response.totalAvailable, storedResultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, providerCreditsRemaining: exactYearPreview && coresignalProvider.mode() === "live" ? response.providerCreditsRemaining ?? null : null, mode: coresignalProvider.mode(), selectiveExecution: response.execution?.metrics ?? null } })
       return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [history]), previousSearches, providerHistory: context.role === "ADMIN" ? [history] : [], historyRestricted: context.role !== "ADMIN", results: storedResults, counts, reconciliationSummary: selectiveCollectSummary(reconciled.map(item => item.reconciliation)), executionSummary: response.execution?.metrics ?? null, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: validation.requested, returnedCount: providerCandidatesReturned, storedResultCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
-    }
-
-    if (payload.action === "qualify" && Number.isInteger(payload.resultId) && affiliationStatuses.has(String(payload.affiliationStatus))) {
-      const affiliationStatus = String(payload.affiliationStatus)
-      const [result] = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.id, payload.resultId!)).limit(1)
-      if (!result || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return Response.json({ error: "Only a pending candidate can be qualified." }, { status: 409 })
-      const [search] = await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, result.searchId)).limit(1)
-      if (!search || resultProviderIntegrity(search.provider, result.provider) !== "consistent") return Response.json({ error: "Discovery result provider provenance does not match its search run." }, { status: 409 })
-      if (result.provider === PROFESSIONAL_DATA_PROVIDER && affiliationStatus === "Confirmed degree alumnus") {
-        const evidenceRows = await evidenceForResults(db, [result.id])
-        if (!supportingHumanEvidence(latestEvidence(evidenceRows.rows, result.id), result, nowDate)) return Response.json({ error: "Confirmed affiliation requires current independent reviewer evidence." }, { status: 409 })
-      }
-      const filters = search ? storedDiscoveryFilters(search.filtersJson) : defaultDiscoveryFilters()
-      const qualification = qualificationForResult(result, filters, nowDate)
-      const matchStatus = affiliationStatus === "Confirmed degree alumnus" && qualification.eligibleForAddition && !result.currentRoleAmbiguous && !result.linkedInternalAlumnusId ? "New" : result.matchStatus === "New" ? "Needs review" : result.matchStatus
-      await db.update(externalDiscoveryResults).set({ affiliationStatus, matchStatus, reviewNote: `Affiliation classified by ${actor}.` }).where(eq(externalDiscoveryResults.id, result.id))
-      await writeSecurityAudit(context, { action: "education_affiliation_qualified", entityType: "discovery_result", entityId: result.id, metadata: { affiliationStatus, provider: result.provider } })
-      return Response.json({ qualified: true, affiliationStatus, matchStatus })
     }
 
     if (payload.action === "link_existing" && Number.isInteger(payload.resultId)) {
@@ -688,6 +672,7 @@ export async function POST(request: Request) {
       const resultIds = [...new Set(payload.resultIds?.filter(Number.isInteger) ?? [])].slice(0, 25)
       if (!resultIds.length) return Response.json({ error: "Select at least one confirmed degree alumnus." }, { status: 400 })
       const results = await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.id, resultIds))
+      if (results.some(result => result.provider !== PROFESSIONAL_DATA_PROVIDER)) return Response.json({ error: "Historical provider results cannot be added to the active alumni workflow." }, { status: 409 })
       const searchIds = [...new Set(results.map(result => result.searchId))]
       const searches = searchIds.length ? await db.select().from(externalDiscoverySearches).where(inArray(externalDiscoverySearches.id, searchIds)) : []
       const filtersBySearch = new Map(searches.map(search => [search.id, storedDiscoveryFilters(search.filtersJson)]))
@@ -731,6 +716,7 @@ export async function POST(request: Request) {
 
     if (payload.action === "apply_updates" && Number.isInteger(payload.resultId)) {
       const [result] = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.id, payload.resultId!)).limit(1)
+      if (result && result.provider !== PROFESSIONAL_DATA_PROVIDER) return Response.json({ error: "Historical provider results are read-only." }, { status: 409 })
       if (!result?.linkedInternalAlumnusId || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return Response.json({ error: "Only a pending result linked to an internal alumnus can be compared." }, { status: 409 })
       const [search] = await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, result.searchId)).limit(1)
       if (!search || resultProviderIntegrity(search.provider, result.provider) !== "consistent") return Response.json({ error: "Discovery result provider provenance does not match its search run." }, { status: 409 })
@@ -773,6 +759,7 @@ export async function POST(request: Request) {
 
     if (payload.action === "keep_separate" && Number.isInteger(payload.resultId)) {
       const [result] = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.id, payload.resultId!)).limit(1)
+      if (result && result.provider !== PROFESSIONAL_DATA_PROVIDER) return Response.json({ error: "Historical provider results are read-only." }, { status: 409 })
       const [search] = result ? await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, result.searchId)).limit(1) : []
       const filters = search ? storedDiscoveryFilters(search.filtersJson) : defaultDiscoveryFilters()
       if (!result || !search || resultProviderIntegrity(search.provider, result.provider) !== "consistent" || result.matchStatus !== "Possible duplicate" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return Response.json({ error: "Only a pending provenance-consistent possible duplicate can be kept separate." }, { status: 409 })
@@ -802,6 +789,7 @@ export async function POST(request: Request) {
     if (payload.action === "ignore" && Number.isInteger(payload.resultId)) {
       const allowed = new Set(["Wrong person", "Not IIML alumnus", "Duplicate already handled", "Irrelevant", "Data appears incorrect", "Other"]); const reason = allowed.has(String(payload.reason)) ? String(payload.reason) : "Other"
       const [result] = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.id, payload.resultId!)).limit(1)
+      if (result && result.provider !== PROFESSIONAL_DATA_PROVIDER) return Response.json({ error: "Historical provider results are read-only." }, { status: 409 })
       const [search] = result ? await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, result.searchId)).limit(1) : []
       if (!result || !search || resultProviderIntegrity(search.provider, result.provider) !== "consistent") return Response.json({ error: "Discovery result provider provenance does not match its search run." }, { status: 409 })
       if (result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return Response.json({ error: "Only a pending discovery result can be ignored." }, { status: 409 })

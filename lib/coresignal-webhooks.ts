@@ -2,7 +2,9 @@ import { isLoopbackHost, localDevelopmentAuthEnabled } from "@/lib/local-develop
 
 export const CORESIGNAL_EXPERIENCE_IDS_PATH = "/cdapi/v2/subscriptions/experience_changes/employee_base/ids"
 export const CORESIGNAL_SUBSCRIPTIONS_PATH = "/cdapi/v2/subscriptions"
-export const CORESIGNAL_COLLECT_ESTIMATED_CREDITS = 10
+// The current account dashboard prices a full Employee record at 20 credits.
+// Reserve the full-record ceiling because the Collect request selects no bundles.
+export const CORESIGNAL_COLLECT_ESTIMATED_CREDITS = 20
 export const WEBHOOK_BATCH_LIMIT = 100
 export const WEBHOOK_BODY_LIMIT = 64 * 1024
 export type WebhookChangeType = "changed" | "started_matching_query" | "stopped_matching_query"

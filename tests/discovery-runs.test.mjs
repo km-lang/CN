@@ -90,6 +90,15 @@ test("ordinary pending results remain actionable", () => {
   assert.equal(isActionableDiscoveryReview(result({ reviewNote: "REVIEW_BEFORE_COLLECT: Identity evidence requires review." })), true)
 })
 
+test("historical PDL rows remain visible but never become active review work", () => {
+  const historical = result({ searchId: 41, provider: "pdl", matchStatus: "New" })
+  assert.equal(isActionableDiscoveryReview(historical), false)
+  const summary = discoveryRunSummary(search({ id: 41, provider: "pdl" }), [historical])
+  assert.equal(summary.storedResultCount, 1)
+  assert.equal(summary.pendingCount, 0)
+  assert.equal(selectActiveDiscoveryRun([search({ id: 41, provider: "pdl" }), search({ id: 42 })], [historical])?.id, 42)
+})
+
 test("persisted execution metrics do not infer missing qualification categories", () => {
   const summary = persistedDiscoveryExecutionSummary([{ id: 17, applicationUnits: 1, providerReportedCredits: null, responseSummary: '4 exact-year candidates returned · Selective execution {"previewCountReturned":4,"previewCountConsidered":4,"seniorityMismatches":3,"collectExecuted":0,"collectSkippedKnown":0,"collectSkippedFilter":3,"collectSkippedLimit":0,"previouslyRejected":0,"potentialCollectionsAvoided":4}' }])
   assert.equal(summary.previewCountReturned, 4)

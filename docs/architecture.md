@@ -54,7 +54,7 @@ REJECT records the decision without canonical mutation. ACCEPT may update only t
 
 ## Corporate Network database
 
-D1 migrations are additive and currently run through `0013_cultured_james_howlett.sql`. Migration 0012 adds:
+D1 migrations are additive and the repository currently runs through `0026_green_ben_parker.sql`. The original local D1 is at 0026; the hosted D1 is not assumed to be at the same version. Migration 0012 adds:
 
 ```sql
 CREATE UNIQUE INDEX idx_alumni_coresignal_employee_id_unique

@@ -107,8 +107,13 @@ test("stage4a 7: account validation uses the non-contact usage endpoint", async 
     calledUrl = String(url);
     return new Response(JSON.stringify({ data: { usage: { used: 7, remaining: 93, limit: 100 } } }), { status: 200, headers: { "content-type": "application/json" } });
   } });
-  assert.equal(calledUrl, "https://api.lusha.com/v3/account/usage");
-  assert.deepEqual(usage, { used: 7, remaining: 93, limit: 100 });
+  assert.equal(calledUrl, "https://api.lusha.com/account/usage");
+  assert.deepEqual(usage, { used: 7, remaining: 93, limit: 100, creditType: "general" });
+});
+
+test("stage4a 7b: documented account usage nested bulk-credit totals are parsed", async () => {
+  const usage = await lusha.getLushaAccountUsage({ fetcher: async () => new Response(JSON.stringify({ usage: { bulkCredits: { used: 4, remaining: 29, total: 33 } } }), { status: 200 }) });
+  assert.deepEqual(usage, { used: 4, remaining: 29, limit: 33, creditType: "bulk_credits" });
 });
 
 test("stage4a 8: live UI requires search preview and a second channel-only confirmation", () => {
