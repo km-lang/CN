@@ -23,13 +23,16 @@ type Runtime = {
 
 type Evidence = {
   provider?: string
+  providerProfileId?: string
   fullName?: string
   requestedUrl?: string
   returnedUrl?: string
   currentCompany?: string
   currentTitle?: string
+  roleStartDate?: string
   location?: string
-  experience?: Array<{ company?: string; title?: string; current?: boolean }>
+  experience?: Array<{ company?: string; title?: string; startDate?: string; endDate?: string; current?: boolean }>
+  education?: Array<{ institution?: string; degree?: string; programme?: string; startDate?: string; endDate?: string; startYear?: string; endYear?: string }>
   unavailable?: boolean
   reason?: string
 }
@@ -65,6 +68,29 @@ async function responseJson<T>(response: Response) {
   const data = await response.json() as T & { error?: string }
   if (!response.ok) throw new Error(data.error || "Bright Data operation failed.")
   return data
+}
+
+function RetainedEvidenceDetails({ attempt }: { attempt: Attempt }) {
+  const evidence = attempt.evidenceJson
+  if (!evidence || evidence.unavailable) return null
+  return <details className="permission-details">
+    <summary>Review retained provider evidence</summary>
+    <div className="brightdata-evidence-detail">
+      <small>Profile URL match: {attempt.identityUrlStatus || "UNVERIFIED"} · Provider profile ID: {evidence.providerProfileId || "not returned"}</small>
+      <small>Canonical alumnus association: {attempt.alumnusId ? `Alumnus #${attempt.alumnusId} (subject to review)` : "unresolved; human review required"}</small>
+      <small>Requested URL: {evidence.requestedUrl || "not retained"}</small>
+      <small>Returned URL: {evidence.returnedUrl || "not returned"}</small>
+      <small>Full name: {evidence.fullName || "not returned"}</small>
+      <small>Current company: {evidence.currentCompany || "not returned"} · designation: {evidence.currentTitle || "not returned"}</small>
+      <small>Role start: {evidence.roleStartDate || "not returned"} · location: {evidence.location || "not returned"}</small>
+      <strong>Employment observations ({evidence.experience?.length ?? 0})</strong>
+      {evidence.experience?.length ? evidence.experience.map((item, index) => <small key={index}>{item.company || "Company unknown"} · {item.title || "Title unknown"} · {item.startDate || "Start unknown"}–{item.endDate || (item.current ? "Current claim" : "End unknown")}</small>) : <small>No employment rows returned; a top-level company is not proof of current employment.</small>}
+      <strong>Education observations ({evidence.education?.length ?? 0})</strong>
+      {evidence.education?.length ? evidence.education.map((item, index) => <small key={index}>{item.institution || "Institution unknown"} · degree: {item.degree || "not returned"} · programme: {item.programme || "not returned"} · {item.startDate || item.startYear || "Start unknown"}–{item.endDate || item.endYear || "End unknown"}</small>) : <small>No education rows returned.</small>}
+      <small>Snapshot: {attempt.providerJobId || "not returned"} · retrieved: {attempt.evidenceRetrievedAt || "not recorded"} · provider timestamp: {typeof attempt.providerTimestamp === "string" ? attempt.providerTimestamp : "not reported"}. Neither timestamp verifies employment freshness.</small>
+      <small>Raw provider response retained for Admin audit: {attempt.rawEvidenceStored ? "yes" : "no"}. Canonical alumni fields were not changed by this collection.</small>
+    </div>
+  </details>
 }
 
 export function BrightDataWorkflow({ apiUrl, target }: { apiUrl: string; target?: { alumnusId: number; profileUrl: string } | null }) {
@@ -149,7 +175,7 @@ export function BrightDataWorkflow({ apiUrl, target }: { apiUrl: string; target?
     <div className="batch-actions"><Button variant="outline" disabled={busy || !profileUrl.trim()} onClick={() => void prepare()}>{busy ? <LoaderCircle className="spin" /> : <ShieldCheck />} Validate target and review collection</Button></div>
     {message && <div className="enrichment-message" role="status"><Activity /><span>{message}</span></div>}
     <p className="verified-copy">No automatic polling or paid retries. Trigger, status check, and completed-result retrieval are separate explicit Admin actions.</p>
-    {attempts.length > 0 && <div className="collect-candidate-list">{attempts.map(attempt => <article key={attempt.id}><div><strong>Attempt #{attempt.id} · {attempt.status.replaceAll("_", " ")}</strong><span>{attempt.targetReference}</span><small>Snapshot: {attempt.providerJobId || "not returned"} · usage: {attempt.usageState.replaceAll("_", " ")} · {new Date(attempt.createdAt).toLocaleString()}</small>{attempt.errorCategory && <small>Operator attention: {attempt.errorCategory.replaceAll("_", " ")}</small>}{attempt.evidenceJson && !attempt.evidenceJson.unavailable && <small>Evidence: {attempt.evidenceJson.fullName || "name not returned"} · {attempt.evidenceJson.currentTitle || "title not returned"} at {attempt.evidenceJson.currentCompany || "company not returned"}</small>}{attempt.rawEvidenceStored && <small>Original response retained for Admin audit · normalizer v{attempt.normalizerVersion} · returned URL: {attempt.identityUrlStatus?.toLowerCase() || "unverified"} · retrieved {attempt.evidenceRetrievedAt || "time unavailable"} · source timestamp {typeof attempt.providerTimestamp === "string" ? attempt.providerTimestamp : "not reported"}. These timestamps do not verify employment freshness.</small>}{!attempt.rawEvidenceStored && attempt.evidenceJson && <small>Normalized evidence only; original response not retained.</small>}</div><div className="batch-actions">{["SNAPSHOT_PENDING", "SNAPSHOT_RUNNING"].includes(attempt.status) && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("status", attempt.id)}><Activity /> Check collection status</Button>}{attempt.status === "SNAPSHOT_READY" && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("retrieve", attempt.id)}><Eye /> Retrieve completed result</Button>}{attempt.status === "REVIEW_REQUIRED" && <span className="configured"><CheckCircle2 /> Identity matched · review protected corrections</span>}{attempt.status === "EVIDENCE_STORED" && <span className="role-restriction">Identity review required before association</span>}</div></article>)}</div>}
+    {attempts.length > 0 && <div className="collect-candidate-list">{attempts.map(attempt => <article key={attempt.id}><div><strong>Attempt #{attempt.id} · {attempt.status.replaceAll("_", " ")}</strong><span>{attempt.targetReference}</span><small>Snapshot: {attempt.providerJobId || "not returned"} · usage: {attempt.usageState.replaceAll("_", " ")} · {new Date(attempt.createdAt).toLocaleString()}</small>{attempt.errorCategory && <small>Operator attention: {attempt.errorCategory.replaceAll("_", " ")}</small>}{attempt.evidenceJson && !attempt.evidenceJson.unavailable && <small>Evidence: {attempt.evidenceJson.fullName || "name not returned"} · {attempt.evidenceJson.currentTitle || "title not returned"} at {attempt.evidenceJson.currentCompany || "company not returned"}</small>}{attempt.rawEvidenceStored && <small>Original response retained for Admin audit · normalizer v{attempt.normalizerVersion} · returned URL: {attempt.identityUrlStatus?.toLowerCase() || "unverified"} · retrieved {attempt.evidenceRetrievedAt || "time unavailable"} · source timestamp {typeof attempt.providerTimestamp === "string" ? attempt.providerTimestamp : "not reported"}. These timestamps do not verify employment freshness.</small>}{!attempt.rawEvidenceStored && attempt.evidenceJson && <small>Normalized evidence only; original response not retained.</small>}<RetainedEvidenceDetails attempt={attempt} /></div><div className="batch-actions">{["SNAPSHOT_PENDING", "SNAPSHOT_RUNNING"].includes(attempt.status) && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("status", attempt.id)}><Activity /> Check collection status</Button>}{attempt.status === "SNAPSHOT_READY" && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("retrieve", attempt.id)}><Eye /> Retrieve completed result</Button>}{attempt.status === "REVIEW_REQUIRED" && <span className="configured"><CheckCircle2 /> Identity matched · review protected corrections</span>}{attempt.status === "EVIDENCE_STORED" && <span className="role-restriction">Identity review required before association</span>}</div></article>)}</div>}
     <Dialog open={Boolean(preflight)} onOpenChange={open => { if (!open && !busy) setPreflight(null) }}><DialogContent><DialogHeader><DialogTitle>Confirm one Bright Data collection</DialogTitle><DialogDescription>This is the only action that can submit a new provider collection. A refresh or status check never re-triggers it.</DialogDescription></DialogHeader>{preflight && <div className="refresh-confirm-summary"><div><span>Target</span><strong>{preflight.profileUrl}</strong></div><div><span>Provider mode</span><strong>{preflight.runtime.mode.toUpperCase()}</strong></div><div><span>Dataset</span><strong>{preflight.runtime.datasetConfigured ? "Configured server-side" : "Missing"}</strong></div><div><span>Maximum targets</span><strong>1</strong></div><div><span>Automatic retries</span><strong>0</strong></div><div><span>Application allowance remaining</span><strong>{preflight.runtime.applicationBudget.remaining}</strong></div><div><span>Provider-account cost</span><strong>Unknown</strong></div>{preflight.blockers.map(blocker => <div key={blocker}><span>Blocked</span><strong>{blocker}</strong></div>)}</div>}<DialogFooter><Button variant="outline" disabled={busy} onClick={() => setPreflight(null)}>Cancel</Button><Button disabled={busy || !preflight?.allowed} onClick={() => void trigger()}>{busy ? <LoaderCircle className="spin" /> : <Cloud />} Confirm single collection</Button></DialogFooter></DialogContent></Dialog>
   </section>
 }

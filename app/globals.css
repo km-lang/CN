@@ -473,6 +473,8 @@ button { cursor: pointer; }
 .collect-candidate-list article { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: .85rem; background: var(--surface-subtle); }
 .collect-candidate-list article > div { display: grid; gap: .2rem; min-width: 0; }
 .collect-candidate-list span, .collect-candidate-list small { overflow-wrap: anywhere; color: var(--muted-foreground); }
+.brightdata-evidence-detail { display: grid; gap: .35rem; min-width: 0; margin-top: .65rem; }
+.brightdata-evidence-detail strong { margin-top: .4rem; font-size: .78rem; }
 .provider-card { padding: 1.2rem; }
 .provider-title { display: flex; gap: .75rem; align-items: center; }
 .provider-title > span { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; background: #0b2235; color: white; font-weight: 850; font-size: .75rem; }
