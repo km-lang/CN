@@ -1,6 +1,6 @@
 # Functional fix register — 2026-10-22
 
-Scope: source-only/provider-free verification against the current worktree. Existing seven dirty paths were preserved. No original-D1 write, provider request, migration, commit or deployment was made.
+Scope: source-only/provider-free verification against the current worktree. Existing Coresignal Preview trial paths were preserved. No original-D1 write, provider request, migration, push or deployment was made. The reviewed remediation was saved in a local Git checkpoint.
 
 | Priority | Finding and reproduced cause | Correction | Regression / result | Remaining limit |
 | --- | --- | --- | --- | --- |
