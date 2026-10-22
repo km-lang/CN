@@ -20,6 +20,7 @@ export type LushaContactSearchInput = {
 
 export type LushaContactPreview = {
   status: "success" | "no_match" | "review_required"
+  returnedCount: number
   identityReason: "PROFILE_URL_MATCH" | "PROFILE_URL_CONFLICT" | "PROFILE_URL_MISSING" | "NO_TRUSTED_INPUT_URL" | "MULTIPLE_RESULTS" | "NO_MATCH"
   contactId: string
   fullName: string
@@ -139,7 +140,7 @@ export async function searchLushaContact(input: LushaContactSearchInput, options
   const results = responseRecords(body)
   const first = results[0]
   const creditsUsed = providerCredits(response, body)
-  if (!first) return { status: "no_match", identityReason: "NO_MATCH", contactId: "", fullName: "", jobTitle: "", company: "", linkedinUrl: "", emailAvailable: null, phoneAvailable: null, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
+  if (!first) return { status: "no_match", returnedCount: 0, identityReason: "NO_MATCH", contactId: "", fullName: "", jobTitle: "", company: "", linkedinUrl: "", emailAvailable: null, phoneAvailable: null, creditsUsed, usageSource: creditsUsed === null ? "unavailable" : "provider_response" }
   const has = Array.isArray(first.has) ? first.has.map(textValue) : []
   const jobTitle = recordValue(first.jobTitle)
   const company = recordValue(first.company)
@@ -154,6 +155,7 @@ export async function searchLushaContact(input: LushaContactSearchInput, options
     : "PROFILE_URL_MATCH"
   return {
     status: !contactId ? "no_match" : identityReason === "PROFILE_URL_MATCH" ? "success" : "review_required",
+    returnedCount: results.length,
     identityReason: contactId ? identityReason : "NO_MATCH",
     contactId,
     fullName: textValue(first.fullName) || [textValue(first.firstName), textValue(first.lastName)].filter(Boolean).join(" "),

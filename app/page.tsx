@@ -45,6 +45,7 @@ import {
 import { apiPath, appConfig } from "@/lib/app-config"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
+import type { LushaIdentityEvidence } from "@/lib/lusha-identity-review"
 import { EVIDENCE_FIELDS, requiredEvidenceFields, type CandidateObservation, type EvidenceDecision, type EvidenceDecisions, type EvidenceField } from "@/lib/discovery-candidate-evidence"
 import { discoveryApplicationUnits, maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
@@ -265,6 +266,7 @@ type ProviderHistory = {
   createdAt: string
   searchEvidence?: PresentedSearchEvidence
   collectEvidence?: PresentedCollectEvidence
+  lushaReview?: { id: number; status: string; evidence: LushaIdentityEvidence | null; reviewedBy: string; reviewedAt: string }
 }
 
 type RetainedCollectCandidate = {
@@ -593,16 +595,21 @@ function ProviderHistoryAudit({
   onUsageReconciliationChange,
   onReconcile,
   onApproveCollectIdentity,
+  onApproveLushaIdentity,
+  onRejectLushaIdentity,
 }: {
   items: ProviderHistory[]
   usageReconciliationDrafts: Record<number, string>
   onUsageReconciliationChange: (id: number, value: string) => void
   onReconcile: (item: ProviderHistory) => void
   onApproveCollectIdentity: (item: ProviderHistory, alumnusId: number) => void
+  onApproveLushaIdentity: (item: ProviderHistory) => void
+  onRejectLushaIdentity: (item: ProviderHistory) => void
 }) {
   const [reviewAlumnusIds, setReviewAlumnusIds] = useState<Record<number, string>>({})
   const [reviewedIdentityIds, setReviewedIdentityIds] = useState<number[]>([])
   const [reviewedEducationIds, setReviewedEducationIds] = useState<number[]>([])
+  const [reviewedLushaIds, setReviewedLushaIds] = useState<number[]>([])
   return <div className="provider-history-list" aria-label="Provider response history">
     <div className="provider-history-columns" aria-hidden="true"><span>Date / time</span><span>Provider</span><span>Operation</span><span>Status</span><span>Results</span><span>Usage evidence</span><span>Details</span></div>
     {items.map(item => {
@@ -622,6 +629,7 @@ function ProviderHistoryAudit({
           <section><h3>Request context</h3><dl><div><dt>Provider</dt><dd>{item.provider.toUpperCase()}</dd></div><div><dt>Operation</dt><dd>{item.operation} · {item.mode}</dd></div><div><dt>Alumnus / subject</dt><dd>{item.alumnusName || "Not recorded"}</dd></div><div><dt>Requested at</dt><dd>{new Date(item.createdAt).toLocaleString()}</dd></div><div className="provider-history-wide"><dt>Search criteria / request</dt><dd>{item.requestSummary || "Request criteria were not retained for this operation."}</dd></div></dl></section>
           <section><h3>Execution outcome</h3><dl><div><dt>Status</dt><dd>{item.status.replaceAll("_", " ")}</dd></div><div><dt>Results</dt><dd>{resultLabel}</dd></div><div className="provider-history-wide"><dt>Response summary</dt><dd>{item.errorMessage || item.responseSummary || "No response summary was retained."}</dd></div>{item.searchEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Search evidence</dt><dd><CoresignalSearchEvidencePanel evidence={item.searchEvidence.evidence} showIds /></dd></div>}{item.searchEvidence && item.searchEvidence.state !== "RETAINED" && <div className="provider-history-wide"><dt>Historical evidence</dt><dd className="history-evidence-unavailable">{item.searchEvidence.reason}</dd></div>}{item.collectEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd><CoresignalCollectEvidencePanel evidence={item.collectEvidence.evidence} /></dd></div>}{item.collectEvidence?.state === "UNAVAILABLE" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd className="history-evidence-unavailable">{item.collectEvidence.reason}</dd></div>}</dl></section>
           {item.operation === "Base Employee Collect-only" && item.status === "success" && item.collectEvidence?.state === "RETAINED" && !item.alumnusId && <section><h3>Human identity review</h3><p>Compare the retained name, LinkedIn URL and IIM Lucknow education with the intended Directory profile. Association requires an exact stored LinkedIn identity match and never updates other alumni facts.</p><div className="collect-review-controls"><Input type="number" min="1" step="1" aria-label={`Existing alumnus ID for Collect history ${item.id}`} placeholder="Existing alumnus ID" value={reviewAlumnusIds[item.id] ?? ""} onChange={event => setReviewAlumnusIds(current => ({ ...current, [item.id]: event.target.value }))} /><label><input type="checkbox" checked={reviewedIdentityIds.includes(item.id)} onChange={event => setReviewedIdentityIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I reviewed the person and LinkedIn identity</label><label><input type="checkbox" checked={reviewedEducationIds.includes(item.id)} onChange={event => setReviewedEducationIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I reviewed the education evidence</label><Button size="sm" variant="outline" disabled={!Number.isSafeInteger(Number(reviewAlumnusIds[item.id])) || Number(reviewAlumnusIds[item.id]) < 1 || !reviewedIdentityIds.includes(item.id) || !reviewedEducationIds.includes(item.id)} onClick={() => onApproveCollectIdentity(item, Number(reviewAlumnusIds[item.id]))}>Approve exact-match association</Button></div></section>}
+          {item.provider === "lusha" && item.operation === "Contact Search Preview" && item.lushaReview && <section><h3>Lusha identity evidence</h3><p>Search did not reveal an email or phone and did not change the canonical alumnus. Compare the saved and returned profile identity before any association.</p><dl><div><dt>Review</dt><dd>{item.lushaReview.status} · #{item.lushaReview.id}</dd></div><div><dt>Contact ID</dt><dd>{item.lushaReview.evidence?.contactId || "Not retained"}</dd></div><div><dt>Requested profile</dt><dd>{item.lushaReview.evidence?.requestedProfileUrl || "Not recorded"}</dd></div><div><dt>Returned profile</dt><dd>{item.lushaReview.evidence?.returnedProfileUrl || "Not reported"}</dd></div><div><dt>Identity assessment</dt><dd>{item.lushaReview.evidence?.identityReason || "Evidence unavailable"}</dd></div><div><dt>Returned role</dt><dd>{[item.lushaReview.evidence?.returnedTitle, item.lushaReview.evidence?.returnedCompany].filter(Boolean).join(" · ") || "Not reported"}</dd></div></dl>{item.lushaReview.status === "Pending identity review" && item.lushaReview.evidence?.identityReason === "PROFILE_URL_MATCH" && <div className="collect-review-controls"><label><input type="checkbox" checked={reviewedLushaIds.includes(item.id)} onChange={event => setReviewedLushaIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I compared the saved and returned LinkedIn profiles and approve this exact contact ID</label><Button size="sm" variant="outline" disabled={!reviewedLushaIds.includes(item.id)} onClick={() => onApproveLushaIdentity(item)}>Approve Lusha identity association</Button></div>}{item.lushaReview.status === "Identity exception" && <p>This observation cannot be approved. Resolve the identity or billing exception outside this one-request review.</p>}{["Pending identity review", "Identity exception"].includes(item.lushaReview.status) && <Button size="sm" variant="outline" onClick={() => onRejectLushaIdentity(item)}>Reject Lusha identity proposal</Button>}</section>}
           <section><h3>Usage and limits</h3><dl><div><dt>Usage state</dt><dd>{usage.label}</dd></div><div><dt>Application attribution</dt><dd>{item.applicationUnits ?? 0} unit{(item.applicationUnits ?? 0) === 1 ? "" : "s"}</dd></div><div className="provider-history-wide"><dt>Evidence</dt><dd>{usage.detail}</dd></div>{item.reconciliationSource && <div className="provider-history-wide"><dt>Reconciliation source</dt><dd>{item.reconciliationSource}</dd></div>}</dl>{item.provider === "lusha" && usage.label === "Reconciliation required" && <div className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => onUsageReconciliationChange(item.id, event.target.value)} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => onReconcile(item)}>Reconcile</Button></div>}</section>
           <section><h3>Technical diagnostics</h3><p>Requested by {item.requestedBy || "Not recorded"}. Provider-reported credit balance is shown only when retained and is not treated as verified billable cost.</p>{item.searchEvidence?.state === "RETAINED" || item.collectEvidence?.state === "RETAINED" ? <details className="provider-history-json"><summary>View sanitized stored metadata</summary><pre>{JSON.stringify(item.searchEvidence?.state === "RETAINED" ? item.searchEvidence.evidence : item.collectEvidence?.state === "RETAINED" ? item.collectEvidence.evidence : null, null, 2)}</pre></details> : <p className="history-evidence-unavailable">No structured diagnostic envelope was retained for this operation.</p>}</section>
         </div>
@@ -1856,6 +1864,30 @@ export default function Home() {
       setEnrichmentMessage(`Collect history #${item.id} was associated with alumnus #${alumnusId} after review.`)
       await loadEnrichment()
     } catch (error) { setEnrichmentMessage(error instanceof Error ? error.message : "Collect identity association failed.") }
+  }
+
+  async function approveLushaIdentity(item: ProviderHistory) {
+    if (!item.lushaReview) return
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "lusha_approve_identity", reviewId: item.lushaReview.id, confirmed: true }) })
+      const data = await response.json() as { approved?: boolean; error?: string }
+      if (!response.ok || !data.approved) throw new Error(data.error || "Lusha identity review could not be approved.")
+      setEnrichmentMessage(`Lusha identity review #${item.lushaReview.id} was approved. No contact channel was revealed.`)
+      await Promise.all([loadWorkspace(), loadEnrichment()])
+    } catch (error) { setEnrichmentMessage(error instanceof Error ? error.message : "Lusha identity review could not be approved.") }
+  }
+
+  async function rejectLushaIdentity(item: ProviderHistory) {
+    if (!item.lushaReview) return
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "lusha_reject_identity", reviewId: item.lushaReview.id, confirmed: true }) })
+      const data = await response.json() as { rejected?: boolean; error?: string }
+      if (!response.ok || !data.rejected) throw new Error(data.error || "Lusha identity rejection could not be saved.")
+      setEnrichmentMessage(`Lusha identity review #${item.lushaReview.id} was rejected. No alumnus field was changed.`)
+      await loadEnrichment()
+    } catch (error) { setEnrichmentMessage(error instanceof Error ? error.message : "Lusha identity rejection could not be saved.") }
   }
 
   async function validateLushaConnection() {
@@ -3200,7 +3232,7 @@ export default function Home() {
 
             {session.canAdminister ? <section className="panel history-panel">
               <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canAdminister && <Button variant="ghost" size="sm" onClick={() => void refreshProviderHistory()}>Refresh history</Button>}</div>
-              <ProviderHistoryAudit items={providerHistoryPagination.items} usageReconciliationDrafts={usageReconciliationDrafts} onUsageReconciliationChange={(id, value) => setUsageReconciliationDrafts(current => ({ ...current, [id]: value }))} onReconcile={item => void reconcileProviderUsage(item)} onApproveCollectIdentity={(item, alumnusId) => void approveCollectIdentity(item, alumnusId)} />
+              <ProviderHistoryAudit items={providerHistoryPagination.items} usageReconciliationDrafts={usageReconciliationDrafts} onUsageReconciliationChange={(id, value) => setUsageReconciliationDrafts(current => ({ ...current, [id]: value }))} onReconcile={item => void reconcileProviderUsage(item)} onApproveCollectIdentity={(item, alumnusId) => void approveCollectIdentity(item, alumnusId)} onApproveLushaIdentity={item => void approveLushaIdentity(item)} onRejectLushaIdentity={item => void rejectLushaIdentity(item)} />
               <PaginationFooter model={providerHistoryPagination} label="Provider history pagination" />
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section> : <section className="panel history-panel"><div className="empty-state"><ShieldCheck /><h3>Administrative provider history is restricted</h3><p>Your operational actions remain available above. Provider requests, credit accounting, evidence envelopes, and technical diagnostics are available only in the Admin workspace.</p></div></section>}

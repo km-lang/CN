@@ -61,7 +61,8 @@ test("UI-04 formats bounded sanitized metadata outside the main history row", ()
 
 test("Provider History remains server-authorized for Admin only", () => {
   assert.match(enrichment, /authorizeRequest\(request, "VIEW_PROVIDER_STATUS"\)/)
-  assert.match(enrichment, /history: context\.role === "ADMIN" \? history\.map\(presentProviderHistorySearchEvidence\)\.map\(presentProviderHistoryCollectEvidence\) : \[\]/)
+  assert.match(enrichment, /history: context\.role === "ADMIN" \? history\.map\(presentProviderHistorySearchEvidence\)\.map\(presentProviderHistoryCollectEvidence\)\.map\(item =>/)
+  assert.match(enrichment, /\}\) : \[\],\s*historyRestricted: context\.role !== "ADMIN"/)
   assert.match(page, /session\.canAdminister \? <section className="panel history-panel"/)
   assert.match(page, /Administrative provider history is restricted/)
 })

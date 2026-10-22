@@ -82,7 +82,8 @@ test("mock usage is explicit and production missing usage remains reconciliation
 
 test("provider limits and history refresh are Admin-only on server and UI", () => {
   assert.match(enrichmentApi, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/)
-  assert.match(enrichmentApi, /payload\.action === "refresh_history" \? "MANAGE_PROVIDER_SETTINGS"/)
+  assert.match(enrichmentApi, /"reconcile_usage", "refresh_history", "lusha_approve_identity"/)
+  assert.match(enrichmentApi, /\]\.includes\(payload\.action \?\? ""\) \? "MANAGE_PROVIDER_SETTINGS"/)
   assert.match(enrichmentApi, /provider_history_refreshed/)
   assert.match(page, /session\.canAdminister && <Button variant="ghost" size="sm" onClick=\{\(\) => void refreshProviderHistory\(\)\}/)
 })

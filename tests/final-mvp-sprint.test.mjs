@@ -86,7 +86,8 @@ test("final sprint reconciled account usage is distinguished from provider metad
 })
 
 test("final sprint reconciliation is Admin-only and centrally audited", () => {
-  assert.match(enrichmentRoute, /payload\.action === "reconcile_usage" \? "MANAGE_PROVIDER_SETTINGS"/)
+  assert.match(enrichmentRoute, /"reconcile_usage", "refresh_history", "lusha_approve_identity"/)
+  assert.match(enrichmentRoute, /\]\.includes\(payload\.action \?\? ""\) \? "MANAGE_PROVIDER_SETTINGS"/)
   assert.match(enrichmentRoute, /provider_usage_reconciled/)
   assert.equal(policy.hasPermission("PCOM", "MANAGE_PROVIDER_SETTINGS"), false)
 })
@@ -313,7 +314,9 @@ test("final sprint mail rejects Unknown preference as consent", () => {
 test("final sprint professional conflict is represented without profile overwrite", () => {
   assert.match(schema, /professionalDataStatus/)
   assert.match(workspaceRoute, /Conflict — manual verification required/)
-  assert.match(enrichmentRoute, /No profile field was overwritten/)
+  const lushaSearch = enrichmentRoute.match(/if \(payload\.action === "lusha_search_contact"\)[\s\S]*?(?=if \(payload\.action === "lusha_approve_identity"\))/)?.[0] ?? ""
+  assert.match(lushaSearch, /No canonical record or contact channel was changed/)
+  assert.doesNotMatch(lushaSearch, /db\.update\(alumni\)|LUSHA_REVIEWED_ATTACH_ID_SQL/)
   assert.match(page, /Provider success does not prove freshness/)
 })
 

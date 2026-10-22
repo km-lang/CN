@@ -195,18 +195,21 @@ test("stage4a 10: server rejects the legacy combined live path", () => {
 });
 
 test("stage4a 11: Lusha actions remain PCOM-operational and settings remain Admin-only", () => {
-  assert.match(route, /requiredPermission = payload\.action === "validate_lusha" \? "MANAGE_PROVIDER_SETTINGS"/);
+  assert.match(route, /"lusha_approve_identity", "lusha_reject_identity"\]\.includes\(payload\.action \?\? ""\) \? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"/);
   assert.match(page, /disabled=\{!session\.canAdminister\}/);
   assert.match(page, /Only an Admin can change application credit limits/);
 });
 
-test("stage4a 12: search persists stable ID and history without raw provider payload", () => {
-  assert.match(route, /LUSHA_ATTACH_ID_SQL/);
-  assert.match(route, /if \(previewStatus === "success" && result\.contactId\)/);
-  assert.match(route, /identityReason = "CONTACT_ID_ALREADY_LINKED_OR_CONFLICTING"/);
-  assert.match(route, /no contact ID was attached/);
+test("stage4a 12: search retains stable ID for review without automatic canonical attachment", () => {
+  const searchBlock = route.match(/if \(payload\.action === "lusha_search_contact"\)[\s\S]*?(?=if \(payload\.action === "lusha_approve_identity"\))/)?.[0] ?? "";
+  assert.match(searchBlock, /providerRefreshReviews/);
+  assert.match(searchBlock, /lushaIdentityEvidence/);
+  assert.doesNotMatch(searchBlock, /LUSHA_REVIEWED_ATTACH_ID_SQL|db\.update\(alumni\)/);
+  assert.match(searchBlock, /linkedElsewhere/);
+  assert.match(searchBlock, /pendingElsewhere/);
+  assert.match(route, /No canonical record or contact channel was changed/);
   assert.match(route, /claimLushaRequest\(person, "Contact Search Preview", actor\)/);
-  assert.match(route, /completeLushaRequest\(claim\.id/);
+  assert.match(searchBlock, /providerResponseHistory\)\.set\(\{ status: previewStatus/);
   assert.doesNotMatch(route, /JSON\.stringify\(result\)/);
 });
 

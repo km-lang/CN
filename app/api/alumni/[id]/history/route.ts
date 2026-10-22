@@ -6,6 +6,7 @@ import { presentProviderHistoryCollectEvidence } from "@/lib/coresignal-collect-
 import { intelligenceErrorResponse, intelligenceRequest } from "@/lib/intelligence-service.server"
 import { accessErrorResponse, authorizeRequest } from "@/lib/security"
 import { savedHistoryFailure } from "@/lib/saved-history-diagnostics"
+import { parseLushaIdentityEvidence } from "@/lib/lusha-identity-review"
 
 type IndexRow = { row_kind: string; row_id: number; occurred_at: string; previous_kind?: string | null; previous_id?: number | null; previous_at?: string | null }
 
@@ -175,6 +176,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       }
       if (row.row_kind === "PROVIDER_REVIEW") {
         const item = reviewById.get(row.row_id); if (!item) return []
+        const evidence = parseLushaIdentityEvidence(item.proposedChangesJson)
+        if (evidence) {
+          return [{ ...base, kind: "PROVIDER_REVIEW", source: "Lusha Contact Search", outcome: item.status, requestReference: `Provider request #${item.providerResponseId} · review #${item.id}`, verification: item.status === "Approved identity" ? "Contact ID associated after Admin review; contact channels not revealed" : "Provider identity observation only; not canonical", details: evidence ? `Returned identity assessment: ${evidence.identityReason}. ${item.reviewedBy ? `Reviewed by ${item.reviewedBy}.` : "Awaiting Admin review."}` : "Retained identity evidence could not be read.", observed: evidence ? retainedProfessionalFields({ company: evidence.returnedCompany, title: evidence.returnedTitle }) : {} }]
+        }
         return [{ ...base, kind: "PROVIDER_REVIEW", source: "Professional profile refresh", outcome: item.status, requestReference: `Provider request #${item.providerResponseId}`, verification: item.status === "Applied" ? "Selected fields accepted" : "Proposed fields only; not canonical", details: item.reviewedBy ? `Reviewed by ${item.reviewedBy}` : "Awaiting review", observed: proposedFields(item.proposedChangesJson) }]
       }
       if (row.row_kind === "CAREER_OBSERVATION") {
@@ -183,6 +188,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       }
       if (row.row_kind === "CANONICAL_CHANGE") {
         const item = changeById.get(row.row_id); if (!item) return []
+        if (item.field === "lushaPersonId") return [{ ...base, kind: "CANONICAL_CHANGE", source: item.source, outcome: "Provider identity associated", requestReference: item.providerAction, verification: `Approved by ${item.initiatedBy}`, details: "A stable Lusha contact ID was associated after Admin review. The identifier and contact channels are restricted." }]
         return [{ ...base, kind: "CANONICAL_CHANGE", source: item.source, outcome: "Canonical field changed", requestReference: item.providerAction, verification: `Applied by ${item.initiatedBy}`, details: `${item.field}: ${item.oldValue || "Not recorded"} → ${item.newValue || "Cleared"}` }]
       }
       const proposal = row.row_kind === "REVIEW_DECISION" ? proposalById.get(row.row_id) : null
