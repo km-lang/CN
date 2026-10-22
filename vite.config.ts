@@ -63,13 +63,17 @@ export default defineConfig(async ({ command, mode }) => {
   const absolutePersistPath = localPersistPath && isAbsolute(localPersistPath) ? (() => { try { return realpathSync(localPersistPath); } catch { return ""; } })() : "";
   const projectRoot = resolve(process.cwd());
   const temporaryRoots = [tmpdir(), "/private/tmp", "/tmp"].map(root => { try { return realpathSync(root); } catch { return resolve(root); } });
-  const localWebhookMock = localDevelopment
+  const localIsolatedD1 = localDevelopment
     && localAuthRole === "ADMIN"
     && Boolean(absolutePersistPath)
     && temporaryRoots.some(root => absolutePersistPath.startsWith(`${root}${sep}`))
     && !absolutePersistPath.startsWith(`${projectRoot}${sep}`)
-    && absolutePersistPath !== projectRoot
+    && absolutePersistPath !== projectRoot;
+  const localWebhookMock = localIsolatedD1
     && localEnvironment.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true";
+  const localLushaLive = localIsolatedD1
+    && localEnvironment.LOCAL_LUSHA_LIVE_DEMO_ENABLED === "true"
+    && localEnvironment.LUSHA_LIVE_ENABLED === "true";
   const localWebhookSecret = localWebhookMock ? localEnvironment.CORESIGNAL_WEBHOOK_CALLBACK_SECRET?.trim() ?? "" : "";
   const localCoresignalDemo = localDevelopment
     && localCoresignalLiveDemoEnabled(localEnvironment);
@@ -125,7 +129,18 @@ export default defineConfig(async ({ command, mode }) => {
         ...(localCoresignalDemo
           ? { CORESIGNAL_API_KEY: localCoresignalKey }
           : {}),
-        LUSHA_LIVE_ENABLED: "false",
+        LUSHA_LIVE_ENABLED: localLushaLive ? "true" : "false",
+        // Credential presence can be checked in an isolated worker without
+        // enabling any Lusha endpoint or exposing the value to the browser.
+        LUSHA_API_KEY: localIsolatedD1 ? localEnvironment.LUSHA_API_KEY?.trim() ?? "" : "",
+        LUSHA_SEARCH_MAX_APPLICATION_UNITS: localIsolatedD1 ? localEnvironment.LUSHA_SEARCH_MAX_APPLICATION_UNITS?.trim() ?? "" : "",
+        LUSHA_EMAIL_MAX_APPLICATION_UNITS: localIsolatedD1 ? localEnvironment.LUSHA_EMAIL_MAX_APPLICATION_UNITS?.trim() ?? "" : "",
+        LUSHA_PHONE_MAX_APPLICATION_UNITS: localIsolatedD1 ? localEnvironment.LUSHA_PHONE_MAX_APPLICATION_UNITS?.trim() ?? "" : "",
+        LUSHA_SEARCH_ENTITLEMENT: localIsolatedD1 ? localEnvironment.LUSHA_SEARCH_ENTITLEMENT?.trim() ?? "unknown" : "unknown",
+        LUSHA_EMAIL_ENTITLEMENT: localIsolatedD1 ? localEnvironment.LUSHA_EMAIL_ENTITLEMENT?.trim() ?? "unknown" : "unknown",
+        LUSHA_PHONE_ENTITLEMENT: localIsolatedD1 ? localEnvironment.LUSHA_PHONE_ENTITLEMENT?.trim() ?? "unknown" : "unknown",
+        LUSHA_ENTITLEMENT_SOURCE: localIsolatedD1 ? localEnvironment.LUSHA_ENTITLEMENT_SOURCE?.trim() ?? "" : "",
+        LUSHA_ENTITLEMENT_VERIFIED_AT: localIsolatedD1 ? localEnvironment.LUSHA_ENTITLEMENT_VERIFIED_AT?.trim() ?? "" : "",
         LUSHA_SIGNALS_LIVE_ENABLED: "false",
         MAIL_MODE: "mock",
         MAIL_LIVE_ENABLED: "false",
@@ -143,7 +158,7 @@ export default defineConfig(async ({ command, mode }) => {
 
   return {
     server: {
-      host: localCoresignalDemo || localBrightDataDemo || localWebhookMock ? "127.0.0.1" : "0.0.0.0",
+      host: localCoresignalDemo || localBrightDataDemo || localWebhookMock || localLushaLive ? "127.0.0.1" : "0.0.0.0",
       allowedHosts: ["terminal.local"],
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }

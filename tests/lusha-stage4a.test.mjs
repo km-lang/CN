@@ -42,6 +42,7 @@ const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
 const route = await readFile(new URL("../app/api/enrichment/route.ts", import.meta.url), "utf8");
 const provider = await readFile(new URL("../lib/enrichment-providers.ts", import.meta.url), "utf8");
 const envExample = await readFile(new URL("../.env.example", import.meta.url), "utf8");
+const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
 test("stage4a 1: Coresignal and Lusha have independent live gates while mail remains off", () => {
   assert.equal(runtime.providerMode("coresignal"), "live");
@@ -54,6 +55,16 @@ test("stage4a 2: Lusha secret remains server-only", () => {
   assert.doesNotMatch(page, /LUSHA_API_KEY/);
   assert.doesNotMatch(route, /process\.env\.LUSHA_API_KEY/);
   assert.doesNotMatch(envExample, /NEXT_PUBLIC_LUSHA/);
+});
+
+test("isolated local worker can detect a user-configured key while every Lusha gate stays off", () => {
+  assert.match(viteConfig, /LUSHA_API_KEY: localIsolatedD1 \? localEnvironment\.LUSHA_API_KEY\?\.trim\(\) \?\? "" : ""/);
+  assert.match(viteConfig, /LUSHA_LIVE_ENABLED: localLushaLive \? "true" : "false"/);
+  assert.match(viteConfig, /LUSHA_SIGNALS_LIVE_ENABLED: "false"/);
+  assert.match(viteConfig, /absolutePersistPath/);
+  assert.match(viteConfig, /LOCAL_LUSHA_LIVE_DEMO_ENABLED === "true"/);
+  assert.match(viteConfig, /localWebhookMock \|\| localLushaLive \? "127\.0\.0\.1"/);
+  assert.match(envExample, /LOCAL_LUSHA_LIVE_DEMO_ENABLED=false/);
 });
 
 test("stage4a 3: known-contact search uses V3 and prefers the professional profile", async () => {
@@ -217,4 +228,6 @@ test("stage4a 14: UI distinguishes application limit from Lusha account balance"
 test("stage4a 15: automated Lusha coverage injects mock fetchers and never reaches the network", () => {
   assert.match(page, /No live action runs without confirmation/);
   assert.match(route, /confirmed !== true/);
+  assert.match(route, /payload\.action === "lusha_search_contact"[\s\S]*?payload\.confirmed !== true/);
+  assert.match(page, /action: "lusha_search_contact", alumnusId: lushaTarget\.id, contactChannel: lushaRevealChannel, confirmed: true/);
 });

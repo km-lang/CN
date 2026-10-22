@@ -90,12 +90,13 @@ test("mock transport requires explicit isolated Admin loopback gates", () => {
 
 test("local Cloudflare binding forwards mock flags only with outside-repository persistence and loopback", async () => {
   const config = await readFile(join(root, "vite.config.ts"), "utf8")
-  assert.match(config, /localWebhookMock[\s\S]*absolutePersistPath[\s\S]*!absolutePersistPath\.startsWith/)
+  assert.match(config, /localIsolatedD1[\s\S]*absolutePersistPath[\s\S]*!absolutePersistPath\.startsWith/)
+  assert.match(config, /localWebhookMock = localIsolatedD1[\s\S]*CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true"/)
   assert.match(config, /realpathSync\(localPersistPath\)/)
   assert.match(config, /temporaryRoots\.some\(root => absolutePersistPath\.startsWith/)
-  assert.match(config, /LOCAL_DEV_D1_PERSIST_PATH: localWebhookMock \? absolutePersistPath : ""/)
+  assert.match(config, /LOCAL_DEV_D1_PERSIST_PATH: localIsolatedD1 \? absolutePersistPath : ""/)
   assert.match(config, /CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: localWebhookMock \? "true" : "false"/)
-  assert.match(config, /host: localCoresignalDemo \|\| localBrightDataDemo \|\| localWebhookMock \? "127\.0\.0\.1"/)
+  assert.match(config, /host: localCoresignalDemo \|\| localBrightDataDemo \|\| localWebhookMock \|\| localLushaLive \? "127\.0\.0\.1"/)
 })
 
 test("receiver is disabled by default before any body or database access", async () => {

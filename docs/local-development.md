@@ -12,6 +12,8 @@ npm run dev:local
 
 `local:setup` applies migrations to isolated local D1 and loads deterministic fixtures. `dev:local` listens on loopback port 3000, enables only the development authentication path, forces Coresignal/Lusha/Signals gates off, and keeps mail in mock mode. It requires no production secret and must never use a production D1 binding.
 
+For a separately isolated local D1, an Admin may put an existing Lusha key in the gitignored `.env.local` as `LUSHA_API_KEY=...`, using a local editor rather than a shell argument or chat message. Restrict that file to the local user (`chmod 600 .env.local`). Set `LOCAL_DEV_D1_PERSIST_PATH` to an existing temporary-directory checkout of the isolated D1, and leave `LUSHA_LIVE_ENABLED=false`, `LOCAL_LUSHA_LIVE_DEMO_ENABLED=false`, `LUSHA_SIGNALS_LIVE_ENABLED=false`, endpoint entitlements `unknown`, and operation ceilings blank. The local Vite worker receives the key only for an Admin session with that isolated D1; this permits credential-presence checks without calling Lusha. The normal development command still forces Lusha live execution off. A future live test requires both explicit live flags, verified per-operation entitlements and ceilings, and separate authorization for its exact request.
+
 Migration 0013 adds the provider-company mapping schema. Apply it only to repository-local D1 with:
 
 ```bash

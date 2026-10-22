@@ -177,7 +177,7 @@ export async function POST(request: Request) {
 
     if (payload.action === "lusha_search_contact") {
       if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE is not available." }, { status: 409 });
-      if (!Number.isInteger(payload.alumnusId)) return Response.json({ error: "Select one approved alumnus." }, { status: 400 });
+      if (!Number.isInteger(payload.alumnusId) || payload.confirmed !== true) return Response.json({ error: "Select one approved alumnus and explicitly confirm the Lusha contact Search." }, { status: 400 });
       const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
       const [person] = await db.select().from(alumni).where(eq(alumni.id, payload.alumnusId!)).limit(1);

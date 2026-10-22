@@ -1752,7 +1752,7 @@ export default function Home() {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "lusha_search_contact", alumnusId: lushaTarget.id, contactChannel: lushaRevealChannel }),
+        body: JSON.stringify({ action: "lusha_search_contact", alumnusId: lushaTarget.id, contactChannel: lushaRevealChannel, confirmed: true }),
       })
       const data = await response.json() as { preview?: LushaContactPreview; error?: string }
       if (!response.ok || !data.preview) throw new Error(data.error || "Unable to retrieve the Lusha contact preview.")
