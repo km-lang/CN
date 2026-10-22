@@ -24,6 +24,17 @@ export type GmailConnectivityValidation = {
   scopeVerified: boolean | null
 }
 
+/** A failed send may still have reached Gmail when the response is lost. */
+export class MailSendError extends Error {
+  constructor(message: string, public readonly deliveryMayHaveOccurred: boolean) {
+    super(message)
+  }
+}
+
+export function mailFailureMayHaveDelivered(error: unknown) {
+  return !(error instanceof MailSendError) || error.deliveryMayHaveOccurred
+}
+
 type MailRuntimeEnv = {
   MAIL_MODE?: string
   MAIL_LIVE_ENABLED?: string
@@ -160,19 +171,21 @@ export async function validateGmailConnectivity(options: { fetcher?: typeof fetc
 }
 
 export async function sendMail(draft: MailDraft, options: { fetcher?: typeof fetch } = {}): Promise<MailSendResult> {
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.recipient.trim())) throw new Error("Enter a valid recipient email address.")
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.recipient.trim())) throw new MailSendError("Enter a valid recipient email address.", false)
   if (!draft.subject.trim() || !draft.body.trim()) {
-    throw new Error("Recipient, subject, and message are required before sending.");
+    throw new MailSendError("Recipient, subject, and message are required before sending.", false);
   }
   const runtime = mailRuntimeStatus()
-  if (runtime.requestedLive && !runtime.liveEnabled) throw new Error("Live institutional mail is disabled.")
+  if (runtime.requestedLive && !runtime.liveEnabled) throw new MailSendError("Live institutional mail is disabled.", false)
   if (runtime.mode === "live") {
     const config = mailConfiguration()
-    if (!config.senderConfigured) throw new Error("The institutional sender mailbox is not configured.")
-    if (!config.oauthConfigured || config.provider !== "gmail") throw new Error("The institutional Gmail OAuth client is not configured.")
-    if (!config.sendPermissionConfigured) throw new Error("The institutional Gmail OAuth authorization does not have confirmed Gmail send permission.")
+    if (!config.senderConfigured) throw new MailSendError("The institutional sender mailbox is not configured.", false)
+    if (!config.oauthConfigured || config.provider !== "gmail") throw new MailSendError("The institutional Gmail OAuth client is not configured.", false)
+    if (!config.sendPermissionConfigured) throw new MailSendError("The institutional Gmail OAuth authorization does not have confirmed Gmail send permission.", false)
     const fetcher = options.fetcher ?? fetch
-    const { accessToken } = await gmailAccessToken(fetcher)
+    let accessToken: string
+    try { ({ accessToken } = await gmailAccessToken(fetcher)) }
+    catch (error) { if (error instanceof GmailTokenError) throw new MailSendError(error.message, false); throw error }
     const raw = base64Url([
       `From: ${safeHeader(serverConfig.mailSenderDisplayName)} <${safeHeader(config.sender)}>`,
       `To: ${safeHeader(draft.recipient)}`,
@@ -186,14 +199,14 @@ export async function sendMail(draft: MailDraft, options: { fetcher?: typeof fet
     try {
       response = await fetcher("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" }, body: JSON.stringify({ raw }), signal: AbortSignal.timeout(15_000) })
     } catch (error) {
-      if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) throw new Error("The Gmail send request timed out.")
-      throw new Error("The Gmail provider is unavailable.")
+      if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) throw new MailSendError("The Gmail send request timed out; delivery must be reconciled before retrying.", true)
+      throw new MailSendError("The Gmail send outcome is unknown; delivery must be reconciled before retrying.", true)
     }
     const result = await response.json().catch(() => ({})) as { id?: string; error?: { status?: string; message?: string } }
     if (!response.ok || !result.id) {
-      if (response.status === 401) throw new Error("The institutional Gmail authorization has expired or been revoked.")
-      if (response.status === 403) throw new Error("The institutional Gmail authorization has insufficient Gmail send scope.")
-      throw new Error("Gmail did not accept the approved message.")
+      if (response.status === 401) throw new MailSendError("The institutional Gmail authorization has expired or been revoked.", false)
+      if (response.status === 403) throw new MailSendError("The institutional Gmail authorization has insufficient Gmail send scope.", false)
+      throw new MailSendError(response.ok ? "Gmail returned an incomplete send receipt; delivery must be reconciled before retrying." : "Gmail did not confirm the send; delivery must be reconciled before retrying.", true)
     }
     return { messageId: result.id, deliveryStatus: "Sent", mode: "live", provider: "gmail", sender: config.sender, recipient: draft.recipient }
   }

@@ -27,6 +27,7 @@ import { resolveProviderCompanySelection } from "@/lib/provider-company-mapping"
 import { CoresignalSearchEvidencePersistenceError, createCoresignalSearchEvidence, executeAndPersistCoresignalSearchEvidence, presentProviderHistorySearchEvidence, serializeCoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
 import { candidateEvidenceDecisions, candidateEvidenceOutcome, normalizeCandidateObservation, validateReviewerDecisions, type EvidenceDecisions } from "@/lib/discovery-candidate-evidence"
 import { sha256Text, stableMutationPayload } from "@/lib/mutation-fingerprint"
+import { savedHistoryFailure } from "@/lib/saved-history-diagnostics"
 import { localIsolatedDiscoveryMockEnabled } from "@/lib/local-development"
 
 const DEFAULT_APPLICATION_LIMIT = 25
@@ -268,8 +269,10 @@ function alumnusValues(result: typeof externalDiscoveryResults.$inferSelect, act
 }
 
 export async function GET(request: Request) {
+  let stage = "authorization"
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM")
+    stage = "search_and_result_lookup"
     const db = getDb(); const url = new URL(request.url); const view = url.searchParams.get("view") === "pending" ? "pending" : "summary"
     const requestedSearchIdValue = url.searchParams.get("searchId")
     const requestedSearchId = requestedSearchIdValue === null ? null : Number(requestedSearchIdValue)
@@ -287,6 +290,7 @@ export async function GET(request: Request) {
     const historySearchIds = [...new Set(searchPool.map(search => search.id))]
     const historyResults = historySearchIds.length ? await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, historySearchIds)).orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id) : []
     const activeResults = activeSearch ? historyResults.filter(result => result.searchId === activeSearch.id) : []
+    stage = "candidate_evidence_lookup"
     const candidateEvidence = await evidenceForResults(db, activeResults.map(result => result.id))
     const evidenceByResult = new Map<number, (typeof candidateEvidence.rows)>()
     for (const row of candidateEvidence.rows) evidenceByResult.set(row.resultId, [...(evidenceByResult.get(row.resultId) ?? []), row])
@@ -308,6 +312,7 @@ export async function GET(request: Request) {
       : []
     const reconciliationByKey = new Map(reconciliations.map(item => [item.candidateKey, item]))
     const searchConstraint = persistedSearchConstraintEvidence(filters, activeProviderHistoryRows)
+    stage = "result_presentation"
     const presentedResults = activeResults.map(result => {
       const humanEvidence = evidenceByResult.get(result.id) ?? []
       const latest = latestEvidence(candidateEvidence.rows, result.id)
@@ -321,7 +326,7 @@ export async function GET(request: Request) {
     const storedExecution = persistedDiscoveryExecutionSummary(activeProviderHistoryRows)
     const executionSummary = storedExecution
     return Response.json({ ...common, activeSearch: activeSearchSummary, results: presentedResults, counts, reconciliationSummary: reconciliations.length ? selectiveCollectSummary(reconciliations) : null, executionSummary, filters, providerHistory: context.role === "ADMIN" ? activeProviderHistory : [], historyRestricted: context.role !== "ADMIN", creditsUsed: activeSearch.creditsUsed, retrieval: "stored", source: { provider: activeSearch.provider, mode: activeSearch.mode, searchId: activeSearch.id, createdAt: activeSearch.createdAt } })
-  } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return Response.json({ error: error instanceof Error ? error.message : "Unable to load discovery history." }, { status: 500 }) }
+  } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return savedHistoryFailure(error, "discovery", stage) }
 }
 
 export async function POST(request: Request) {

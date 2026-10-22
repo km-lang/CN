@@ -29,7 +29,7 @@ export type CoresignalPreviewTransportResult = {
   upstreamHttpStatus: number
 }
 
-export type CoresignalFailureKind = "authentication" | "rate_limit" | "timeout" | "unavailable" | "invalid_request" | "invalid_response"
+export type CoresignalFailureKind = "authentication" | "insufficient_credits" | "rate_limit" | "timeout" | "unavailable" | "invalid_request" | "invalid_response"
 
 export class CoresignalProviderError extends Error {
   constructor(message: string, public readonly kind: CoresignalFailureKind, public readonly status: number, public readonly successfulOperationCredits = 0) { super(message) }
@@ -358,6 +358,7 @@ export function coresignalCollectContract(employeeId: string) {
 
 function failure(status: number) {
   if (status === 401 || status === 403) return new CoresignalProviderError("Coresignal authentication failed.", "authentication", status)
+  if (status === 402) return new CoresignalProviderError("Coresignal account credits are insufficient for this request.", "insufficient_credits", status)
   if (status === 429) return new CoresignalProviderError("Coresignal rate limit reached.", "rate_limit", status)
   if (status >= 500) return new CoresignalProviderError("Coresignal is temporarily unavailable.", "unavailable", status)
   return new CoresignalProviderError("Coresignal rejected the request.", "invalid_request", status)

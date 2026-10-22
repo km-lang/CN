@@ -9,6 +9,15 @@ export const CORESIGNAL_COLLECT_OPERATION = "Base Employee Collect-only"
 export const CORESIGNAL_COLLECT_EVIDENCE_MARKER = "\n\n[coresignal-collect-evidence:v1]\n"
 export const CORESIGNAL_COLLECT_EVIDENCE_VERSION = 1
 export const CORESIGNAL_COLLECT_CONFIRMATION_TTL_MS = 5 * 60_000
+
+/** A response may have been billed even when its body or persistence cannot be used. */
+export function collectFailureRequiresReconciliation(error: unknown, providerResponseReceived: boolean) {
+  if (providerResponseReceived) return true
+  const failure = error && typeof error === "object" ? error as { status?: unknown; kind?: unknown } : null
+  return !(typeof failure?.status === "number"
+    && [400, 401, 402, 403, 404, 422, 429].includes(failure.status)
+    && ["authentication", "insufficient_credits", "invalid_request", "rate_limit"].includes(String(failure.kind)))
+}
 export const CORESIGNAL_COLLECT_CLAIM_SQL = `
   INSERT INTO provider_response_history
     (provider, alumnus_name, search_id, operation, mode, status, credits_used, application_units, provider_reported_credits, usage_state, result_count, request_summary, response_summary, error_message, requested_by)
@@ -345,8 +354,10 @@ export async function executeCollectOnce(input: {
   if (!claim.acquired) return { state: "DUPLICATE_BLOCKED" as const, providerCalls: 0 }
   const now = input.now ?? (() => new Date())
   const requestedAt = now().toISOString()
+  let providerResponseReceived = false
   try {
     const response = await input.transport(input.preflight.candidate.employeeId)
+    providerResponseReceived = true
     const completedAt = now().toISOString()
     const evidence = sanitizeCollectResponse({ ...response, candidate: input.preflight.candidate, attemptId, requestedAt, completedAt })
     const summary = "One Base Employee Collect request succeeded. Structured professional evidence requires human review; no identity or canonical record was changed."
@@ -356,7 +367,7 @@ export async function executeCollectOnce(input: {
     return { state: "REVIEW_REQUIRED" as const, providerCalls: 1, claimId: claim.claimId, evidence }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Coresignal Collect failed."
-    const ambiguous = /timed out|could not be finalized/i.test(message)
+    const ambiguous = collectFailureRequiresReconciliation(error, providerResponseReceived)
     await input.store.fail({ claimId: claim.claimId, candidate: input.preflight.candidate, status: ambiguous ? "ambiguous" : "error", message })
     throw error
   }

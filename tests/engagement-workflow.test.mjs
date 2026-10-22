@@ -21,7 +21,7 @@ const route = await readFile(new URL("../app/api/engagements/route.ts", import.m
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
 const migration = await readFile(new URL("../drizzle/0003_puzzling_flatman.sql", import.meta.url), "utf8");
-const { createMailDraft, sendMail } = await vite.ssrLoadModule("/lib/mail-service.ts");
+const { createMailDraft, mailFailureMayHaveDelivered, MailSendError, sendMail } = await vite.ssrLoadModule("/lib/mail-service.ts");
 
 test("1. a Lusha professional signal enters the shared queue as New", () => {
   const signal = engagementFixtures.find(event => event.eventType === "Professional Signal");
@@ -52,6 +52,26 @@ test("5. duplicate sends are prevented atomically", () => {
   assert.match(schema, /uniqueIndex\("idx_engagement_action_key"\)\.on\(table\.actionKey\)/);
   assert.match(route, /mail:\$\{person\.id\}:\$\{event\.eventKey\}:\$\{template\.templateKey\}:v\$\{template\.version\}/);
   assert.match(route, /onConflictDoNothing\(\)\.returning\(\)/);
+});
+
+test("5a. uncertain Gmail outcomes retain the unique send fence; known pre-send failures can be retried", async () => {
+  assert.match(route, /uncertain \? \{\} : \{ actionKey: `failed:/);
+  assert.match(route, /deliveryStatus: uncertain \? "Outcome unknown" : "Failed"/);
+  assert.match(route, /email_send_outcome_unknown/);
+  const keys = ["MAIL_MODE", "MAIL_LIVE_ENABLED", "MAIL_PROVIDER", "MAIL_SENDER_EMAIL", "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN", "GMAIL_SEND_SCOPE_CONFIRMED"];
+  const old = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, { MAIL_MODE: "live", MAIL_LIVE_ENABLED: "true", MAIL_PROVIDER: "gmail", MAIL_SENDER_EMAIL: "sender@example.test", GMAIL_CLIENT_ID: "synthetic-client", GMAIL_CLIENT_SECRET: "synthetic-secret", GMAIL_REFRESH_TOKEN: "synthetic-refresh", GMAIL_SEND_SCOPE_CONFIRMED: "true" });
+    const draft = { recipient: "recipient@example.test", subject: "Synthetic subject", body: "Synthetic body" };
+    const token = () => new Response(JSON.stringify({ access_token: "synthetic-access" }), { status: 200 });
+    await assert.rejects(() => sendMail(draft, { fetcher: async url => String(url).includes("oauth2") ? new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }) : assert.fail("Gmail send must not be reached") }), error => error instanceof MailSendError && !mailFailureMayHaveDelivered(error));
+    await assert.rejects(() => sendMail(draft, { fetcher: async url => String(url).includes("oauth2") ? token() : Promise.reject(new DOMException("Synthetic timeout", "TimeoutError")) }), error => error instanceof MailSendError && mailFailureMayHaveDelivered(error));
+    await assert.rejects(() => sendMail(draft, { fetcher: async url => String(url).includes("oauth2") ? token() : new Response("{}", { status: 200 }) }), error => error instanceof MailSendError && mailFailureMayHaveDelivered(error));
+    await assert.rejects(() => sendMail(draft, { fetcher: async url => String(url).includes("oauth2") ? token() : new Response("{}", { status: 401 }) }), error => error instanceof MailSendError && !mailFailureMayHaveDelivered(error));
+    assert.equal(mailFailureMayHaveDelivered(new Error("Synthetic persistence failure")), true);
+  } finally {
+    for (const key of keys) if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key];
+  }
 });
 
 test("6. confirmed birthdays with email are classified as ready", () => {

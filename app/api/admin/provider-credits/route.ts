@@ -47,7 +47,7 @@ async function snapshot() {
   const db = getDb()
   const [settings, usage, balances, operations] = await Promise.all([
     db.select().from(providerSettings),
-    db.select({ provider: providerResponseHistory.provider, applicationUnits: sql<number>`coalesce(sum(${providerResponseHistory.applicationUnits}),0)`, recordedCredits: sql<number>`coalesce(sum(${providerResponseHistory.creditsUsed}),0)` }).from(providerResponseHistory).where(sql`datetime(${providerResponseHistory.createdAt}) >= datetime(${monthStart()})`).groupBy(providerResponseHistory.provider),
+    db.select({ provider: providerResponseHistory.provider, applicationUnits: sql<number>`coalesce(sum(${providerResponseHistory.applicationUnits}),0)`, recordedCredits: sql<number>`coalesce(sum(${providerResponseHistory.creditsUsed}),0)`, lushaBudgetUnits: sql<number>`coalesce(sum(case when ${providerResponseHistory.mode}='live' then case when ${providerResponseHistory.applicationUnits}>0 then ${providerResponseHistory.applicationUnits} else ${providerResponseHistory.creditsUsed} end else 0 end),0)` }).from(providerResponseHistory).where(sql`datetime(${providerResponseHistory.createdAt}) >= datetime(${monthStart()})`).groupBy(providerResponseHistory.provider),
     observations(),
     db.select({ provider: providerResponseHistory.provider, createdAt: providerResponseHistory.createdAt }).from(providerResponseHistory)
       .where(and(eq(providerResponseHistory.status, "success"), eq(providerResponseHistory.mode, "live"))).orderBy(desc(providerResponseHistory.id)).limit(100),
@@ -76,7 +76,7 @@ async function snapshot() {
   }
   return {
     providers: [perProvider("coresignal"), perProvider("brightdata"), perProvider("lusha")],
-    internalControls: ["coresignal", "lusha"].map(provider => { const limit = settings.find(item => item.provider === provider)?.monthlyCreditLimit ?? (provider === "coresignal" ? 25 : 100); const row = usage.find(item => item.provider === provider); const used = Number(provider === "coresignal" ? row?.applicationUnits ?? 0 : row?.recordedCredits ?? 0); return { provider, used, limit, remaining: Math.max(0, limit - used), unit: provider === "coresignal" ? "application units" : "application credits" } }),
+    internalControls: ["coresignal", "lusha"].map(provider => { const limit = settings.find(item => item.provider === provider)?.monthlyCreditLimit ?? (provider === "coresignal" ? 25 : 100); const row = usage.find(item => item.provider === provider); const used = Number(provider === "coresignal" ? row?.applicationUnits ?? 0 : row?.lushaBudgetUnits ?? 0); return { provider, used, limit, remaining: Math.max(0, limit - used), unit: provider === "coresignal" ? "application units" : "application credits" } }),
   }
 }
 

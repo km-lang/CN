@@ -5,6 +5,7 @@ import { compareRetainedObservations, intelligenceSnapshotEntry, retainedProfess
 import { presentProviderHistoryCollectEvidence } from "@/lib/coresignal-collect-only"
 import { intelligenceErrorResponse, intelligenceRequest } from "@/lib/intelligence-service.server"
 import { accessErrorResponse, authorizeRequest } from "@/lib/security"
+import { savedHistoryFailure } from "@/lib/saved-history-diagnostics"
 
 type IndexRow = { row_kind: string; row_id: number; occurred_at: string; previous_kind?: string | null; previous_id?: number | null; previous_at?: string | null }
 
@@ -32,6 +33,7 @@ function intakeObservations(value: string) {
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  let stage = "authorization"
   try {
     const context = await authorizeRequest(request, "VIEW_ALUMNI")
     const alumnusId = Number((await params).id)
@@ -40,6 +42,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const source = query.get("source") ?? "corporate-network"
     if (source !== "corporate-network" && source !== "intelligence") return Response.json({ error: "Unsupported history source." }, { status: 400 })
     if (!Number.isSafeInteger(alumnusId) || alumnusId < 1 || !page) return Response.json({ error: "A valid alumnus ID and history page are required." }, { status: 400 })
+    stage = "alumnus_lookup"
     const db = getDb()
     const person = await db.select({ id: alumni.id, createdAt: alumni.createdAt, source: alumni.source, discoverySource: alumni.discoverySource,
       company: alumni.company, title: alumni.title, location: alumni.location, programme: alumni.programme, graduationYear: alumni.graduationYear, seniority: alumni.seniority }).from(alumni).where(sql`${alumni.id} = ${alumnusId}`).limit(1)
@@ -66,6 +69,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     }
     const pageSize = 20
     const offset = (page - 1) * pageSize
+    stage = "history_index_lookup"
     const indexed = await db.all<IndexRow>(sql`
       with source_kinds(row_kind) as (values ('SOURCE_BASELINE'), ('SOURCE_OBSERVATION')),
       primary_history as (
@@ -108,6 +112,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const hydrationRows = [...selected]
     for (const row of selected) if (row.previous_kind && row.previous_id && row.previous_at && !hydrationRows.some(item => item.row_kind === row.previous_kind && item.row_id === row.previous_id)) hydrationRows.push({ row_kind: row.previous_kind, row_id: row.previous_id, occurred_at: row.previous_at })
     const ids = (kind: string) => hydrationRows.filter(row => row.row_kind === kind).map(row => row.row_id)
+    stage = "history_hydration"
     const [sources, discoveries, intakes, attempts, reviews, careers, brightSnapshots, changes, proposals, evidence, webhookEvents] = await Promise.all([
       ids("SOURCE_OBSERVATION").length ? db.select().from(alumniSourceObservations).where(inArray(alumniSourceObservations.id, ids("SOURCE_OBSERVATION"))) : [],
       ids("DISCOVERY_OBSERVATION").length ? db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.id, ids("DISCOVERY_OBSERVATION"))) : [],
@@ -124,6 +129,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const byId = <T extends { id: number }>(items: T[]) => new Map(items.map(item => [item.id, item]))
     const sourceById = byId(sources), discoveryById = byId(discoveries), intakeById = byId(intakes), attemptById = byId(attempts), reviewById = byId(reviews)
     const careerById = byId(careers), brightById = byId(brightSnapshots), changeById = byId(changes), proposalById = byId(proposals), evidenceById = byId(evidence), webhookById = byId(webhookEvents)
+    stage = "history_presentation"
     const hydratedEntries: AlumniHistoryEntry[] = hydrationRows.flatMap<AlumniHistoryEntry>(row => {
       const base = { key: `${row.row_kind}:${row.row_id}`, occurredAt: row.occurred_at, requestReference: "", observed: {} as Record<string, string> }
       if (row.row_kind === "SOURCE_BASELINE") return [{ ...base, kind: "SOURCE_BASELINE", source: person[0].source || person[0].discoverySource || "Unknown", outcome: "Source attribution", verification: "Original field-level baseline not retained", details: "This is the current source label and creation time, not a reconstructed import snapshot." }]
@@ -195,5 +201,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       return [[entry.key, compareRetainedObservations(entry, previous, canonical)]]
     }))
     return Response.json({ page, pageSize, hasMore: indexed.length > pageSize, entries, comparisons, limitations: "Corporate Network retained evidence only. Legacy import baselines and Search #10 individual observations cannot be reconstructed. Future confirmed imports retain source fields; comparisons identify exact record IDs across pages." }, { headers: { "cache-control": "no-store" } })
-  } catch (error) { return accessErrorResponse(error) ?? Response.json({ error: "Unable to load retained alumni history." }, { status: 500 }) }
+  } catch (error) { return accessErrorResponse(error) ?? savedHistoryFailure(error, "alumni", stage) }
 }

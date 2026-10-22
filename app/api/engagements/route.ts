@@ -15,7 +15,7 @@ import {
   fieldChangeHistory,
   messageTemplates,
 } from "@/db/schema";
-import { createMailDraft, mailConfiguration, mailMode, sendMail } from "@/lib/mail-service";
+import { createMailDraft, mailConfiguration, mailFailureMayHaveDelivered, MailSendError, mailMode, sendMail } from "@/lib/mail-service";
 import { reusableManualEmailEvent } from "@/lib/controlled-email-draft";
 import { resolveEngagementOwner } from "@/lib/engagement-presentation";
 import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecurityAudit } from "@/lib/security";
@@ -219,8 +219,14 @@ async function sendOne(eventId: number, context: SecurityContext, approved: bool
     await audit(event.id, context, "email_sent", `${event.eventType === "Birthday" ? "Birthday" : "Congratulations"} email sent through ${result.mode} mail service.`);
     return { eventId: event.id, messageId: result.messageId, deliveryStatus: result.deliveryStatus };
   } catch (error) {
-    await db.update(engagementActions).set({ actionKey: `failed:${event.id}:${Date.now()}`, deliveryStatus: "Failed", notes: error instanceof Error ? error.message : "Mail send failed" }).where(eq(engagementActions.id, reserved.id));
-    throw error;
+    const uncertain = mailFailureMayHaveDelivered(error);
+    await db.update(engagementActions).set({
+      ...(uncertain ? {} : { actionKey: `failed:${event.id}:${crypto.randomUUID()}` }),
+      deliveryStatus: uncertain ? "Outcome unknown" : "Failed",
+      notes: uncertain ? "Delivery may have occurred; reconcile with the institutional mailbox before any new send." : error instanceof MailSendError ? error.message : "No message was sent.",
+    }).where(eq(engagementActions.id, reserved.id));
+    await audit(event.id, context, uncertain ? "email_send_outcome_unknown" : "email_send_failed_before_delivery", uncertain ? "The action key remains reserved pending mailbox reconciliation." : "The provider did not receive a message; a newly approved attempt may be prepared.");
+    throw error instanceof MailSendError ? error : new MailSendError("The email send or receipt could not be verified. Reconcile before retrying.", true);
   }
 }
 
@@ -309,7 +315,7 @@ export async function POST(request: Request) {
         return Response.json({ event: preparedEvent, templates: approvedTemplates, template: item.template, draft: item.draft, readiness: { ...eligibility, duplicateStatus: "No duplicate send found", provider: "Google Workspace / Gmail", mode: mailMode(), sender: mailConfiguration().sender || "Mock placement committee" } });
       } catch (error) {
         await audit(event.id, context, "draft_failed", "Controlled email draft initialization failed before any send attempt.");
-        console.error("Controlled email draft initialization failed", { eventId: event.id, message: error instanceof Error ? error.message : "Unknown error" });
+        console.error("Controlled email draft initialization failed", { eventId: event.id, errorType: error instanceof Error ? error.name : "Unknown" });
         throw error;
       }
     }
@@ -392,7 +398,7 @@ export async function POST(request: Request) {
         return Response.json({ template: item.template, draft: item.draft, readiness: { ...eligibility, duplicateStatus: "No duplicate send found", provider: "Google Workspace / Gmail", mode: mailMode(), sender: mailConfiguration().sender || "Mock placement committee" } });
       } catch (error) {
         await audit(eventId, context, "draft_failed", "Controlled email draft initialization failed before any send attempt.");
-        console.error("Controlled email draft initialization failed", { eventId, message: error instanceof Error ? error.message : "Unknown error" });
+        console.error("Controlled email draft initialization failed", { eventId, errorType: error instanceof Error ? error.name : "Unknown" });
         throw error;
       }
     } else if (payload.action === "send") {

@@ -62,13 +62,13 @@ function profile(options = {}) {
 }
 
 function memoryStore({ duplicate = false } = {}) {
-  const writes = { acquired: 0, completed: 0, failed: 0, evidence: null, transportMode: null }
+  const writes = { acquired: 0, completed: 0, failed: 0, failureStatus: null, evidence: null, transportMode: null }
   return {
     writes,
     store: {
       acquire: async input => { writes.acquired += 1; writes.transportMode = input.transportMode; return duplicate || writes.acquired > 1 ? { acquired: false } : { acquired: true, claimId: 44 } },
       complete: async input => { writes.completed += 1; writes.evidence = input.evidence; return true },
-      fail: async () => { writes.failed += 1; return true },
+      fail: async input => { writes.failed += 1; writes.failureStatus = input.status; return true },
     },
   }
 }
@@ -212,12 +212,20 @@ test("failed preflight and invalid or replayed confirmation make no provider cal
   assert.equal(state.writes.acquired, 0)
 })
 
-test("HTTP/auth/rate-limit/timeout/malformed failures are single-attempt and fenced", async () => {
-  for (const error of [new Error("401"), new Error("403"), new Error("429"), Object.assign(new Error("timed out"), { name: "AbortError" }), new Error("malformed response")]) {
+test("HTTP/auth/rate-limit/timeout/malformed failures are single-attempt and retain uncertain capacity", async () => {
+  for (const [error, expectedStatus] of [
+    [Object.assign(new Error("Authentication rejected"), { status: 401, kind: "authentication" }), "error"],
+    [Object.assign(new Error("Forbidden"), { status: 403, kind: "authentication" }), "error"],
+    [Object.assign(new Error("Insufficient credits"), { status: 402, kind: "insufficient_credits" }), "error"],
+    [Object.assign(new Error("Rate limited"), { status: 429, kind: "rate_limit" }), "error"],
+    [Object.assign(new Error("timed out"), { name: "AbortError" }), "ambiguous"],
+    [new Error("malformed response"), "ambiguous"],
+  ]) {
     const state = memoryStore(); let calls = 0
     await assert.rejects(() => collect.executeCollectOnce({ preflight: collect.collectPreflight(candidate(), runtime()), confirmationValid: true, actor: "A", store: state.store, transport: async () => { calls += 1; throw error } }))
     assert.equal(calls, 1)
     assert.equal(state.writes.failed, 1)
+    assert.equal(state.writes.failureStatus, expectedStatus)
     assert.equal(state.writes.completed, 0)
   }
 })
@@ -226,6 +234,7 @@ test("wrong returned ID is rejected after one call and never retained as evidenc
   const state = memoryStore(); let calls = 0
   await assert.rejects(() => collect.executeCollectOnce({ preflight: collect.collectPreflight(candidate(), runtime()), confirmationValid: true, actor: "A", store: state.store, transport: async () => { calls += 1; return { body: profile({ id: 123456 }), upstreamHttpStatus: 200, providerCreditsRemaining: 4949 } } }), /different Employee ID/)
   assert.equal(calls, 1); assert.equal(state.writes.completed, 0); assert.equal(state.writes.failed, 1)
+  assert.equal(state.writes.failureStatus, "ambiguous", "a 200 response with conflicting identity may still have been billed")
 })
 
 test("missing education/employment and conflicting evidence remain review states, not canonical decisions", () => {
@@ -277,6 +286,23 @@ test("Collect metadata transport is one GET with apikey auth, redirect refusal a
     assert.equal(calls, 1)
     assert.equal(result.upstreamHttpStatus, 200)
     assert.equal(result.providerCreditsRemaining, 4949)
+  } finally {
+    if (previous === undefined) delete process.env.CORESIGNAL_API_KEY
+    else process.env.CORESIGNAL_API_KEY = previous
+  }
+})
+
+test("a rejected 402 Collect remains a single non-billable attempt with an explicit insufficient-credit classification", async () => {
+  const previous = process.env.CORESIGNAL_API_KEY
+  process.env.CORESIGNAL_API_KEY = "synthetic-collect-test-key"
+  try {
+    const client = await vite.ssrLoadModule("/lib/coresignal-client.ts")
+    let calls = 0
+    await assert.rejects(() => client.collectCoresignalEmployeeWithMetadata("289351894", { fetcher: async () => {
+      calls += 1
+      return new Response("synthetic rejection", { status: 402 })
+    } }), error => error.kind === "insufficient_credits" && error.status === 402 && error.successfulOperationCredits === 0 && collect.collectFailureRequiresReconciliation(error, false) === false)
+    assert.equal(calls, 1)
   } finally {
     if (previous === undefined) delete process.env.CORESIGNAL_API_KEY
     else process.env.CORESIGNAL_API_KEY = previous

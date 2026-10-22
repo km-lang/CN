@@ -100,6 +100,7 @@ test("isolated D1 records Admin observations durably, keeps history, separates b
     db.exec("insert into application_identities (id,application_user_id,provider,provider_subject_id,verified_email,email_verified) values (1,1,'chatgpt','synthetic-admin','admin@example.test',1),(2,2,'chatgpt','synthetic-pcom','pcom@example.test',1)")
     db.exec("insert into provider_settings (provider,monthly_credit_limit) values ('coresignal',25)")
     db.exec("insert into provider_response_history (provider,alumnus_name,operation,mode,status,application_units) values ('coresignal','Synthetic','Mock Preview','mock','success',16)")
+    db.exec("insert into provider_response_history (provider,alumnus_name,operation,mode,status,credits_used,application_units,usage_state) values ('lusha','Synthetic','Contact Search Preview','live','in_progress',0,6,'reconciliation_required')")
     process.env.AUTH_SESSION_SECRET = "synthetic-session-secret-at-least-thirty-two"
     delete process.env.LUSHA_API_KEY
     globalThis.fetch = async () => { throw new Error("An external request was not permitted in this test.") }
@@ -126,6 +127,8 @@ test("isolated D1 records Admin observations durably, keeps history, separates b
     assert.equal(data.internalControls.find(row => row.provider === "coresignal").limit, 25)
     assert.equal(data.internalControls.find(row => row.provider === "coresignal").used, 16)
     assert.equal(data.internalControls.find(row => row.provider === "coresignal").remaining, 9)
+    assert.equal(data.internalControls.find(row => row.provider === "lusha").used, 6, "unknown provider debit must still consume reserved application capacity")
+    assert.equal(data.internalControls.find(row => row.provider === "lusha").remaining, 94)
     assert.equal(data.providers.find(row => row.provider === "coresignal").observations.length, 0)
     const searchEvidence = await vite.ssrLoadModule("/lib/coresignal-search-evidence.ts")
     const search = await vite.ssrLoadModule("/lib/alumni-search.ts")
