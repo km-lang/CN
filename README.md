@@ -4,12 +4,15 @@ Corporate Network is an internal alumni intelligence and engagement platform for
 
 Provider output is evidence, not canonical truth. Corporate Network owns its institutional alumni record and never silently overwrites it from a provider response.
 
-## Current status
+## Current status (2026-10-22)
 
-- **Corporate Network:** feature-complete for local acceptance; full suite, lint, type-check, production-equivalent build, and responsive acceptance pass.
-- **Alumni Profile Intelligence integration:** full local cross-service E2E verified, including mapping, enrollment idempotency, eligibility, revalidation, review decisions, persistence, invalid authentication, and service-unavailable handling.
-- **Responsive UI:** validated at 1440, 1280, 768, 390, and 360 pixels. Low-priority polish may remain.
-- **Release:** provider-gated staging and production release are pending. Local acceptance is not production approval.
+**Implemented** means code exists; **mock-tested** means provider-free fixtures exercised it; **locally live-verified** means an actual local browser/database or explicitly identified provider operation was observed. None of these means deployed or accepted on the current production Sites database.
+
+- **Local application:** Directory/profile management, Admin/PCOM navigation and authorization, discovery evidence/review/history, Company Intelligence, engagement/outreach, opportunities, scoring/cohort previews, and governed CSV/XLSX import/export have local browser and/or isolated-D1 acceptance. Write-oriented acceptance used synthetic data; it did not prove production operation.
+- **Provider operations:** real Coresignal Search/ES-DSL Preview and one isolated Bright Data Trigger → Snapshot retrieval have retained local evidence. Coresignal Collect, Lusha V3 Search/Enrich, real webhook subscriptions/events, and Gmail sending are implemented or mock-tested but **not live-verified** in their intended environment. External entitlement, billing, callback, or send-scope requirements still block activation. PDL is excluded from active execution; historical evidence is preserved.
+- **Identity safety:** provider responses remain evidence until governed review. The latest Lusha fix stores even an exact-URL V3 Search contact ID as pending review; only a separately authorized Admin approval may associate it with an alumnus. See [Providers and safety](docs/providers.md).
+- **Validation:** the latest reported serial full suite had **847 total, 831 passed, 0 failed, 16 skipped**; TypeScript, ESLint and direct production-equivalent build passed. The 16 optional tests are not passes. This is a local source-validation result, not production acceptance.
+- **Production release: NO-GO.** The Sites D1 has 24 tables versus 44 in the local release schema; migrations 0010–0026 remain pending there. A documented complete, restorable production backup/restore path and authoritative production migration ledger are unavailable. Do not publish or migrate until the exact production database can be backed up, restored and rehearsed safely. See the [release checklist](docs/production-release-checklist-2026-10-22.md).
 
 See [Architecture](docs/architecture.md), [Providers and safety](docs/providers.md), [Local development](docs/local-development.md), and [Alumni import readiness](docs/alumni-import-readiness.md) for the detailed current-state contract.
 
@@ -71,7 +74,7 @@ Provider provenance, field-change history, and security audit infrastructure are
 
 ## Database and migrations
 
-Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0026_green_ben_parker.sql`. The original local D1 is at 0026; the hosted D1 must be reconciled and backed up before any later migration is authorized.
+Corporate Network uses Cloudflare D1/SQLite with Drizzle migrations through `drizzle/0026_green_ben_parker.sql`. The original local D1 is at 0026. The current hosted Sites database is older (24 tables, corresponding to the 0009 schema snapshot) and must not receive the 0026 source without a supported backup, ledger reconciliation, isolated restore/rehearsal and separately authorized migration.
 
 Migration 0012 adds a partial unique index so one non-empty `coresignal_employee_id` can belong to at most one CN alumnus. The empty string remains the supported unassigned value. Migration 0012 has been validated against repository-local D1 only; this README does **not** claim staging or production migration completion.
 
@@ -87,22 +90,22 @@ npm run db:generate
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| CN canonical workflows and product areas | Active / validated | Local functional and responsive acceptance complete. |
-| Intelligence local integration | Active / validated | Loopback authenticated service and review UI verified. |
-| Coresignal Base Employee Filter Preview and selective Collect | Implemented / provider-gated | Explicit live gate, bounded application limits, review before apply. |
+| CN canonical workflows and product areas | Locally verified, not production-accepted | Directory/profile, discovery review/history, company, engagement/outreach, opportunities, cohorts and administration have local or isolated acceptance. |
+| CSV/XLSX import and export | Locally browser-verified | Preview/validation/confirmed import, Directory reload and both downloads were accepted with synthetic isolated-D1 records; production persistence is untested. |
+| Intelligence local integration | Locally verified, currently separate/inactive | Loopback authenticated service and review UI were validated; no automatic Intelligence-to-CN writeback. |
+| Coresignal Base Employee Filter Preview and selective Collect | Implemented / mock-tested; Collect not live-verified | Exact-ID Collect remains gated pending key-specific endpoint entitlement, spend ceiling and separately approved application allowance. |
 | Coresignal Employee ID persistence and Search-ID deduplication | Active domain capability | Durable identity and bulk indexed lookup. |
-| Coresignal Base Employee ES-DSL Search transport | Implemented / disabled by default | Nested IIM Lucknow institution ID 25919228 is live-verified. The same-row combination with `education.date_to_year=2011` is live-verified for the IIM Lucknow 2011 case. Institution-only or institution + exact-year mode; independent `CORESIGNAL_SEARCH_ENABLED` server gate, explicit confirmation, one request, zero retry/pagination, no automatic Preview/Collect. |
-| Coresignal Base Employee exact-year Search Preview | Operationally verified / gate disabled by default | On 2026-10-19 the configured local key received HTTP 200 for a single same-row IIML institution `25919228` + exact end-year `2011` Preview. External Discovery can add a current-company constraint using a verified numeric mapping when available, otherwise the supported exact company-name predicate with conservative identity review. A manual session still requires explicit entitlement/gate flags, Admin + loopback controls, and confirmation; no fallback, pagination, retry, Collect, mapping verification, or canonical mutation is automatic. Exact provider billing remains unresolved. |
+| Coresignal Base Employee ES-DSL Search/Preview | Locally live-verified in bounded cases; off by default | IIM Lucknow institution/year and controlled company predicates have real responses, including retained zero-result Search #13. Other filter combinations are mocked; a Preview query match does not verify missing education, programme or employment evidence. One confirmed page/request, no automatic Collect, retry or pagination. |
 | Regular Search response parser and routing planner | Implemented behind disabled Search gate | Parses one page, deduplicates IDs, and routes identity without canonical mutation. |
 | Exact-year ES-DSL request builder | Implemented behind disabled Search gate | Provider-free structure is validated; exact-year Search is live-verified for the IIM Lucknow 2011 case only. Search matches are not freshness or alumni qualification evidence; post-Collect evidence and human review remain authoritative. |
-| Current-company ES-DSL Search | Implemented / disabled by default | A selected company resolves server-side through an Admin-managed verified mapping before one bounded Search. Missing, unverified, conflicting, duplicate, or invalid mappings fail closed before provider transport. Lincoln International is the only currently live-evidenced mapping; no name-only or arbitrary-company mapping is allowed. |
+| Current-company ES-DSL Search | Implemented; bounded local live evidence | Server-side verified numeric mapping is preferred; Preview can use the supported exact-name fallback with unverified identity and human review. Lincoln International is the controlled verified-ID example. Generic summary company is not proof of current employment. |
 | Coresignal Real-Time Employee API | Frozen | Previous attempt was unauthorized; later guidance said the API is unavailable. |
 | Coresignal webhooks | Implemented / mock-validated, live inactive | Support email reports subscriptions available and free; account-specific creation, public HTTPS callback and verified Employee ID mapping remain untested. |
-| Bright execution architecture | Implemented / provider-gated | Secondary, fallback, or corroborating evidence; not primary freshness authority. |
+| Bright Data LinkedIn extraction | Locally live-verified once; gated now | One authorized isolated Trigger/Progress/Snapshot flow retained raw and normalized evidence without canonical linking. A new target/runtime needs fresh entitlement, billing and request approval; retrieval time does not prove employment freshness. |
 | PDL | Historical records only | Existing provenance remains readable; no active requests, intake, updates, fallback, or production credential. |
-| Lusha Contacts and Professional Signals | Implemented / independently gated | Contact and signal workflows remain separate from professional-profile evidence. |
-| Institutional Gmail | Implemented / independently gated | Mock/off by default; live sending requires all mail safety gates. |
-| Production deployment | Pending | Requires staging, rollback, security, and release approval. |
+| Lusha V3 Search/Enrich and Professional Signals | Implemented / mock-tested; live disabled | Search evidence is pending Admin identity review even for exact URL matches. Enrich uses separate consent/channel controls and `waterfallEnabled: false`; no current V3 live request or charge is verified. |
+| Institutional Gmail | Implemented / mock-tested; live disabled | Draft/approval and uncertain-send fencing exist; no real send accepted. |
+| Production deployment | NO-GO / not deployed at this source version | Hosted D1 backup/restore, ledger and 0010–0026 compatibility remain unresolved. |
 
 ## Safe local start
 
@@ -144,7 +147,7 @@ These are P2 polish items, not local P0/P1 blockers.
 
 ## Release preparation remaining
 
-Provider work still requires account and entitlement confirmation, server-side credentials, commercial/credit confirmation, explicit live-gate approval, and controlled live acceptance. Release work still requires isolated staging configuration, secret setup, migration and rollback validation, provider-gated staging acceptance, security/release-readiness approval, and production release authorization.
+Provider work still requires key-specific entitlement, account charge evidence, protected secrets, separate live-gate/request approval and controlled acceptance. Application reservations are not provider charges; unknown balances or debits are not zero. Production work first requires a Sites-supported complete/restorable export of the exact production D1, an authoritative migration ledger, isolated migration rehearsal and rollback, then separate release authorization.
 
 ## Documentation maintenance
 

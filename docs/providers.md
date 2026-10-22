@@ -14,11 +14,13 @@ All provider workflows preserve these rules:
 - identity namespaces are not conflated;
 - no secret is returned to or logged by the browser.
 
+Status in this document is environment-specific: source/mocks do not establish current key entitlement, a live provider charge, or production deployment. The latest Lusha identity-review checkpoints are `5bcec2184c38a53c7dd23a957e9c0057d7597772` and `69bbaf6e70024a2d620b9afe30952571779ebbb6`; their latest reported serial validation was 831 passed, 0 failed, 16 skipped.
+
 ## Coresignal
 
 ### Current Base Employee flow
 
-The provider-gated runtime uses Base Employee Filter Preview followed by selective stable-ID Collect:
+The repository retains a separately gated Base Employee Filter Preview and selective stable-ID Collect path. Normal External Discovery uses the ES-DSL Preview path described below; it does **not** automatically chain Preview to Collect:
 
 ```text
 POST /cdapi/v2/employee_base/search/filter/preview
@@ -30,7 +32,7 @@ GET /cdapi/v2/employee_base/collect/{employee_id}
   → review before add/apply
 ```
 
-Authentication uses the server-only `apikey` header. The application supports company and explicit role/function narrowing, multi-select seniority with authoritative local OR semantics, programme qualification, exact graduation-year verification from returned non-deleted IIML education, deleted-record safeguards, and explicit ambiguity for multiple current roles.
+Authentication uses the server-only `apikey` header. The application supports company and explicit role/function narrowing, multi-select seniority with authoritative local OR semantics, programme qualification, exact graduation-year verification when returned non-deleted IIML education is available, deleted-record safeguards, and explicit ambiguity for multiple current roles. Base Employee Collect is **not** live-verified for the currently configured key; Search/Preview access does not establish Collect entitlement or a maximum debit.
 
 Preview fields are not treated as proof that unavailable evidence was returned. Search criteria are never reconstructed as education facts.
 
@@ -40,7 +42,7 @@ Each confirmed request retrieves one page of at most 20 Preview candidates. The 
 
 Operational access is now verified for the configured local key. On 2026-10-19 one authorized `POST /cdapi/v2/employee_base/search/es_dsl/preview` request correlated `education.institution_id=25919228` and `education.date_to_year=2011`, returned HTTP 200, 20 bounded Preview rows, `x-total-results=927`, and `x-credits-remaining=4930`. It made zero retries, pagination, fallback, or Collect requests. The limited rows contained identity/current-role summary fields but no education objects, so query acceptance is provider-constraint provenance rather than person-level degree evidence or freshness proof. Sanitized evidence is retained in `docs/provider-evidence/coresignal-es-dsl-preview-2026-10-19.md`.
 
-The successful response establishes operational endpoint access, not an exact billing tariff or a permanent contractual guarantee. Live execution therefore remains off by default behind `CORESIGNAL_ES_DSL_PREVIEW_ENABLED=false`; `CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT=confirmed` is appropriate only for the tested key in a deliberately launched Admin/loopback session after reviewing the retained evidence. The confirmation UI discloses the workbook's expected 20-search-credit page cost while marking the actual account debit unverified. Mock tests may exercise the full application flow without provider use.
+The successful response establishes operational endpoint access, not an exact billing tariff or a permanent contractual guarantee. Additional retained local live Preview evidence includes Search #13's genuine zero-result response; zero results are not by themselves a software defect. Live execution remains off by default behind `CORESIGNAL_ES_DSL_PREVIEW_ENABLED=false`; entitlement must not be inferred for a different key or runtime. The confirmation UI discloses the workbook's expected 20-search-credit page cost while marking the actual account debit unverified. Mock tests may exercise the full application flow without provider use. Seven uncommitted, single-use Preview-trial paths are local experiment scaffolding, not part of the production source candidate.
 
 ### Durable identity
 
@@ -131,7 +133,7 @@ Official contract references reviewed 2026-10-20: `https://docs.coresignal.com/a
 
 ## Bright Data
 
-The separate Intelligence service has a technically validated, bounded Bright execution pipeline with retry safety, immutable evidence, comparison, and review. Controlled validation proved that evidence reached review without automatic CN mutation.
+Corporate Network retained one authorized local Bright Data Trigger → Progress → Snapshot retrieval for a single LinkedIn URL in an isolated D1, with Admin attempt/history and raw plus normalized provenance. No automatic CN identity link or canonical update occurred. The separate Intelligence service also has a technically validated bounded Bright pipeline, but is a separate, currently inactive deployment. A completed earlier snapshot is not proof that a new Trigger is entitled or accepted in production.
 
 Observed live evidence was stale relative to known current professional data. Bright is therefore positioned as secondary, fallback, or corroborating evidence—not the primary freshness authority and not the preferred continuous-monitoring solution for the entire alumni population.
 
@@ -145,9 +147,15 @@ PDL is excluded from active integrations. Existing PDL discovery rows, provider 
 
 ## Lusha and Professional Signals
 
-Lusha owns contact identity, selective email/phone enrichment, and Professional Signals. Its contact and signal gates are independent from Coresignal and mail. Existing channel-specific confirmation, DNC, usage-reconciliation, and provenance controls remain in force.
+Lusha V3 Contact Search, selective email/phone Enrich and Professional Signals are implemented and provider-free tested, **not currently live-verified** for the configured key. Search uses one contact input; Enrich is separately authorized and sends `waterfallEnabled: false` so account Data Waterfall does not invoke additional providers. No Search result alone reveals contact channels or creates an alumnus.
+
+Search retains the returned contact ID, actual returned LinkedIn URL, name/role summary, reported billing and request provenance in provider history, then creates a pending `provider_refresh_reviews` identity case. Even an exact normalized URL match makes **zero canonical changes** at Search time. An Admin must explicitly approve a single eligible review; the database operation checks the original alumnus and record version, URL identity, one returned contact, pending review status and cross-alumnus contact-ID uniqueness atomically. Ambiguous, mismatched, missing-URL, duplicate or stale evidence cannot be silently attached. Admin rejection retains evidence and makes no canonical change. These safeguards were checkpointed in `5bcec2184c38a53c7dd23a957e9c0057d7597772` and `69bbaf6e70024a2d620b9afe30952571779ebbb6`; no migration or original-D1 edit was needed.
+
+The guarded live path requires a protected `LUSHA_API_KEY`, explicit live gate, operation-specific entitlement with source/date, per-operation application-unit ceiling, fresh account usage/balance, role permission and confirmation. Atomic claims prevent duplicate/concurrent overspend; unresolved or over-ceiling charges retain capacity rather than becoming zero. A user-reported one-credit key cap and public one-credit Search pricing do **not** prove hard concurrent billing enforcement or account-specific V3 entitlement. The last controlled live attempt stopped before transport; no current V3 Search/Enrich charge or response is recorded. Historical Lusha activity on another key/environment does not establish this key's access. Contact Search and channel Enrich need separate live acceptance.
 
 ## Mail
 
 Institutional Gmail is independently gated and mock/off in ordinary local development. Live sending requires the Gmail sender/OAuth configuration, `MAIL_MODE=live`, `MAIL_LIVE_ENABLED=true`, and confirmed send-scope authorization. Preparing or reviewing a draft does not send mail.
+
+The locally tested send fence retains the original action key after a timeout, incomplete receipt or uncertain post-send persistence; it must not silently retry or claim that an unknown outcome was undelivered. Live OAuth/send-scope setup, approved recipient and an explicitly authorized controlled send remain outstanding. No production Gmail send has been accepted.
 
