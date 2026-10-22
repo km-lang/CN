@@ -29,7 +29,7 @@ export function lushaContactValueValid(channel: "email" | "phone", value: string
 }
 
 /** Column names are selected only from this fixed map, never from request data. */
-export function lushaContactApprovalSql(channel: "email" | "phone") {
+export function lushaContactApprovalSql(channel: "email" | "phone", mode: "live" | "mock" = "live") {
   const column = channel === "email" ? "email" : "phone"
   const verification = channel === "email" ? "email_verification" : "phone_verification"
   const source = channel === "email" ? "email_source" : "phone_source"
@@ -53,7 +53,7 @@ export function lushaContactApprovalSql(channel: "email" | "phone") {
           AND json_extract(r.proposed_changes_json,'$.value')=?
           AND json_extract(r.proposed_changes_json,'$.previousValue')=alumni.${column}
           AND json_extract(r.proposed_changes_json,'$.alumnusRecordVersion')=alumni.record_version
-          AND h.provider='lusha' AND h.operation='${operation}' AND h.mode='live'
+          AND h.provider='lusha' AND h.operation='${operation}' AND h.mode='${mode}'
           AND h.alumnus_id=alumni.id AND h.status='review_required')
       AND EXISTS (SELECT 1 FROM provider_refresh_reviews identity_review
         WHERE identity_review.alumnus_id=alumni.id AND identity_review.status='Approved identity'

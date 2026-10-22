@@ -64,6 +64,22 @@ export const LUSHA_REQUEST_CLAIM_SQL = `
   RETURNING id
 `
 
+/** Disposable local fixture only: no application reservation or provider charge. */
+export const LUSHA_MOCK_REQUEST_CLAIM_SQL = `
+  INSERT INTO provider_response_history
+    (provider, alumnus_id, alumnus_name, operation, mode, status, credits_used,
+     application_units, provider_reported_credits, usage_state, result_count,
+     request_summary, response_summary, requested_by)
+  SELECT 'lusha', ?, ?, ?, 'mock', 'in_progress', 0, 0, NULL,
+         'not_applicable', 0, ?, 'Synthetic V3 fixture; no provider request.', ?
+  WHERE NOT EXISTS (
+    SELECT 1 FROM provider_response_history
+    WHERE provider='lusha' AND mode='mock' AND alumnus_id=? AND operation=?
+      AND status IN ('in_progress','success','no_match','review_required','ambiguous')
+  )
+  RETURNING id
+`
+
 /** Atomic cross-alumnus identity fence without a schema change. */
 export const LUSHA_ATTACH_ID_SQL = `
   UPDATE alumni SET lusha_person_id=?, updated_by=?, updated_at=?, record_version=record_version+1

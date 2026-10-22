@@ -83,6 +83,9 @@ export const LUSHA_REVIEWED_ATTACH_ID_SQL = `
   RETURNING id
 `
 
+/** Used only after the route verifies the isolated local V3 mock gate. */
+export const LUSHA_REVIEWED_ATTACH_ID_MOCK_SQL = LUSHA_REVIEWED_ATTACH_ID_SQL.replace("h.mode='live'", "h.mode='mock'")
+
 export const LUSHA_APPROVE_REVIEW_SQL = `
   UPDATE provider_refresh_reviews SET status='Approved identity',reviewed_by=?,reviewed_at=?
   WHERE id=? AND status='Pending identity review'

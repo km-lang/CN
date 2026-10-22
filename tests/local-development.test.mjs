@@ -26,6 +26,21 @@ test("local authentication accepts loopback hosts only", () => {
   assert.equal(localDevelopment.isLoopbackHost("localhost.attacker.example"), false)
 })
 
+test("synthetic Lusha V3 transport is confined to an Admin loopback server and disposable D1", () => {
+  const allowed = {
+    NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN",
+    LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1", LOCAL_LUSHA_V3_MOCK_TRANSPORT: "true",
+    LUSHA_LIVE_ENABLED: "false", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-lusha-browser-fixture",
+  }
+  assert.equal(localDevelopment.localLushaV3MockTransportEnabled(allowed), true)
+  for (const replacement of [
+    { NODE_ENV: "production" }, { LOCAL_DEV_AUTH_ROLE: "PCOM" },
+    { LOCAL_PROVIDER_LIVE_DEMO_HOST: "network.teamsynapse.app" },
+    { LUSHA_LIVE_ENABLED: "true" }, { LOCAL_DEV_D1_PERSIST_PATH: "/Users/example/original-d1" },
+    { LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/../original-d1" },
+  ]) assert.equal(localDevelopment.localLushaV3MockTransportEnabled({ ...allowed, ...replacement }), false)
+})
+
 test("local acceptance supports approved fixtures while invalid local roles fail closed", () => {
   assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "PCOM" }).role, "PCOM")
   assert.equal(localDevelopment.localDevelopmentSecurityContext({ LOCAL_DEV_AUTH_ROLE: "PCOM" }).userId, 2)

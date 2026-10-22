@@ -16,12 +16,16 @@ import { coresignalIdentityStore } from "@/lib/coresignal-identity-store";
 import { presentProviderHistorySearchEvidence } from "@/lib/coresignal-search-evidence";
 import { presentProviderHistoryCollectEvidence } from "@/lib/coresignal-collect-only";
 import { LUSHA_REQUEST_CLAIM_SQL, lushaApplicationReservation, lushaBalanceCoversReservation, lushaContactEntitlement, lushaReportedChargeExceedsReservation, type LushaGovernedOperation } from "@/lib/lusha-request-guard";
-import { LUSHA_APPROVE_REVIEW_SQL, LUSHA_COMPLETE_REVIEWED_HISTORY_SQL, LUSHA_RECORD_IDENTITY_CHANGE_SQL, LUSHA_REJECT_REVIEW_SQL, LUSHA_REVIEWED_ATTACH_ID_SQL, lushaIdentityApprovalEligible, lushaIdentityEvidence, parseLushaIdentityEvidence } from "@/lib/lusha-identity-review";
+import { LUSHA_MOCK_REQUEST_CLAIM_SQL } from "@/lib/lusha-request-guard";
+import { localLushaV3MockTransportEnabled } from "@/lib/local-development";
+import { LUSHA_APPROVE_REVIEW_SQL, LUSHA_COMPLETE_REVIEWED_HISTORY_SQL, LUSHA_RECORD_IDENTITY_CHANGE_SQL, LUSHA_REJECT_REVIEW_SQL, LUSHA_REVIEWED_ATTACH_ID_SQL, LUSHA_REVIEWED_ATTACH_ID_MOCK_SQL, lushaIdentityApprovalEligible, lushaIdentityEvidence, parseLushaIdentityEvidence } from "@/lib/lusha-identity-review";
 import { linkedinProfileIdentifier, normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { LUSHA_APPROVE_CONTACT_REVIEW_SQL, LUSHA_REJECT_CONTACT_REVIEW_SQL, lushaContactApprovalSql, lushaContactValueValid, parseLushaContactReview, type LushaContactReviewEvidence } from "@/lib/lusha-contact-review";
 
 const providers: ProviderName[] = ["coresignal", "lusha"];
 const defaultLimits: Record<ProviderName, number> = { coresignal: 25, lusha: 100 };
+const lushaV3Available = () => localLushaV3MockTransportEnabled() || (enrichmentMode("lusha") === "live" && providerConfigured("lusha"));
+const lushaHistoryModeAllowed = (mode: string) => mode === "live" || (mode === "mock" && localLushaV3MockTransportEnabled());
 
 function monthStart() {
   const date = new Date();
@@ -49,13 +53,20 @@ async function usageSnapshot() {
   return Object.fromEntries(providers.map(provider => {
     const limit = settings.find(row => row.provider === provider)?.monthlyCreditLimit ?? defaultLimits[provider];
     const used = usedByProvider[provider] ?? 0;
-    return [provider, { used, limit, remaining: Math.max(0, limit - used), configured: providerConfigured(provider), mode: enrichmentMode(provider) }];
+    return [provider, { used, limit, remaining: Math.max(0, limit - used), configured: providerConfigured(provider) || (provider === "lusha" && localLushaV3MockTransportEnabled()), mode: enrichmentMode(provider) }];
   }));
 }
 
 function lushaMonthStart() { return monthStart(); }
 
 async function claimLushaRequest(person: typeof alumni.$inferSelect, operation: LushaGovernedOperation, actor: string) {
+  if (localLushaV3MockTransportEnabled()) {
+    const row = await env.DB.prepare(LUSHA_MOCK_REQUEST_CLAIM_SQL).bind(
+      person.id, person.name, operation, `Synthetic ${operation} for fictional alumnus #${person.id}`, actor, person.id, operation,
+    ).first<{ id: number }>();
+    if (!row) return { error: "A duplicate synthetic Lusha request is already retained." } as const;
+    return { id: row.id, reservation: 0 } as const;
+  }
   const reservation = lushaApplicationReservation(operation);
   if (reservation === null) return { error: "This Lusha operation has no approved application-unit ceiling. Configure it only after account-specific entitlement and billing review." } as const;
   if (!lushaContactEntitlement(operation)) return { error: "Lusha endpoint entitlement has not been confirmed for this operation and account. No provider request was made." } as const;
@@ -74,9 +85,10 @@ async function claimLushaRequest(person: typeof alumni.$inferSelect, operation: 
 }
 
 async function completeLushaRequest(claimId: number, reservation: number, status: string, credits: number | null, resultCount: number, summary: string) {
+  const mock = localLushaV3MockTransportEnabled();
   const applicationUnits = Math.max(reservation, credits ?? 0);
   const result = await env.DB.prepare("UPDATE provider_response_history SET status=?,credits_used=?,application_units=?,provider_reported_credits=?,usage_state=?,result_count=?,response_summary=? WHERE id=? AND provider='lusha' AND status='in_progress'")
-    .bind(status, credits ?? 0, applicationUnits, credits, providerUsageState(credits), resultCount, summary, claimId).run() as { meta: { changes?: number } };
+    .bind(status, mock ? 0 : credits ?? 0, mock ? 0 : applicationUnits, mock ? null : credits, mock ? "not_applicable" : providerUsageState(credits), resultCount, summary, claimId).run() as { meta: { changes?: number } };
   if (result.meta.changes !== 1) throw new Error("The Lusha request claim could not be finalized; manual reconciliation is required.");
 }
 
@@ -97,16 +109,17 @@ async function hasApprovedLushaIdentity(person: typeof alumni.$inferSelect) {
 }
 
 async function retainLushaContactResult(input: { claimId: number; reservation: number; person: typeof alumni.$inferSelect; actor: string; channel: "email" | "phone"; value: string; status: string; credits: number | null }) {
+  const mock = localLushaV3MockTransportEnabled();
   const exceeded = lushaReportedChargeExceedsReservation(input.credits, input.reservation);
   const pending = input.status === "success" && Boolean(input.value);
   const outcome = exceeded || pending ? "review_required" : input.status;
-  const summary = `${pending ? `${input.channel === "email" ? "Email" : "Phone"} retained for Admin contact review; no canonical field changed.` : outcome === "review_required" ? "Provider identity or billing requires review; no contact value was applied." : "No contact value was returned."} ${input.credits === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${input.credits} provider credit${input.credits === 1 ? "" : "s"} reported.`}`;
+  const summary = `${pending ? `${input.channel === "email" ? "Email" : "Phone"} retained for Admin contact review; no canonical field changed.` : outcome === "review_required" ? "Provider identity or billing requires review; no contact value was applied." : "No contact value was returned."} ${mock ? "Synthetic mock; no provider request or charge." : input.credits === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${input.credits} provider credit${input.credits === 1 ? "" : "s"} reported.`}`;
   if (pending) {
     const evidence: LushaContactReviewEvidence = { kind: "LUSHA_CONTACT_FIELD", version: 1, channel: input.channel, contactId: input.person.lushaPersonId, value: input.value, previousValue: input.channel === "email" ? input.person.email : input.person.phone, alumnusRecordVersion: input.person.recordVersion };
     const [completed, reviews] = await env.DB.batch([
       env.DB.prepare(`UPDATE provider_response_history SET status=?,credits_used=?,application_units=?,provider_reported_credits=?,usage_state=?,result_count=1,response_summary=?
         WHERE id=? AND provider='lusha' AND status='in_progress' RETURNING id`)
-        .bind(outcome, input.credits ?? 0, Math.max(input.reservation, input.credits ?? 0), input.credits, providerUsageState(input.credits), summary, input.claimId),
+        .bind(outcome, mock ? 0 : input.credits ?? 0, mock ? 0 : Math.max(input.reservation, input.credits ?? 0), mock ? null : input.credits, mock ? "not_applicable" : providerUsageState(input.credits), summary, input.claimId),
       env.DB.prepare(`INSERT INTO provider_refresh_reviews (provider_response_id,alumnus_id,proposed_changes_json,status,requested_by)
         SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM provider_response_history WHERE id=? AND provider='lusha' AND status='review_required')
           AND NOT EXISTS (SELECT 1 FROM provider_refresh_reviews WHERE provider_response_id=?)
@@ -140,9 +153,12 @@ export async function GET(request: Request) {
         phoneAvailable: item.responseSummary.includes("Phone availability: available.") ? true : item.responseSummary.includes("Phone availability: not available.") ? false : null,
       }]));
     return Response.json({
-      modes: { coresignal: coresignalProvider.mode(), lusha: enrichmentMode("lusha") },
+      modes: { coresignal: coresignalProvider.mode(), lusha: localLushaV3MockTransportEnabled() ? "mock_v3" : enrichmentMode("lusha") },
+      lushaV3Mock: localLushaV3MockTransportEnabled(),
       usage,
-      lushaReservations: { search: lushaApplicationReservation("Contact Search Preview"), email: lushaApplicationReservation("Email Reveal"), phone: lushaApplicationReservation("Phone Reveal") },
+      lushaReservations: localLushaV3MockTransportEnabled()
+        ? { search: 0, email: 0, phone: 0 }
+        : { search: lushaApplicationReservation("Contact Search Preview"), email: lushaApplicationReservation("Email Reveal"), phone: lushaApplicationReservation("Phone Reveal") },
       contactResume,
       history: context.role === "ADMIN" ? history.map(presentProviderHistorySearchEvidence).map(presentProviderHistoryCollectEvidence).map(item => {
         const review = reviewByHistory.get(item.id);
@@ -224,7 +240,7 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "lusha_search_contact") {
-      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE is not available." }, { status: 409 });
+      if (!lushaV3Available()) return Response.json({ error: "Lusha V3 is unavailable." }, { status: 409 });
       if (!Number.isInteger(payload.alumnusId) || payload.confirmed !== true) return Response.json({ error: "Select one approved alumnus and explicitly confirm the Lusha contact Search." }, { status: 400 });
       const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
@@ -251,7 +267,7 @@ export async function POST(request: Request) {
       const chargeExceeded = lushaReportedChargeExceedsReservation(result.creditsUsed, claim.reservation);
       const previewStatus = result.returnedCount ? "review_required" : "no_match";
       const identityReason = chargeExceeded ? "REPORTED_CHARGE_EXCEEDS_APPROVED_RESERVATION" : result.identityReason;
-      const summary = `${result.returnedCount ? `Lusha returned ${result.returnedCount} contact observation${result.returnedCount === 1 ? "" : "s"}; human identity review required (${identityReason}). No canonical record or contact channel was changed. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. Phone availability: ${result.phoneAvailable === null ? "not reported" : result.phoneAvailable ? "available" : "not available"}.` : "No Lusha contact match."} ${result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`;
+      const summary = `${result.returnedCount ? `Lusha returned ${result.returnedCount} contact observation${result.returnedCount === 1 ? "" : "s"}; human identity review required (${identityReason}). No canonical record or contact channel was changed. Email availability: ${result.emailAvailable === null ? "not reported" : result.emailAvailable ? "available" : "not available"}. Phone availability: ${result.phoneAvailable === null ? "not reported" : result.phoneAvailable ? "available" : "not available"}.` : "No Lusha contact match."} ${localLushaV3MockTransportEnabled() ? "Synthetic mock; no provider request or charge." : result.creditsUsed === null ? "Per-call usage was not returned; reconcile against Lusha account usage." : `${result.creditsUsed} provider credit${result.creditsUsed === 1 ? "" : "s"} reported.`}`;
       const evidence = lushaIdentityEvidence({ returnedCount: result.returnedCount, alumnusRecordVersion: person.recordVersion, contactId: result.contactId, requestedProfileUrl: normalizeProfessionalProfileUrl(person.linkedinUrl), returnedProfileUrl: result.linkedinUrl, returnedName: result.fullName, returnedCompany: result.company, returnedTitle: result.jobTitle, emailAvailable: result.emailAvailable, phoneAvailable: result.phoneAvailable, identityReason, providerStatus: chargeExceeded ? "review_required" : result.status, providerReportedCredits: result.creditsUsed });
       const [linkedElsewhere, pendingElsewhere] = result.contactId ? await Promise.all([
         db.select({ id: alumni.id }).from(alumni).where(and(eq(alumni.lushaPersonId, result.contactId), ne(alumni.id, person.id))).limit(1),
@@ -260,7 +276,8 @@ export async function POST(request: Request) {
       const approvableProposal = result.status === "success" && !chargeExceeded && !linkedElsewhere.length && !pendingElsewhere.length;
       let reviewId: number | null = null;
       try {
-        const updateHistory = db.update(providerResponseHistory).set({ status: previewStatus, creditsUsed: result.creditsUsed ?? 0, applicationUnits: Math.max(claim.reservation, result.creditsUsed ?? 0), providerReportedCredits: result.creditsUsed, usageState: providerUsageState(result.creditsUsed), resultCount: result.returnedCount, responseSummary: summary }).where(and(eq(providerResponseHistory.id, claim.id), eq(providerResponseHistory.status, "in_progress"))).returning({ id: providerResponseHistory.id });
+        const mock = localLushaV3MockTransportEnabled();
+        const updateHistory = db.update(providerResponseHistory).set({ status: previewStatus, creditsUsed: mock ? 0 : result.creditsUsed ?? 0, applicationUnits: mock ? 0 : Math.max(claim.reservation, result.creditsUsed ?? 0), providerReportedCredits: mock ? null : result.creditsUsed, usageState: mock ? "not_applicable" : providerUsageState(result.creditsUsed), resultCount: result.returnedCount, responseSummary: summary }).where(and(eq(providerResponseHistory.id, claim.id), eq(providerResponseHistory.status, "in_progress"))).returning({ id: providerResponseHistory.id });
         if (result.returnedCount) {
           const insertReview = db.insert(providerRefreshReviews).values({ providerResponseId: claim.id, alumnusId: person.id, proposedChangesJson: JSON.stringify(evidence), status: approvableProposal ? "Pending identity review" : "Identity exception", requestedBy: actor }).returning({ id: providerRefreshReviews.id });
           const [completed, reviews] = await db.batch([updateHistory, insertReview]);
@@ -293,7 +310,7 @@ export async function POST(request: Request) {
         db.select().from(alumni).where(eq(alumni.id, review.alumnusId)).limit(1),
       ]);
       const evidence = parseLushaIdentityEvidence(review.proposedChangesJson);
-      if (!history || !person || !evidence || history.provider !== "lusha" || history.operation !== "Contact Search Preview" || history.mode !== "live" || history.status !== "review_required" || history.resultCount !== 1 || history.alumnusId !== person.id || person.intakeStatus === "PROVISIONAL" || !lushaIdentityApprovalEligible(evidence, person.linkedinUrl, person.lushaPersonId, person.recordVersion)) {
+      if (!history || !person || !evidence || history.provider !== "lusha" || history.operation !== "Contact Search Preview" || !lushaHistoryModeAllowed(history.mode) || history.status !== "review_required" || history.resultCount !== 1 || history.alumnusId !== person.id || person.intakeStatus === "PROVISIONAL" || !lushaIdentityApprovalEligible(evidence, person.linkedinUrl, person.lushaPersonId, person.recordVersion)) {
         return Response.json({ error: "Stored provider identity and the current alumnus profile do not support this association." }, { status: 409 });
       }
       const otherProfiles = await db.select({ id: alumni.id, linkedinUrl: alumni.linkedinUrl }).from(alumni).where(ne(alumni.id, person.id));
@@ -302,7 +319,7 @@ export async function POST(request: Request) {
       const now = new Date().toISOString();
       const mutationKey = `lusha-identity-review:${review.id}`;
       const [attached, reviewed, completed, change] = await env.DB.batch([
-        env.DB.prepare(LUSHA_REVIEWED_ATTACH_ID_SQL).bind(evidence.contactId, actor, now, mutationKey, person.id, person.linkedinUrl, person.recordVersion, review.id, evidence.contactId, evidence.requestedProfileUrl, evidence.returnedProfileUrl, history.id, evidence.contactId, evidence.contactId),
+        env.DB.prepare(history.mode === "mock" ? LUSHA_REVIEWED_ATTACH_ID_MOCK_SQL : LUSHA_REVIEWED_ATTACH_ID_SQL).bind(evidence.contactId, actor, now, mutationKey, person.id, person.linkedinUrl, person.recordVersion, review.id, evidence.contactId, evidence.requestedProfileUrl, evidence.returnedProfileUrl, history.id, evidence.contactId, evidence.contactId),
         env.DB.prepare(LUSHA_APPROVE_REVIEW_SQL).bind(actor, now, review.id, person.id, evidence.contactId, mutationKey),
         env.DB.prepare(LUSHA_COMPLETE_REVIEWED_HISTORY_SQL).bind(history.id, review.id),
         env.DB.prepare(LUSHA_RECORD_IDENTITY_CHANGE_SQL).bind(person.id, evidence.contactId, actor, mutationKey, review.id),
@@ -331,7 +348,7 @@ export async function POST(request: Request) {
       const evidence = review ? parseLushaContactReview(review.proposedChangesJson) : null;
       if (!review || !evidence || !(payload.action === "lusha_reject_contact" ? ["Pending contact review", "Contact exception"].includes(review.status) : review.status === "Pending contact review")) return Response.json({ error: "This Lusha contact evidence is not pending an eligible review." }, { status: 409 });
       const [history] = await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.id, review.providerResponseId)).limit(1);
-      if (!history || history.provider !== "lusha" || history.mode !== "live" || history.alumnusId !== review.alumnusId || history.operation !== (evidence.channel === "email" ? "Email Reveal" : "Phone Reveal") || history.status !== "review_required") return Response.json({ error: "The retained provider request does not match this contact review." }, { status: 409 });
+      if (!history || history.provider !== "lusha" || !lushaHistoryModeAllowed(history.mode) || history.alumnusId !== review.alumnusId || history.operation !== (evidence.channel === "email" ? "Email Reveal" : "Phone Reveal") || history.status !== "review_required") return Response.json({ error: "The retained provider request does not match this contact review." }, { status: 409 });
       const now = new Date().toISOString();
       if (payload.action === "lusha_reject_contact") {
         const rejected = await env.DB.prepare(LUSHA_REJECT_CONTACT_REVIEW_SQL).bind(actor, now, review.id).first<{ id: number }>();
@@ -354,7 +371,7 @@ export async function POST(request: Request) {
       if (other) return Response.json({ error: "This contact value is already associated with another alumnus; resolve the identity conflict before approval." }, { status: 409 });
       const mutationKey = `lusha-contact-review:${review.id}`;
       const [updated, reviewed, changed] = await env.DB.batch([
-        env.DB.prepare(lushaContactApprovalSql(evidence.channel)).bind(evidence.value, now, now, actor, now, mutationKey, person.id, evidence.contactId, evidence.alumnusRecordVersion, evidence.previousValue, evidence.value, review.id, evidence.value),
+        env.DB.prepare(lushaContactApprovalSql(evidence.channel, history.mode === "mock" ? "mock" : "live")).bind(evidence.value, now, now, actor, now, mutationKey, person.id, evidence.contactId, evidence.alumnusRecordVersion, evidence.previousValue, evidence.value, review.id, evidence.value),
         env.DB.prepare(LUSHA_APPROVE_CONTACT_REVIEW_SQL).bind(actor, now, review.id, person.id, mutationKey),
         env.DB.prepare(`INSERT INTO field_change_history (alumnus_id,field,old_value,new_value,source,provider_action,credits_charged,initiated_by,mutation_request_key)
           SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM provider_refresh_reviews WHERE id=? AND status='Applied')
@@ -367,7 +384,7 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "lusha_reveal_email") {
-      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE is not available." }, { status: 409 });
+      if (!lushaV3Available()) return Response.json({ error: "Lusha V3 is unavailable." }, { status: 409 });
       if (!Number.isInteger(payload.alumnusId) || payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before a Lusha email reveal." }, { status: 400 });
       const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
@@ -393,7 +410,7 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "lusha_reveal_phone") {
-      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE is not available." }, { status: 409 });
+      if (!lushaV3Available()) return Response.json({ error: "Lusha V3 is unavailable." }, { status: 409 });
       if (!Number.isInteger(payload.alumnusId) || payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before a Lusha phone reveal." }, { status: 400 });
       const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;
       if (usage.lusha.remaining < 1) return Response.json({ error: "The Lusha application limit has been reached. An Admin must review it before another provider request." }, { status: 409 });
@@ -507,7 +524,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Select 1 to 25 alumni and at least one provider." }, { status: 400 });
     }
     if (requestedProviders.includes("coresignal")) return Response.json({ error: "Use Refresh Profiles for Coresignal professional data checks." }, { status: 400 });
-    if (requestedProviders.includes("lusha") && enrichmentMode("lusha") === "live") return Response.json({ error: "Use the controlled single-alumnus Lusha contact preview and channel-specific confirmation workflow in LIVE mode." }, { status: 409 });
+    if (requestedProviders.includes("lusha") && (enrichmentMode("lusha") === "live" || localLushaV3MockTransportEnabled())) return Response.json({ error: "Use the controlled single-alumnus Lusha V3 contact preview and channel-specific confirmation workflow." }, { status: 409 });
     const people = await db.select().from(alumni).where(inArray(alumni.id, alumniIds));
     if (people.some(person => person.intakeStatus === "PROVISIONAL")) return Response.json({ error: "Provisional profiles are not eligible for contact enrichment." }, { status: 409 });
     const usage = await usageSnapshot() as unknown as Record<ProviderName, { used: number; limit: number; remaining: number }>;

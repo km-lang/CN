@@ -74,6 +74,9 @@ export default defineConfig(async ({ command, mode }) => {
   const localLushaLive = localIsolatedD1
     && localEnvironment.LOCAL_LUSHA_LIVE_DEMO_ENABLED === "true"
     && localEnvironment.LUSHA_LIVE_ENABLED === "true";
+  const localLushaMock = localIsolatedD1
+    && localEnvironment.LOCAL_LUSHA_V3_MOCK_TRANSPORT === "true"
+    && localEnvironment.LUSHA_LIVE_ENABLED !== "true";
   const localWebhookSecret = localWebhookMock ? localEnvironment.CORESIGNAL_WEBHOOK_CALLBACK_SECRET?.trim() ?? "" : "";
   const localCoresignalDemo = localDevelopment
     && localCoresignalLiveDemoEnabled(localEnvironment);
@@ -130,6 +133,7 @@ export default defineConfig(async ({ command, mode }) => {
           ? { CORESIGNAL_API_KEY: localCoresignalKey }
           : {}),
         LUSHA_LIVE_ENABLED: localLushaLive ? "true" : "false",
+        LOCAL_LUSHA_V3_MOCK_TRANSPORT: localLushaMock ? "true" : "false",
         // Credential presence can be checked in an isolated worker without
         // enabling any Lusha endpoint or exposing the value to the browser.
         LUSHA_API_KEY: localIsolatedD1 ? localEnvironment.LUSHA_API_KEY?.trim() ?? "" : "",
@@ -158,7 +162,7 @@ export default defineConfig(async ({ command, mode }) => {
 
   return {
     server: {
-      host: localCoresignalDemo || localBrightDataDemo || localWebhookMock || localLushaLive ? "127.0.0.1" : "0.0.0.0",
+      host: localCoresignalDemo || localBrightDataDemo || localWebhookMock || localLushaLive || localLushaMock ? "127.0.0.1" : "0.0.0.0",
       allowedHosts: ["terminal.local"],
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }

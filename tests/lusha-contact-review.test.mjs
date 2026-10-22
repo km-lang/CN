@@ -111,7 +111,7 @@ test("route and UI enforce Admin review, restricted evidence, distinct reservati
   assert.match(route, /lusha_approve_contact", "lusha_reject_contact"\]\.includes/)
   assert.match(route, /context\.role === "ADMIN" && lushaHistoryIds\.length/)
   assert.match(route, /contactEvidence: parseLushaContactReview/)
-  assert.match(route, /lushaReservations: \{ search:/)
+  assert.match(route, /lushaReservations: localLushaV3MockTransportEnabled\(\)/)
   assert.match(route, /replaceExisting !== true/)
   assert.match(route, /retainLushaContactResult\(\{ claimId: claim\.id/)
   const reveal = route.match(/if \(payload\.action === "lusha_reveal_email"\)[\s\S]*?if \(payload\.action === "apply_refresh"/)[0]

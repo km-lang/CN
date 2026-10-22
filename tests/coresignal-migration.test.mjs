@@ -486,7 +486,7 @@ test("Coresignal never owns email or phone and Lusha contact/signals remain sepa
   assert.doesNotMatch(adapterSource, /email|phone/i)
   assert.doesNotMatch(discoveryRoute, /emailSource:\s*PROFESSIONAL_DATA_PROVIDER_LABEL|phoneSource:\s*PROFESSIONAL_DATA_PROVIDER_LABEL/)
   assert.match(enrichmentRoute, /safeChanges\.emailSource = "Lusha"/)
-  assert.match(enrichmentRoute, /lushaContactApprovalSql\(evidence\.channel\)/)
+  assert.match(enrichmentRoute, /lushaContactApprovalSql\(evidence\.channel, history\.mode === "mock" \? "mock" : "live"\)/)
   assert.match(page, /Lusha Professional Signals/)
 })
 

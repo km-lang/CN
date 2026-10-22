@@ -63,7 +63,7 @@ test("isolated local worker can detect a user-configured key while every Lusha g
   assert.match(viteConfig, /LUSHA_SIGNALS_LIVE_ENABLED: "false"/);
   assert.match(viteConfig, /absolutePersistPath/);
   assert.match(viteConfig, /LOCAL_LUSHA_LIVE_DEMO_ENABLED === "true"/);
-  assert.match(viteConfig, /localWebhookMock \|\| localLushaLive \? "127\.0\.0\.1"/);
+  assert.match(viteConfig, /localWebhookMock \|\| localLushaLive \|\| localLushaMock \? "127\.0\.0\.1"/);
   assert.match(envExample, /LOCAL_LUSHA_LIVE_DEMO_ENABLED=false/);
 });
 
@@ -181,7 +181,7 @@ test("stage4a 8: live UI requires search preview and a second channel-only confi
 });
 
 test("stage4a 9: live channel-specific reveals are offered while combined and bulk reveals remain unavailable", () => {
-  const liveBatch = page.match(/providerModes\.lusha === "live" \? <>[\s\S]*? : <><Button/)?.[0] ?? "";
+  const liveBatch = page.match(/lushaV3Workflow \? <>[\s\S]*? : <><Button/)?.[0] ?? "";
   assert.match(liveBatch, /Prepare Email Reveal/);
   assert.match(liveBatch, /Prepare Phone Reveal/);
   assert.doesNotMatch(liveBatch, /Get Both|Get Phones|batch/);
@@ -191,7 +191,7 @@ test("stage4a 9: live channel-specific reveals are offered while combined and bu
 test("stage4a 10: server rejects the legacy combined live path", () => {
   assert.doesNotMatch(provider, /\/v3\/contacts\/search-and-enrich/);
   assert.match(provider, /controlled Lusha V3 contact-search preview/);
-  assert.match(route, /Use the controlled single-alumnus Lusha contact preview and channel-specific confirmation workflow in LIVE mode/);
+  assert.match(route, /Use the controlled single-alumnus Lusha V3 contact preview and channel-specific confirmation workflow/);
 });
 
 test("stage4a 11: Lusha actions remain PCOM-operational and settings remain Admin-only", () => {

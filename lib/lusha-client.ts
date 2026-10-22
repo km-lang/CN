@@ -1,5 +1,6 @@
 import { linkedinProfileIdentifier, normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { providerSecret } from "@/lib/provider-runtime"
+import { localLushaV3MockTransportEnabled } from "@/lib/local-development"
 
 const LUSHA_API_BASE = "https://api.lusha.com"
 
@@ -103,7 +104,39 @@ function providerError(status: number, body: Record<string, unknown>) {
   return new LushaProviderError("Lusha is temporarily unavailable.", "unavailable")
 }
 
+const syntheticContacts = {
+  "https://www.linkedin.com/in/ada-demo-only-901/": { id: "mock-v3-901", fullName: "Ada Demo-Only", email: "ada.demo-only@example.test", phone: "+1 202 555 0901" },
+  "https://www.linkedin.com/in/bela-demo-only-902/": { id: "mock-v3-902", fullName: "Bela Demo-Only", email: "bela.demo-only@example.test", phone: "+1 202 555 0902" },
+  "https://www.linkedin.com/in/mismatch-demo-only-903/": { id: "mock-v3-903", fullName: "Mismatch Demo-Only", email: "mismatch.demo-only@example.test", phone: "+1 202 555 0903" },
+} as const
+
+/** Fixed fictional observations; this function never invokes fetch. */
+function mockV3Response(path: string, init: RequestInit) {
+  const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>
+  if (path === "/v3/contacts/search") {
+    const input = Array.isArray(body.contacts) ? body.contacts[0] as Record<string, unknown> | undefined : undefined
+    const url = textValue(input?.linkedinUrl)
+    if (url === "https://www.linkedin.com/in/failure-demo-only-904/") return new Response(JSON.stringify({ error: { message: "Synthetic provider failure" } }), { status: 503 })
+    const contact = syntheticContacts[url as keyof typeof syntheticContacts]
+    return Response.json({ results: contact ? [{ id: contact.id, fullName: contact.fullName, jobTitle: { title: "Synthetic Manager" }, company: { name: "Fictional Systems" }, socialLinks: { linkedin: url.includes("mismatch-") ? "https://www.linkedin.com/in/unrelated-demo-only/" : url }, has: ["emails", "phones"] }] : [] })
+  }
+  if (path === "/v3/contacts/enrich") {
+    const id = Array.isArray(body.ids) ? body.ids[0] : undefined
+    const contact = Object.values(syntheticContacts).find(item => item.id === id)
+    const reveal = Array.isArray(body.reveal) ? body.reveal : []
+    if (body.waterfallEnabled !== false || reveal.length !== 1 || !["emails", "phones"].includes(String(reveal[0]))) return new Response("{}", { status: 400 })
+    return Response.json({ results: contact ? [{ id: contact.id, ...(reveal[0] === "emails" ? { emails: [{ email: contact.email }] } : { phones: [{ number: contact.phone }] }) }] : [] })
+  }
+  return new Response("{}", { status: 404 })
+}
+
 async function lushaRequest(path: string, init: RequestInit, options: { fetcher?: Fetcher; timeoutMs?: number } = {}) {
+  if (localLushaV3MockTransportEnabled()) {
+    const response = mockV3Response(path, init)
+    const body = await response.json() as Record<string, unknown>
+    if (!response.ok) throw providerError(response.status, body)
+    return { response, body }
+  }
   const key = providerSecret("lusha")
   if (!key) throw new LushaProviderError("LUSHA_API_KEY is not configured.", "authentication")
   const controller = new AbortController()

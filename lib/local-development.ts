@@ -22,6 +22,20 @@ type LocalDevelopmentEnvironment = {
   BRIGHTDATA_HUMAN_TRIAL_TARGET?: string
   LOCAL_DEV_D1_PERSIST_PATH?: string
   CORESIGNAL_WEBHOOK_MOCK_TRANSPORT?: string
+  LOCAL_LUSHA_V3_MOCK_TRANSPORT?: string
+  LUSHA_LIVE_ENABLED?: string
+}
+
+/** Never available outside an Admin loopback server backed by a temporary D1. */
+export function localLushaV3MockTransportEnabled(values: LocalDevelopmentEnvironment = process.env) {
+  const path = values.LOCAL_DEV_D1_PERSIST_PATH?.trim() ?? ""
+  return localDevelopmentAuthEnabled(values)
+    && values.LOCAL_DEV_AUTH_ROLE === "ADMIN"
+    && isLoopbackHost(values.LOCAL_PROVIDER_LIVE_DEMO_HOST)
+    && values.LOCAL_LUSHA_V3_MOCK_TRANSPORT === "true"
+    && values.LUSHA_LIVE_ENABLED !== "true"
+    && (path.startsWith("/tmp/") || path.startsWith("/private/tmp/"))
+    && !path.split("/").includes("..")
 }
 
 export function localBrightDataLiveDemoEnabled(values: LocalDevelopmentEnvironment = process.env) {

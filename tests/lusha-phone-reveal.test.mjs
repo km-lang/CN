@@ -45,7 +45,7 @@ test("phone reveal 3: stable identity requirement is represented and enforced se
   const phoneBlock = route.match(/if \(payload\.action === "lusha_reveal_phone"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "";
   assert.match(phoneBlock, /hasApprovedLushaIdentity\(person\)/);
   assert.match(phoneBlock, /confirmed !== true/);
-  assert.match(phoneBlock, /enrichmentMode\("lusha"\) !== "live" \|\| !providerConfigured\("lusha"\)/);
+  assert.match(phoneBlock, /!lushaV3Available\(\)/);
 });
 
 test("phone reveal 4: provider request asks for phones only and normalizes the first returned phone", async () => {
