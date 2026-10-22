@@ -85,7 +85,7 @@ Only names and purposes are documented here. Never place real values in Markdown
 
 The authoritative example with safe placeholders is `.env.example`.
 
-Application allowance settings live in governed D1 provider settings; they are **not** the provider's account balance or per-call charge. Do not copy secrets, local databases, provider snapshots, or demo fixtures into Git or a Sites release package. The seven currently uncommitted one-time Coresignal Preview-trial paths should remain uncommitted and out of a production source candidate until separately reviewed.
+Application allowance settings live in governed D1 provider settings; they are **not** the provider's account balance or per-call charge. Do not copy secrets, local databases, provider snapshots, or demo fixtures into Git or a Sites release package. The seven one-time Coresignal Preview-trial paths were preserved exactly in local Git stash `938ecd85966f990dbbaa6af9393a843120e535e2`; six trial-only paths were removed from the shipping worktree. One safe `vite.config.ts` change was retained: forward `LOCAL_DEV_D1_PERSIST_PATH` only when an Admin local-development checkout resolves to an existing temporary directory outside the project. This supports isolated local workflows without enabling Preview, Collect or another provider. The stash is workstation-only, not a clone or release artifact; do not apply it to production. The normal Preview gate remains disabled unless separately configured with confirmed entitlement and explicit approval.
 
 ## Validation commands
 

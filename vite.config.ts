@@ -108,7 +108,7 @@ export default defineConfig(async ({ command, mode }) => {
           ? localEnvironment.CORESIGNAL_COLLECT_ENTITLEMENT
           : "unknown",
         CORESIGNAL_COLLECT_MOCK_TRANSPORT: localCollectMock ? "true" : "false",
-        LOCAL_DEV_D1_PERSIST_PATH: localWebhookMock ? absolutePersistPath : "",
+        LOCAL_DEV_D1_PERSIST_PATH: localIsolatedD1 ? absolutePersistPath : "",
         CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: localWebhookMock ? "true" : "false",
         CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: localWebhookMock && localWebhookSecret.length >= 32 && localEnvironment.CORESIGNAL_WEBHOOK_RECEIVE_ENABLED === "true" ? "true" : "false",
         CORESIGNAL_WEBHOOK_CALLBACK_SECRET: localWebhookSecret.length >= 32 ? localWebhookSecret : "",
