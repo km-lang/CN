@@ -73,6 +73,8 @@ function responseRecords(body: Record<string, unknown>) {
 }
 
 function providerCredits(response: Response, body: Record<string, unknown>) {
+  const documentedV3Charge = numericValue(recordValue(body.billing).creditsCharged)
+  if (documentedV3Charge !== null && Number.isSafeInteger(documentedV3Charge)) return documentedV3Charge
   for (const name of ["x-credits-used", "x-credits-spent", "x-call-credits-spent", "x-credit-usage", "x-api-credits-used"]) {
     const value = numericValue(response.headers.get(name))
     if (value !== null && Number.isSafeInteger(value)) return value
@@ -180,7 +182,7 @@ export async function revealLushaEmail(contactId: string, options: { fetcher?: F
   if (!contactId.trim()) throw new LushaProviderError("A stable Lusha contact ID is required before email reveal.", "invalid_request")
   const { response, body } = await lushaRequest("/v3/contacts/enrich", {
     method: "POST",
-    body: JSON.stringify({ ids: [contactId.trim()], reveal: ["emails"] }),
+    body: JSON.stringify({ ids: [contactId.trim()], reveal: ["emails"], waterfallEnabled: false }),
   }, options)
   const records = responseRecords(body)
   const first = records[0]
@@ -194,7 +196,7 @@ export async function revealLushaPhone(contactId: string, options: { fetcher?: F
   if (!contactId.trim()) throw new LushaProviderError("A stable Lusha contact ID is required before phone reveal.", "invalid_request")
   const { response, body } = await lushaRequest("/v3/contacts/enrich", {
     method: "POST",
-    body: JSON.stringify({ ids: [contactId.trim()], reveal: ["phones"] }),
+    body: JSON.stringify({ ids: [contactId.trim()], reveal: ["phones"], waterfallEnabled: false }),
   }, options)
   const records = responseRecords(body)
   const first = records[0]

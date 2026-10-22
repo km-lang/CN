@@ -113,7 +113,7 @@ test("stage4a 5: confirmed V3 enrichment requests email only by stable ID", asyn
     return new Response(JSON.stringify({ results: [{ id: "lusha-contact-1", emails: [{ email: "sahil@example.org" }] }] }), { status: 200, headers: { "content-type": "application/json", "x-credits-used": "2" } });
   } });
   assert.equal(call.url, "https://api.lusha.com/v3/contacts/enrich");
-  assert.deepEqual(call.body, { ids: ["lusha-contact-1"], reveal: ["emails"] });
+  assert.deepEqual(call.body, { ids: ["lusha-contact-1"], reveal: ["emails"], waterfallEnabled: false });
   assert.equal(result.email, "sahil@example.org");
   assert.equal(result.creditsUsed, 2);
 });
@@ -123,6 +123,15 @@ test("stage4a 6: missing per-call usage is marked for reconciliation instead of 
   assert.equal(result.creditsUsed, null);
   assert.equal(result.usageSource, "unavailable");
   assert.match(route, /reconcile against Lusha account usage/);
+});
+
+test("stage4a 6a: documented V3 billing charge is retained and takes precedence over legacy headers", async () => {
+  const result = await lusha.revealLushaEmail("lusha-contact-1", { fetcher: async () => new Response(JSON.stringify({
+    results: [{ id: "lusha-contact-1", emails: [{ email: "sahil@example.org" }] }],
+    billing: { creditsCharged: 2, resultsReturned: 1 },
+  }), { status: 200, headers: { "content-type": "application/json", "x-credits-used": "0" } }) });
+  assert.equal(result.creditsUsed, 2);
+  assert.equal(result.usageSource, "provider_response");
 });
 
 test("stage4a 6b: email reveal never applies a different or unidentified contact", async () => {

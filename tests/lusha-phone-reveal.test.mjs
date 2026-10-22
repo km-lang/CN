@@ -55,7 +55,7 @@ test("phone reveal 4: provider request asks for phones only and normalizes the f
     return new Response(JSON.stringify({ results: [{ id: "lusha-abhi", phones: [{ number: "+91 98765 43210" }, { number: "+91 90000 00000" }] }] }), { status: 200, headers: { "content-type": "application/json", "x-credits-used": "3" } });
   } });
   assert.equal(request.url, "https://api.lusha.com/v3/contacts/enrich");
-  assert.deepEqual(request.body, { ids: ["lusha-abhi"], reveal: ["phones"] });
+  assert.deepEqual(request.body, { ids: ["lusha-abhi"], reveal: ["phones"], waterfallEnabled: false });
   assert.doesNotMatch(JSON.stringify(request.body), /emails/);
   assert.equal(result.phone, "+91 98765 43210");
   assert.equal(result.creditsUsed, 3);
