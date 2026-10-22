@@ -47,12 +47,13 @@ export type CollectQuality = "PRESENT_AND_PLAUSIBLE" | "PRESENT_BUT_CONFLICTING"
 
 export type RetainedSearchCandidate = {
   searchHistoryId: number
-  searchOperation: "Base Employee ES-DSL Search" | "Known alumnus identity"
+  searchOperation: "Base Employee ES-DSL Search" | "Base Employee ES-DSL Preview" | "Known alumnus identity"
   searchTimestamp: string
   employeeId: string
   identityResolutionStatus: "IDENTITY_RESOLUTION_REQUIRED" | "KNOWN_ALUMNUS"
   sourceAlumnusId?: number
   sourceWebhookEventId?: number
+  sourceDiscoveryResultId?: number
   institutionId: number
   graduationYear: number | null
   company: string | null
@@ -89,6 +90,7 @@ export type CollectPreflight = {
 export type SanitizedCollectEvidence = {
   schemaVersion: 1
   sourceSearchHistoryId: number
+  sourceDiscoveryResultId?: number
   targetEmployeeId: string
   attemptId: string
   upstreamHttpStatus: 200
@@ -139,6 +141,21 @@ export function candidateFromSearchHistory(row: { id: number; provider: string; 
     mappedCompanyId: retained.evidence.searchParameters.mappedCompanyId,
     priorCollectStatus,
   }
+}
+
+export function candidateFromDiscoveryPreview(input: {
+  history: { id: number; provider: string; operation: string; mode: string; status: string; createdAt: string; searchId: number | null }
+  search: { id: number; provider: string; mode: string; filtersJson: string }
+  result: { id: number; searchId: number; provider: string; providerPersonId: string; matchStatus: string; linkedInternalAlumnusId: number | null; reviewStatus: string; reviewNote: string; currentCompanyId: string }
+  employeeId: string
+  priorCollectStatus: string | null
+}): RetainedSearchCandidate {
+  const { history, search, result } = input
+  if (history.provider !== "coresignal" || !["Exact-year ES-DSL Preview", "Constrained ES-DSL Preview"].includes(history.operation) || history.mode !== "live" || history.status !== "success" || history.searchId !== search.id || search.provider !== "coresignal" || search.mode !== "live") throw new Error("The source is not a successful retained live Coresignal Preview.")
+  const employeeId = normalizeEmployeeId(input.employeeId)
+  if (result.searchId !== search.id || result.provider !== "coresignal" || normalizeEmployeeId(result.providerPersonId) !== employeeId || result.matchStatus !== "New" || result.linkedInternalAlumnusId !== null || result.reviewStatus !== "Pending review" || !/^(REVIEW_BEFORE_COLLECT|SKIPPED_COLLECT_LIMIT):/.test(result.reviewNote)) throw new Error("This Preview result is not an unresolved collection candidate.")
+  const filters = JSON.parse(search.filtersJson) as { company?: unknown; graduationYear?: unknown }
+  return { searchHistoryId: history.id, searchOperation: "Base Employee ES-DSL Preview", searchTimestamp: history.createdAt, employeeId, identityResolutionStatus: "IDENTITY_RESOLUTION_REQUIRED", sourceDiscoveryResultId: result.id, institutionId: 25919228, graduationYear: /^\d{4}$/.test(String(filters.graduationYear ?? "")) ? Number(filters.graduationYear) : null, company: typeof filters.company === "string" && filters.company.trim() ? filters.company.trim() : null, mappedCompanyId: null, priorCollectStatus: input.priorCollectStatus }
 }
 
 export function candidateFromKnownAlumnus(person: { id: number; coresignalEmployeeId: string; createdAt: string }, priorCollectStatus: string | null): RetainedSearchCandidate {
@@ -192,6 +209,34 @@ export function collectPreflight(candidate: RetainedSearchCandidate, runtime: Co
   }
 }
 
+/** A queue is a provider-free plan. Each selected item still needs its own
+ * confirmation, and the SQL claim reserves its units atomically at execution. */
+export function collectSelectionPlan(candidates: readonly RetainedSearchCandidate[], runtime: CollectRuntimeState) {
+  const seen = new Set<string>()
+  const operations = candidates.map(candidate => {
+    const duplicateSelection = seen.has(candidate.employeeId)
+    seen.add(candidate.employeeId)
+    const preflight = collectPreflight(candidate, runtime)
+    return {
+      candidate,
+      applicationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS,
+      blockers: duplicateSelection ? [...preflight.blockers, "This Employee ID was selected more than once."] : preflight.blockers,
+    }
+  })
+  const totalApplicationUnits = candidates.length * CORESIGNAL_COLLECT_ESTIMATED_CREDITS
+  return {
+    operations,
+    totalApplicationUnits,
+    remainingApplicationUnits: runtime.applicationUnitsRemaining,
+    capacityCoversSelection: totalApplicationUnits <= runtime.applicationUnitsRemaining,
+    readyForIndividualConfirmation: operations.length > 0
+      && totalApplicationUnits <= runtime.applicationUnitsRemaining
+      && operations.every(operation => operation.blockers.length === 0),
+    reservationState: "NOT_RESERVED" as const,
+    executionMode: "INDIVIDUAL_COLLECT_ONLY" as const,
+  }
+}
+
 export function createCollectConfirmation(input: { searchHistoryId: number; employeeId: string; searchAttemptId: string; now?: number; nonce?: string }, secret: string) {
   if (!secret.trim()) throw new Error("A server-side confirmation secret is required.")
   const expiresAt = (input.now ?? Date.now()) + CORESIGNAL_COLLECT_CONFIRMATION_TTL_MS
@@ -224,7 +269,7 @@ export function sanitizeCollectResponse(input: { body: unknown; candidate: Retai
   const education = rows(profile.education).filter(activeRow).slice(0, 12).map(item => ({
     institutionId: text(firstValue(item, ["institution_id", "school_id"]), 64),
     institution: text(firstValue(item, ["institution_name", "school_name", "title"]), 200),
-    programme: text(firstValue(item, ["degree_name", "program_name", "field_of_study", "subtitle"]), 200),
+    programme: text(firstValue(item, ["program", "degree_name", "program_name", "field_of_study", "subtitle"]), 200),
     startYear: year(firstValue(item, ["date_from_year", "start_year", "date_from"])),
     endYear: year(firstValue(item, ["date_to_year", "end_year", "date_to"])),
   }))
@@ -251,6 +296,7 @@ export function sanitizeCollectResponse(input: { body: unknown; candidate: Retai
   return {
     schemaVersion: 1,
     sourceSearchHistoryId: input.candidate.searchHistoryId,
+    ...(input.candidate.sourceDiscoveryResultId ? { sourceDiscoveryResultId: input.candidate.sourceDiscoveryResultId } : {}),
     targetEmployeeId: input.candidate.employeeId,
     attemptId: bounded(input.attemptId, 128),
     upstreamHttpStatus: 200,

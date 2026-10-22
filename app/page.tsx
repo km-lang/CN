@@ -287,6 +287,15 @@ type CollectPreflightView = {
   blockers: string[]
   safeguards: { searchRequests: 0; previewRequests: 0; collectRequestMaximum: 1; retries: 0; pagination: false; automaticIdentityAttachment: false; automaticCanonicalUpdate: false }
 }
+type CollectSelectionPlanView = {
+  operations: Array<{ candidate: RetainedCollectCandidate; applicationUnits: number; blockers: string[] }>
+  totalApplicationUnits: number
+  remainingApplicationUnits: number
+  capacityCoversSelection: boolean
+  readyForIndividualConfirmation: boolean
+  reservationState: "NOT_RESERVED"
+  executionMode: "INDIVIDUAL_COLLECT_ONLY"
+}
 
 type DiscoveryResult = {
   id: number
@@ -583,12 +592,17 @@ function ProviderHistoryAudit({
   usageReconciliationDrafts,
   onUsageReconciliationChange,
   onReconcile,
+  onApproveCollectIdentity,
 }: {
   items: ProviderHistory[]
   usageReconciliationDrafts: Record<number, string>
   onUsageReconciliationChange: (id: number, value: string) => void
   onReconcile: (item: ProviderHistory) => void
+  onApproveCollectIdentity: (item: ProviderHistory, alumnusId: number) => void
 }) {
+  const [reviewAlumnusIds, setReviewAlumnusIds] = useState<Record<number, string>>({})
+  const [reviewedIdentityIds, setReviewedIdentityIds] = useState<number[]>([])
+  const [reviewedEducationIds, setReviewedEducationIds] = useState<number[]>([])
   return <div className="provider-history-list" aria-label="Provider response history">
     <div className="provider-history-columns" aria-hidden="true"><span>Date / time</span><span>Provider</span><span>Operation</span><span>Status</span><span>Results</span><span>Usage evidence</span><span>Details</span></div>
     {items.map(item => {
@@ -607,6 +621,7 @@ function ProviderHistoryAudit({
         <div className="provider-history-detail-body">
           <section><h3>Request context</h3><dl><div><dt>Provider</dt><dd>{item.provider.toUpperCase()}</dd></div><div><dt>Operation</dt><dd>{item.operation} · {item.mode}</dd></div><div><dt>Alumnus / subject</dt><dd>{item.alumnusName || "Not recorded"}</dd></div><div><dt>Requested at</dt><dd>{new Date(item.createdAt).toLocaleString()}</dd></div><div className="provider-history-wide"><dt>Search criteria / request</dt><dd>{item.requestSummary || "Request criteria were not retained for this operation."}</dd></div></dl></section>
           <section><h3>Execution outcome</h3><dl><div><dt>Status</dt><dd>{item.status.replaceAll("_", " ")}</dd></div><div><dt>Results</dt><dd>{resultLabel}</dd></div><div className="provider-history-wide"><dt>Response summary</dt><dd>{item.errorMessage || item.responseSummary || "No response summary was retained."}</dd></div>{item.searchEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Search evidence</dt><dd><CoresignalSearchEvidencePanel evidence={item.searchEvidence.evidence} showIds /></dd></div>}{item.searchEvidence && item.searchEvidence.state !== "RETAINED" && <div className="provider-history-wide"><dt>Historical evidence</dt><dd className="history-evidence-unavailable">{item.searchEvidence.reason}</dd></div>}{item.collectEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd><CoresignalCollectEvidencePanel evidence={item.collectEvidence.evidence} /></dd></div>}{item.collectEvidence?.state === "UNAVAILABLE" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd className="history-evidence-unavailable">{item.collectEvidence.reason}</dd></div>}</dl></section>
+          {item.operation === "Base Employee Collect-only" && item.status === "success" && item.collectEvidence?.state === "RETAINED" && !item.alumnusId && <section><h3>Human identity review</h3><p>Compare the retained name, LinkedIn URL and IIM Lucknow education with the intended Directory profile. Association requires an exact stored LinkedIn identity match and never updates other alumni facts.</p><div className="collect-review-controls"><Input type="number" min="1" step="1" aria-label={`Existing alumnus ID for Collect history ${item.id}`} placeholder="Existing alumnus ID" value={reviewAlumnusIds[item.id] ?? ""} onChange={event => setReviewAlumnusIds(current => ({ ...current, [item.id]: event.target.value }))} /><label><input type="checkbox" checked={reviewedIdentityIds.includes(item.id)} onChange={event => setReviewedIdentityIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I reviewed the person and LinkedIn identity</label><label><input type="checkbox" checked={reviewedEducationIds.includes(item.id)} onChange={event => setReviewedEducationIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I reviewed the education evidence</label><Button size="sm" variant="outline" disabled={!Number.isSafeInteger(Number(reviewAlumnusIds[item.id])) || Number(reviewAlumnusIds[item.id]) < 1 || !reviewedIdentityIds.includes(item.id) || !reviewedEducationIds.includes(item.id)} onClick={() => onApproveCollectIdentity(item, Number(reviewAlumnusIds[item.id]))}>Approve exact-match association</Button></div></section>}
           <section><h3>Usage and limits</h3><dl><div><dt>Usage state</dt><dd>{usage.label}</dd></div><div><dt>Application attribution</dt><dd>{item.applicationUnits ?? 0} unit{(item.applicationUnits ?? 0) === 1 ? "" : "s"}</dd></div><div className="provider-history-wide"><dt>Evidence</dt><dd>{usage.detail}</dd></div>{item.reconciliationSource && <div className="provider-history-wide"><dt>Reconciliation source</dt><dd>{item.reconciliationSource}</dd></div>}</dl>{item.provider === "lusha" && usage.label === "Reconciliation required" && <div className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => onUsageReconciliationChange(item.id, event.target.value)} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => onReconcile(item)}>Reconcile</Button></div>}</section>
           <section><h3>Technical diagnostics</h3><p>Requested by {item.requestedBy || "Not recorded"}. Provider-reported credit balance is shown only when retained and is not treated as verified billable cost.</p>{item.searchEvidence?.state === "RETAINED" || item.collectEvidence?.state === "RETAINED" ? <details className="provider-history-json"><summary>View sanitized stored metadata</summary><pre>{JSON.stringify(item.searchEvidence?.state === "RETAINED" ? item.searchEvidence.evidence : item.collectEvidence?.state === "RETAINED" ? item.collectEvidence.evidence : null, null, 2)}</pre></details> : <p className="history-evidence-unavailable">No structured diagnostic envelope was retained for this operation.</p>}</section>
         </div>
@@ -758,6 +773,8 @@ export default function Home() {
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ coresignal: { used: 0, limit: 25, remaining: 25, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
   const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
   const [retainedCollectCandidates, setRetainedCollectCandidates] = useState<RetainedCollectCandidate[]>([])
+  const [selectedCollectEmployeeIds, setSelectedCollectEmployeeIds] = useState<string[]>([])
+  const [collectSelectionPlan, setCollectSelectionPlan] = useState<CollectSelectionPlanView | null>(null)
   const [collectPreflightView, setCollectPreflightView] = useState<CollectPreflightView | null>(null)
   const [collectConfirmationToken, setCollectConfirmationToken] = useState("")
   const [collectBusy, setCollectBusy] = useState(false)
@@ -989,8 +1006,12 @@ export default function Home() {
       if (session.canAdminister) {
         const collectResponse = await fetch(API_ROUTES.coresignalCollect, { cache: "no-store" })
         const collectData = await collectResponse.json() as { candidates?: RetainedCollectCandidate[] }
-        if (collectResponse.ok) setRetainedCollectCandidates(collectData.candidates ?? [])
-      } else setRetainedCollectCandidates([])
+        if (collectResponse.ok) {
+          setRetainedCollectCandidates(collectData.candidates ?? [])
+          setSelectedCollectEmployeeIds(current => current.filter(id => (collectData.candidates ?? []).some(candidate => candidate.employeeId === id && !candidate.priorCollectStatus)))
+        }
+      } else { setRetainedCollectCandidates([]); setSelectedCollectEmployeeIds([]) }
+      setCollectSelectionPlan(null)
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to load provider activity.")
     }
@@ -1021,6 +1042,22 @@ export default function Home() {
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to validate Collect eligibility.")
     } finally { setCollectBusy(false) }
+  }
+
+  async function reviewCollectSelection() {
+    const selections = retainedCollectCandidates.filter(candidate => selectedCollectEmployeeIds.includes(candidate.employeeId) && !candidate.priorCollectStatus)
+      .map(candidate => ({ searchHistoryId: candidate.searchHistoryId, employeeId: candidate.employeeId }))
+    if (!selections.length) return
+    setCollectBusy(true)
+    setCollectSelectionPlan(null)
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.coresignalCollect, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "selection_preflight", selections }) })
+      const data = await response.json() as { plan?: CollectSelectionPlanView; error?: string }
+      if (!response.ok || !data.plan) throw new Error(data.error || "Unable to review the selected Collect operations.")
+      setCollectSelectionPlan(data.plan)
+    } catch (error) { setEnrichmentMessage(error instanceof Error ? error.message : "Unable to review the selected Collect operations.") }
+    finally { setCollectBusy(false) }
   }
 
   async function reviewKnownCollectEligibility(alumnusId: number) {
@@ -1808,6 +1845,17 @@ export default function Home() {
     } catch (error) {
       setEnrichmentMessage(error instanceof Error ? error.message : "Unable to reconcile provider usage.")
     }
+  }
+
+  async function approveCollectIdentity(item: ProviderHistory, alumnusId: number) {
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(apiPath("/api/admin/coresignal-collect-review"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ collectHistoryId: item.id, alumnusId, confirmed: true, identityReviewed: true, educationReviewed: true }) })
+      const data = await response.json() as { error?: string; associatedAlumnusId?: number }
+      if (!response.ok || data.associatedAlumnusId !== alumnusId) throw new Error(data.error || "Collect identity association failed.")
+      setEnrichmentMessage(`Collect history #${item.id} was associated with alumnus #${alumnusId} after review.`)
+      await loadEnrichment()
+    } catch (error) { setEnrichmentMessage(error instanceof Error ? error.message : "Collect identity association failed.") }
   }
 
   async function validateLushaConnection() {
@@ -3138,8 +3186,8 @@ export default function Home() {
 
             {session.canAdminister && <section className="panel collect-candidate-panel">
               <div className="panel-heading"><div><p className="eyebrow">Retained Search Candidates</p><h2>Controlled Coresignal Collect</h2><span>Review unresolved Employee IDs retained by an authorized Search. Eligibility review is provider-free; Collect remains independently gated.</span></div><ShieldCheck /></div>
-              {retainedCollectCandidates.length ? <div className="collect-candidate-list">{retainedCollectCandidates.map(candidate => <article key={`${candidate.searchHistoryId}-${candidate.employeeId}`}><div><strong>Employee ID {candidate.employeeId}</strong><span>{candidate.searchOperation} · {new Date(candidate.searchTimestamp).toLocaleString()}</span><small>Institution {candidate.institutionId} · graduation {candidate.graduationYear ?? "not constrained"} · company {candidate.company || "not constrained"}{candidate.mappedCompanyId ? ` (${candidate.mappedCompanyId})` : ""}</small><small>Identity: {candidate.identityResolutionStatus.replaceAll("_", " ")} · Collect: {candidate.priorCollectStatus || "not attempted"}</small></div><Button variant="outline" disabled={collectBusy || Boolean(candidate.priorCollectStatus)} onClick={() => void reviewCollectEligibility(candidate)}>{collectBusy ? <LoaderCircle className="spin" /> : <ShieldCheck />} Review Collect Eligibility</Button></article>)}</div> : <div className="empty-state"><Search /><h3>No eligible retained Search candidates</h3><p>Historical searches without versioned Employee ID evidence and already-associated identities are excluded.</p></div>}
-              <p className="verified-copy">Collect never runs from this list automatically. Search, Preview, retries, pagination, identity attachment and canonical updates remain disabled.</p>
+              {retainedCollectCandidates.length ? <><div className="collect-candidate-list">{retainedCollectCandidates.map(candidate => <article key={`${candidate.searchHistoryId}-${candidate.employeeId}`}><label><input type="checkbox" aria-label={`Select Employee ID ${candidate.employeeId} for Collect planning`} checked={selectedCollectEmployeeIds.includes(candidate.employeeId)} disabled={collectBusy || Boolean(candidate.priorCollectStatus)} onChange={() => { setCollectSelectionPlan(null); setSelectedCollectEmployeeIds(current => current.includes(candidate.employeeId) ? current.filter(id => id !== candidate.employeeId) : [...current, candidate.employeeId]) }} /><span><strong>Employee ID {candidate.employeeId}</strong><span>{candidate.searchOperation} · Search History #{candidate.searchHistoryId} · {new Date(candidate.searchTimestamp).toLocaleString()}</span><small>Institution {candidate.institutionId} · graduation {candidate.graduationYear ?? "not constrained"} · company {candidate.company || "not constrained"}{candidate.mappedCompanyId ? ` (${candidate.mappedCompanyId})` : ""}</small><small>Identity: {candidate.identityResolutionStatus.replaceAll("_", " ")} · Collect: {candidate.priorCollectStatus || "not attempted"}</small></span></label></article>)}</div><div className="selection-eligibility"><strong>{selectedCollectEmployeeIds.length} selected · {selectedCollectEmployeeIds.length * 20} internal units required</strong><span>{providerUsage.coresignal.remaining} internal units currently available</span><Button variant="outline" disabled={collectBusy || !selectedCollectEmployeeIds.length} onClick={() => void reviewCollectSelection()}>Review selected Collect operations</Button></div>{collectSelectionPlan && <div className="selection-eligibility" role="status"><strong>{collectSelectionPlan.readyForIndividualConfirmation ? "Selection fits current controls" : "Selection is not ready"}</strong><span>{collectSelectionPlan.totalApplicationUnits} units for {collectSelectionPlan.operations.length} individual requests · {collectSelectionPlan.remainingApplicationUnits} units available</span><small>No units are reserved by this review. Each authorized Collect creates its own atomic, durable reservation immediately before the provider call.</small>{collectSelectionPlan.operations.map(operation => <div key={`${operation.candidate.searchHistoryId}-${operation.candidate.employeeId}`}><span>Employee ID {operation.candidate.employeeId} · {operation.applicationUnits} units</span><small>{operation.blockers.length ? operation.blockers.join(" ") : "Eligible for individual confirmation, subject to a fresh capacity check."}</small><Button size="sm" variant="outline" disabled={collectBusy || operation.blockers.length > 0} onClick={() => void reviewCollectEligibility(operation.candidate)}>Review Collect Eligibility</Button></div>)}{!collectSelectionPlan.capacityCoversSelection && <small>Selected requests exceed current internal capacity. No additional reservation is available.</small>}</div>}</> : <div className="empty-state"><Search /><h3>No eligible retained Search candidates</h3><p>Historical searches without versioned Employee ID evidence and already-associated identities are excluded.</p></div>}
+              <p className="verified-copy">Selection is a provider-free plan. Each Collect requires a separate Admin confirmation and an atomic application-unit claim. No Search, Preview, retry, pagination, identity attachment or canonical update occurs automatically.</p>
             </section>}
 
             <section className="panel batch-panel">
@@ -3152,7 +3200,7 @@ export default function Home() {
 
             {session.canAdminister ? <section className="panel history-panel">
               <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canAdminister && <Button variant="ghost" size="sm" onClick={() => void refreshProviderHistory()}>Refresh history</Button>}</div>
-              <ProviderHistoryAudit items={providerHistoryPagination.items} usageReconciliationDrafts={usageReconciliationDrafts} onUsageReconciliationChange={(id, value) => setUsageReconciliationDrafts(current => ({ ...current, [id]: value }))} onReconcile={item => void reconcileProviderUsage(item)} />
+              <ProviderHistoryAudit items={providerHistoryPagination.items} usageReconciliationDrafts={usageReconciliationDrafts} onUsageReconciliationChange={(id, value) => setUsageReconciliationDrafts(current => ({ ...current, [id]: value }))} onReconcile={item => void reconcileProviderUsage(item)} onApproveCollectIdentity={(item, alumnusId) => void approveCollectIdentity(item, alumnusId)} />
               <PaginationFooter model={providerHistoryPagination} label="Provider history pagination" />
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section> : <section className="panel history-panel"><div className="empty-state"><ShieldCheck /><h3>Administrative provider history is restricted</h3><p>Your operational actions remain available above. Provider requests, credit accounting, evidence envelopes, and technical diagnostics are available only in the Admin workspace.</p></div></section>}

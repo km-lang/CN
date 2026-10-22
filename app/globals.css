@@ -471,7 +471,8 @@ button { cursor: pointer; }
 .collect-candidate-panel > .panel-heading > svg { width: 2rem; height: 2rem; color: var(--primary); flex: 0 0 auto; }
 .collect-candidate-list { display: grid; gap: .75rem; }
 .collect-candidate-list article { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: .85rem; background: var(--surface-subtle); }
-.collect-candidate-list article > div { display: grid; gap: .2rem; min-width: 0; }
+.collect-candidate-list article > label { display: flex; align-items: flex-start; gap: .75rem; min-width: 0; width: 100%; cursor: pointer; }
+.collect-candidate-list article > label > span { display: grid; gap: .2rem; min-width: 0; }
 .collect-candidate-list span, .collect-candidate-list small { overflow-wrap: anywhere; color: var(--muted-foreground); }
 .brightdata-evidence-detail { display: grid; gap: .35rem; min-width: 0; margin-top: .65rem; }
 .brightdata-evidence-detail strong { margin-top: .4rem; font-size: .78rem; }

@@ -1,16 +1,18 @@
 import { env } from "cloudflare:workers"
-import { and, desc, eq, gte, sql } from "drizzle-orm"
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
-import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, coresignalWebhookEvents, providerResponseHistory, providerSettings } from "@/db/schema"
+import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, coresignalWebhookEvents, externalDiscoveryResults, externalDiscoverySearches, providerResponseHistory, providerSettings } from "@/db/schema"
 import { collectCoresignalEmployeeWithMetadata, safeCoresignalError } from "@/lib/coresignal-client"
 import {
   CORESIGNAL_COLLECT_OPERATION,
   CORESIGNAL_COLLECT_CLAIM_SQL,
   CORESIGNAL_KNOWN_COLLECT_CLAIM_SQL,
   candidateFromKnownAlumnus,
+  candidateFromDiscoveryPreview,
   candidateFromSearchHistory,
   collectPreflight,
+  collectSelectionPlan,
   createCollectConfirmation,
   executeCollectOnce,
   knownAlumnusCollectChanges,
@@ -78,10 +80,22 @@ async function resolveCandidate(searchHistoryId: number, employeeId: string) {
   const db = getDb()
   const [history] = await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.id, searchHistoryId)).limit(1)
   if (!history) throw new Error("The retained Search History record was not found.")
-  const candidate = candidateFromSearchHistory(history as SearchEvidenceRow, employeeId, await priorCollectStatus(searchHistoryId, employeeId))
+  const prior = await priorCollectStatus(searchHistoryId, employeeId)
+  let candidate: RetainedSearchCandidate
+  let searchAttemptId: string
+  if (["Exact-year ES-DSL Preview", "Constrained ES-DSL Preview"].includes(history.operation)) {
+    const [search] = await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, history.searchId ?? -1)).limit(1)
+    const [result] = search ? await db.select().from(externalDiscoveryResults).where(and(eq(externalDiscoveryResults.searchId, search.id), eq(externalDiscoveryResults.providerPersonId, employeeId))).limit(1) : []
+    if (!search || !result) throw new Error("This Employee ID is absent from the saved Preview results.")
+    candidate = candidateFromDiscoveryPreview({ history, search, result, employeeId, priorCollectStatus: prior })
+    searchAttemptId = `preview-${history.id}-${result.id}`
+  } else {
+    candidate = candidateFromSearchHistory(history as SearchEvidenceRow, employeeId, prior)
+    searchAttemptId = searchEvidenceAttemptId(history.responseSummary)
+  }
   const [associated] = await db.select({ id: alumni.id }).from(alumni).where(eq(alumni.coresignalEmployeeId, candidate.employeeId)).limit(1)
   if (associated) throw new Error("This Coresignal Employee ID is already associated with a canonical alumnus.")
-  return { candidate, searchAttemptId: searchEvidenceAttemptId(history.responseSummary) }
+  return { candidate, searchAttemptId }
 }
 
 async function resolveKnownAlumnus(alumnusId: number, suppliedEmployeeId?: string, webhookEventId?: number) {
@@ -114,16 +128,22 @@ async function runtimeState() {
 async function eligibleCandidates() {
   const rows = await getDb().select().from(providerResponseHistory).where(and(
     eq(providerResponseHistory.provider, "coresignal"),
-    eq(providerResponseHistory.operation, "Base Employee ES-DSL Search"),
+    inArray(providerResponseHistory.operation, ["Base Employee ES-DSL Search", "Exact-year ES-DSL Preview", "Constrained ES-DSL Preview"]),
     eq(providerResponseHistory.mode, "live"),
     eq(providerResponseHistory.status, "success"),
   )).orderBy(desc(providerResponseHistory.id)).limit(50)
   const candidates: RetainedSearchCandidate[] = []
+  const seen = new Set<string>()
   for (const row of rows) {
     try {
-      const retained = deserializeCoresignalSearchEvidence(row.responseSummary)
-      if (!retained) continue
-      for (const employeeId of retained.evidence.employeeIds) candidates.push((await resolveCandidate(row.id, employeeId)).candidate)
+      let employeeIds: readonly string[] = []
+      if (row.operation === "Base Employee ES-DSL Search") employeeIds = deserializeCoresignalSearchEvidence(row.responseSummary)?.evidence.employeeIds ?? []
+      else if (["Exact-year ES-DSL Preview", "Constrained ES-DSL Preview"].includes(row.operation) && row.searchId) employeeIds = (await getDb().select({ employeeId: externalDiscoveryResults.providerPersonId }).from(externalDiscoveryResults).where(eq(externalDiscoveryResults.searchId, row.searchId))).map(item => item.employeeId)
+      for (const employeeId of employeeIds) {
+        if (seen.has(employeeId)) continue
+        try { const candidate = (await resolveCandidate(row.id, employeeId)).candidate; candidates.push(candidate); seen.add(employeeId) }
+        catch { /* One conflicting result must not hide the other eligible IDs. */ }
+      }
     } catch { /* Historical or conflicting evidence is intentionally not offered. */ }
   }
   return candidates
@@ -170,7 +190,19 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
-    const payload = await request.json() as { action?: "preflight" | "execute"; searchHistoryId?: number; alumnusId?: number; employeeId?: string; webhookEventId?: number; confirmed?: boolean; confirmationToken?: string }
+    const payload = await request.json() as { action?: "preflight" | "selection_preflight" | "execute"; searchHistoryId?: number; alumnusId?: number; employeeId?: string; webhookEventId?: number; confirmed?: boolean; confirmationToken?: string; selections?: Array<{ searchHistoryId: number; employeeId: string }> }
+    if (payload.action === "selection_preflight") {
+      const selections = payload.selections
+      if (!Array.isArray(selections) || selections.length < 1 || selections.length > 25 || selections.some(item => !item || !Number.isSafeInteger(item.searchHistoryId) || item.searchHistoryId < 1 || typeof item.employeeId !== "string")) {
+        return Response.json({ error: "Select 1–25 retained Search candidates." }, { status: 400 })
+      }
+      const candidates: RetainedSearchCandidate[] = []
+      for (const item of selections) {
+        try { candidates.push((await resolveCandidate(item.searchHistoryId, item.employeeId)).candidate) }
+        catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Selected candidate is unavailable." }, { status: 409 }) }
+      }
+      return Response.json({ plan: collectSelectionPlan(candidates, await runtimeState()), providerCalls: 0, confirmationTokensIssued: 0 }, { headers: { "cache-control": "no-store" } })
+    }
     if (payload.webhookEventId && (!Number.isSafeInteger(payload.webhookEventId) || payload.webhookEventId < 1 || !Number.isSafeInteger(payload.alumnusId))) return Response.json({ error: "A saved notification and alumnus are required." }, { status: 400 })
     if (payload.webhookEventId && (!coresignalCollectMockTransportEnabled() || !webhookMockEnabled())) return Response.json({ error: "Event-triggered Collect requires isolated, Admin-only mock transport; live Collect is disabled." }, { status: 409 })
     if (!Number.isInteger(payload.alumnusId) && (!Number.isInteger(payload.searchHistoryId) || typeof payload.employeeId !== "string")) return Response.json({ error: "A saved alumnus or retained Search History record and Employee ID are required." }, { status: 400 })

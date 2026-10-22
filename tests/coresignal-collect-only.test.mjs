@@ -80,6 +80,20 @@ test("valid retained Employee ID is eligible evidence without hard-coding the ca
   assert.equal(result.identityResolutionStatus, "IDENTITY_RESOLUTION_REQUIRED")
 })
 
+test("saved filtered Preview offers only unresolved, eligible provider IDs for selective Collect", () => {
+  const history = { id: 71, provider: "coresignal", operation: "Exact-year ES-DSL Preview", mode: "live", status: "success", createdAt: "2026-10-17T00:00:00Z", searchId: 9 }
+  const search = { id: 9, provider: "coresignal", mode: "live", filtersJson: JSON.stringify({ company: "Example Capital", graduationYear: "2011" }) }
+  const result = { id: 42, searchId: 9, provider: "coresignal", providerPersonId: "123456789", matchStatus: "New", linkedInternalAlumnusId: null, reviewStatus: "Pending review", reviewNote: "REVIEW_BEFORE_COLLECT: Education needs full-record verification", currentCompanyId: "123" }
+  const candidate = collect.candidateFromDiscoveryPreview({ history, search, result, employeeId: "123456789", priorCollectStatus: null })
+  assert.equal(candidate.searchHistoryId, 71)
+  assert.equal(candidate.sourceDiscoveryResultId, 42)
+  assert.equal(candidate.company, "Example Capital")
+  assert.equal(candidate.graduationYear, 2011)
+  assert.throws(() => collect.candidateFromDiscoveryPreview({ history, search, result: { ...result, matchStatus: "Possible duplicate" }, employeeId: "123456789", priorCollectStatus: null }), /not an unresolved/)
+  assert.throws(() => collect.candidateFromDiscoveryPreview({ history, search, result: { ...result, reviewNote: "SKIPPED_FILTER_MISMATCH: Wrong year" }, employeeId: "123456789", priorCollectStatus: null }), /not an unresolved/)
+  assert.throws(() => collect.candidateFromDiscoveryPreview({ history, search, result, employeeId: "999999999", priorCollectStatus: null }), /not an unresolved/)
+})
+
 test("known alumnus Collect derives the exact saved ID without any Search or paid lookup", () => {
   const known = collect.candidateFromKnownAlumnus({ id: 7, coresignalEmployeeId: "289351894", createdAt: "2026-10-17T00:00:00Z" }, null)
   assert.equal(known.sourceAlumnusId, 7)
@@ -128,6 +142,25 @@ test("prior claimed, successful or failed Collect remains non-replayable", () =>
   for (const status of ["in_progress", "success", "error", "ambiguous"]) assert.equal(collect.collectPreflight(candidate({ priorCollectStatus: status }), runtime()).allowed, false)
 })
 
+test("multi-candidate planning counts every individual reservation without issuing execution tokens", () => {
+  const first = candidate()
+  const second = candidate({ employeeId: "289351895", evidence: retainedEvidence({ ids: ["289351894", "289351895"] }) })
+  const limited = collect.collectSelectionPlan([first, second], runtime({ applicationUnitsRemaining: 20 }))
+  assert.equal(limited.totalApplicationUnits, 40)
+  assert.equal(limited.capacityCoversSelection, false)
+  assert.equal(limited.readyForIndividualConfirmation, false)
+  assert.equal(limited.reservationState, "NOT_RESERVED")
+  const funded = collect.collectSelectionPlan([first, second], runtime({ applicationUnitsRemaining: 40 }))
+  assert.equal(funded.readyForIndividualConfirmation, true)
+  assert.deepEqual(funded.operations.map(item => item.applicationUnits), [20, 20])
+  const duplicate = collect.collectSelectionPlan([first, first], runtime({ applicationUnitsRemaining: 40 }))
+  assert.match(duplicate.operations[1].blockers.join(" "), /selected more than once/)
+  assert.equal(duplicate.readyForIndividualConfirmation, false)
+  const disabled = collect.collectSelectionPlan([first], runtime({ applicationUnitsRemaining: 20, collectGateEnabled: false, entitlement: "unknown" }))
+  assert.equal(disabled.capacityCoversSelection, true)
+  assert.equal(disabled.readyForIndividualConfirmation, false)
+})
+
 test("confirmation binds exact Search, Employee ID and attempt and expires", () => {
   const secret = "synthetic-test-secret-at-least-32-characters"
   const token = collect.createCollectConfirmation({ searchHistoryId: 14, employeeId: "289351894", searchAttemptId: "search-attempt-1", now: 1000, nonce: "n" }, secret)
@@ -151,6 +184,15 @@ test("one approved execution calls Collect once and stores sanitized review evid
   assert.equal(result.evidence.quality.education, "PRESENT_AND_PLAUSIBLE")
   assert.equal(result.evidence.quality.currentEmployer, "PRESENT_AND_PLAUSIBLE")
   assert.doesNotMatch(JSON.stringify(result.evidence), /email|phone|apikey|secret/i)
+})
+
+test("Base Employee education.program is retained for human qualification", () => {
+  const evidence = collect.sanitizeCollectResponse({
+    body: profile({ education: [{ institution_id: 25919228, institution_name: "Indian Institute of Management Lucknow", program: "PGP", date_to_year: 2011, deleted: 0 }] }),
+    candidate: candidate(), attemptId: "programme-evidence", requestedAt: "2026-10-17T03:00:00Z", completedAt: "2026-10-17T03:00:01Z", upstreamHttpStatus: 200, providerCreditsRemaining: null,
+  })
+  assert.equal(evidence.education[0].programme, "PGP")
+  assert.equal(evidence.education[0].endYear, 2011)
 })
 
 test("duplicate and concurrent duplicate submissions produce zero additional provider calls", async () => {
@@ -328,7 +370,19 @@ test("Admin-only route uses atomic durable claim and never reuses Profile Refres
   assert.match(route, /WEBHOOK_COLLECT_CLAIM_SQL[\s\S]*application_units[\s\S]*WHERE NOT EXISTS/)
   assert.match(route, /payload\.webhookEventId && \(!coresignalCollectMockTransportEnabled\(\) \|\| !webhookMockEnabled\(\)\)/)
   assert.match(route, /collectCoresignalEmployeeWithMetadata/)
-  assert.doesNotMatch(route, /refreshProfile|attachCoresignalIdentity|externalDiscoverySearches/)
+  assert.doesNotMatch(route, /refreshProfile|attachCoresignalIdentity|db\.(insert|update|delete)\(externalDiscoverySearches\)/)
+})
+
+test("Collect evidence association is Admin-only, exact-identity, reviewed and provider-free", async () => {
+  const route = await readFile(new URL("../app/api/admin/coresignal-collect-review/route.ts", import.meta.url), "utf8")
+  assert.match(route, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/)
+  assert.match(route, /history\.status !== "success"/)
+  assert.match(route, /evidence\.targetEmployeeId !== evidence\.returnedEmployeeId/)
+  assert.match(route, /linkedinProfileIdentifier\(evidence\.identity\.professionalProfileUrl\) !== linkedinProfileIdentifier\(person\.linkedinUrl\)/)
+  assert.match(route, /input\.identityReviewed !== true \|\| input\.educationReviewed !== true/)
+  assert.match(route, /attachCoresignalIdentity/)
+  assert.match(route, /coresignal_collect_identity_approved/)
+  assert.doesNotMatch(route, /collectCoresignalEmployeeWithMetadata|fetch\(/)
 })
 
 test("the production claim statement admits exactly one durable attempt in an isolated SQLite fixture", () => {
