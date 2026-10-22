@@ -43,7 +43,7 @@ test("phone reveal 3: stable identity requirement is represented and enforced se
   const person = { id: 1, name: "Abhi Malan", phone: "", phoneVerification: "Unverified", lushaPersonId: "" };
   assert.equal(contact.contactEnrichmentPlan([person], ["phone"], true).blocked, 1);
   const phoneBlock = route.match(/if \(payload\.action === "lusha_reveal_phone"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "";
-  assert.match(phoneBlock, /person\.lushaPersonId\.trim\(\)/);
+  assert.match(phoneBlock, /hasApprovedLushaIdentity\(person\)/);
   assert.match(phoneBlock, /confirmed !== true/);
   assert.match(phoneBlock, /enrichmentMode\("lusha"\) !== "live" \|\| !providerConfigured\("lusha"\)/);
 });
@@ -83,22 +83,18 @@ test("phone reveal 6b: an unrelated or missing provider contact ID cannot update
   }
 });
 
-test("phone reveal 7: route persists phone provenance without modifying email or professional fields", () => {
+test("phone reveal 7: route stages phone provenance without changing canonical fields", () => {
   const phoneBlock = route.match(/if \(payload\.action === "lusha_reveal_phone"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "";
   assert.match(phoneBlock, /claimLushaRequest\(person, "Phone Reveal", actor\)/);
-  assert.match(phoneBlock, /completeLushaRequest\(claim\.id/);
-  assert.match(phoneBlock, /phoneSource: "Lusha"/);
-  assert.match(phoneBlock, /phoneRetrievedAt: now/);
+  assert.match(phoneBlock, /retainLushaContactResult\(\{ claimId: claim\.id, reservation: claim\.reservation, person, actor, channel: "phone"/);
   assert.match(phoneBlock, /providerReportedCredits: result\.creditsUsed/);
-  const update = phoneBlock.match(/db\.update\(alumni\)\.set\(\{[\s\S]*?\}\)\.where/)?.[0] ?? "";
-  assert.doesNotMatch(update, /email:/);
-  assert.doesNotMatch(update, /company:|title:|linkedinUrl:/);
+  assert.doesNotMatch(phoneBlock, /db\.update\(alumni\)|revealLushaEmail\(/);
 });
 
 test("phone reveal 8: bypasses are rejected before the provider invocation", () => {
   const phoneBlock = route.match(/if \(payload\.action === "lusha_reveal_phone"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "";
   const providerAt = phoneBlock.indexOf("await revealLushaPhone(");
-  for (const guard of ["confirmed !== true", "permission.allowed", "eligibleContactChannels", "person.lushaPersonId.trim()"]) {
+  for (const guard of ["confirmed !== true", "permission.allowed", "eligibleContactChannels", "hasApprovedLushaIdentity(person)"]) {
     const guardAt = phoneBlock.indexOf(guard);
     assert.ok(guardAt >= 0 && guardAt < providerAt, `${guard} must be checked before the provider call`);
   }

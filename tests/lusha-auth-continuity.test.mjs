@@ -29,7 +29,7 @@ test("lusha auth 1: Google Workspace PCOM and ChatGPT Admin use the same provide
 });
 
 test("lusha auth 2: Contact Search and channel reveals share canonical authorization and explicit same-origin credentials", () => {
-  assert.match(route, /"lusha_approve_identity", "lusha_reject_identity"\]\.includes\(payload\.action \?\? ""\) \? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"/);
+  assert.match(route, /"lusha_approve_identity", "lusha_reject_identity", "lusha_approve_contact", "lusha_reject_contact"\]\.includes\(payload\.action \?\? ""\) \? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"/);
   assert.match(route, /authorizeRequest\(request, requiredPermission\)/);
   assert.equal((page.match(/credentials: "same-origin"/g) ?? []).length >= 3, true);
   assert.match(route, /authenticatedJsonResponse\(context, \{\s*preview:/);
@@ -70,7 +70,7 @@ test("lusha auth 7: saved stable contact ID resumes reveal without another Searc
   assert.match(page, /const storedContactId = person\.lushaPersonId\?\.trim\(\)/);
   assert.match(page, /resumedFromStoredContact: true/);
   assert.match(page, /0 new Search calls/);
-  assert.match(route, /if \(!person\.lushaPersonId\)/);
+  assert.match(route, /if \(!await hasApprovedLushaIdentity\(person\)\)/);
   const revealBlock = route.match(/if \(payload\.action === "lusha_reveal_email"\)[\s\S]*?return authenticatedJsonResponse/)?.[0] ?? "";
   assert.match(revealBlock, /revealLushaEmail\(person\.lushaPersonId\)/);
   assert.doesNotMatch(revealBlock, /searchLushaContact/);

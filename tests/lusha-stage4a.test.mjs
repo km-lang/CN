@@ -177,7 +177,7 @@ test("stage4a 8: live UI requires search preview and a second channel-only confi
   assert.match(page, /Confirm Contact Search/);
   assert.match(page, /Continue to \{lushaRevealChannel === "email" \? "Email" : "Phone"\} Reveal/);
   assert.match(page, /Confirm \{lushaRevealChannel === "email" \? "Email" : "Phone"\}-Only Reveal/);
-  assert.match(page, /No email or phone is revealed in this step/);
+  assert.match(page, /No email or phone is revealed/);
 });
 
 test("stage4a 9: live channel-specific reveals are offered while combined and bulk reveals remain unavailable", () => {
@@ -195,7 +195,7 @@ test("stage4a 10: server rejects the legacy combined live path", () => {
 });
 
 test("stage4a 11: Lusha actions remain PCOM-operational and settings remain Admin-only", () => {
-  assert.match(route, /"lusha_approve_identity", "lusha_reject_identity"\]\.includes\(payload\.action \?\? ""\) \? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"/);
+  assert.match(route, /"lusha_approve_identity", "lusha_reject_identity", "lusha_approve_contact", "lusha_reject_contact"\]\.includes\(payload\.action \?\? ""\) \? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM"/);
   assert.match(page, /disabled=\{!session\.canAdminister\}/);
   assert.match(page, /Only an Admin can change application credit limits/);
 });
@@ -213,13 +213,11 @@ test("stage4a 12: search retains stable ID for review without automatic canonica
   assert.doesNotMatch(route, /JSON\.stringify\(result\)/);
 });
 
-test("stage4a 13: reveal stores only provider-sourced email and preserves profile provenance", () => {
+test("stage4a 13: reveal stages provider-sourced email without canonical mutation", () => {
   const revealBlock = route.match(/if \(payload\.action === "lusha_reveal_email"\)[\s\S]*?return authenticatedJsonResponse\(context, \{ result:/)?.[0] ?? "";
-  assert.match(revealBlock, /emailSource: "Lusha"/);
-  assert.match(revealBlock, /emailVerification: "Unverified"/);
-  assert.doesNotMatch(revealBlock, /phone:/);
-  const alumniUpdate = revealBlock.match(/db\.update\(alumni\)\.set\(\{[\s\S]*?\}\)\.where/)?.[0] ?? "";
-  assert.doesNotMatch(alumniUpdate, /(?:^|[, {])source: "Lusha"/);
+  assert.match(revealBlock, /retainLushaContactResult\(\{ claimId: claim\.id, reservation: claim\.reservation, person, actor, channel: "email"/);
+  assert.doesNotMatch(revealBlock, /db\.update\(alumni\)|revealLushaPhone\(/);
+  assert.match(route, /contactEvidence: parseLushaContactReview/);
 });
 
 test("stage4a 14: UI distinguishes application limit from Lusha account balance", () => {

@@ -46,6 +46,7 @@ import { apiPath, appConfig } from "@/lib/app-config"
 import { DISCOVERY_REVIEW_STATUS } from "@/lib/discovery-status"
 import { normalizeProfessionalProfileUrl, professionalExperienceSummary } from "@/lib/professional-profile"
 import type { LushaIdentityEvidence } from "@/lib/lusha-identity-review"
+import type { LushaContactReviewEvidence } from "@/lib/lusha-contact-review"
 import { EVIDENCE_FIELDS, requiredEvidenceFields, type CandidateObservation, type EvidenceDecision, type EvidenceDecisions, type EvidenceField } from "@/lib/discovery-candidate-evidence"
 import { discoveryApplicationUnits, maximumDiscoveryCount, validateDiscoveryCount } from "@/lib/discovery-limit"
 import { providerUsageLabel } from "@/lib/provider-usage"
@@ -205,6 +206,7 @@ type LatestImport = { filename: string; rowCount: number; importedBy: string; cr
 type Provider = "coresignal" | "lusha"
 type ProviderMode = "mock" | "live"
 type ProviderUsage = Record<Provider, { used: number; limit: number; remaining: number; configured: boolean; mode?: ProviderMode }>
+type LushaReservations = { search: number | null; email: number | null; phone: number | null }
 type CoresignalSearchEvidence = {
   schemaVersion: 1
   attemptId: string
@@ -266,7 +268,7 @@ type ProviderHistory = {
   createdAt: string
   searchEvidence?: PresentedSearchEvidence
   collectEvidence?: PresentedCollectEvidence
-  lushaReview?: { id: number; status: string; evidence: LushaIdentityEvidence | null; reviewedBy: string; reviewedAt: string }
+  lushaReview?: { id: number; status: string; evidence: LushaIdentityEvidence | null; contactEvidence: LushaContactReviewEvidence | null; reviewedBy: string; reviewedAt: string }
 }
 
 type RetainedCollectCandidate = {
@@ -597,6 +599,7 @@ function ProviderHistoryAudit({
   onApproveCollectIdentity,
   onApproveLushaIdentity,
   onRejectLushaIdentity,
+  onDecideLushaContact,
 }: {
   items: ProviderHistory[]
   usageReconciliationDrafts: Record<number, string>
@@ -605,11 +608,14 @@ function ProviderHistoryAudit({
   onApproveCollectIdentity: (item: ProviderHistory, alumnusId: number) => void
   onApproveLushaIdentity: (item: ProviderHistory) => void
   onRejectLushaIdentity: (item: ProviderHistory) => void
+  onDecideLushaContact: (item: ProviderHistory, decision: "approve" | "reject", replaceExisting: boolean) => void
 }) {
   const [reviewAlumnusIds, setReviewAlumnusIds] = useState<Record<number, string>>({})
   const [reviewedIdentityIds, setReviewedIdentityIds] = useState<number[]>([])
   const [reviewedEducationIds, setReviewedEducationIds] = useState<number[]>([])
   const [reviewedLushaIds, setReviewedLushaIds] = useState<number[]>([])
+  const [reviewedLushaContacts, setReviewedLushaContacts] = useState<number[]>([])
+  const [replaceLushaContacts, setReplaceLushaContacts] = useState<number[]>([])
   return <div className="provider-history-list" aria-label="Provider response history">
     <div className="provider-history-columns" aria-hidden="true"><span>Date / time</span><span>Provider</span><span>Operation</span><span>Status</span><span>Results</span><span>Usage evidence</span><span>Details</span></div>
     {items.map(item => {
@@ -630,6 +636,18 @@ function ProviderHistoryAudit({
           <section><h3>Execution outcome</h3><dl><div><dt>Status</dt><dd>{item.status.replaceAll("_", " ")}</dd></div><div><dt>Results</dt><dd>{resultLabel}</dd></div><div className="provider-history-wide"><dt>Response summary</dt><dd>{item.errorMessage || item.responseSummary || "No response summary was retained."}</dd></div>{item.searchEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Search evidence</dt><dd><CoresignalSearchEvidencePanel evidence={item.searchEvidence.evidence} showIds /></dd></div>}{item.searchEvidence && item.searchEvidence.state !== "RETAINED" && <div className="provider-history-wide"><dt>Historical evidence</dt><dd className="history-evidence-unavailable">{item.searchEvidence.reason}</dd></div>}{item.collectEvidence?.state === "RETAINED" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd><CoresignalCollectEvidencePanel evidence={item.collectEvidence.evidence} /></dd></div>}{item.collectEvidence?.state === "UNAVAILABLE" && <div className="provider-history-wide"><dt>Collect evidence</dt><dd className="history-evidence-unavailable">{item.collectEvidence.reason}</dd></div>}</dl></section>
           {item.operation === "Base Employee Collect-only" && item.status === "success" && item.collectEvidence?.state === "RETAINED" && !item.alumnusId && <section><h3>Human identity review</h3><p>Compare the retained name, LinkedIn URL and IIM Lucknow education with the intended Directory profile. Association requires an exact stored LinkedIn identity match and never updates other alumni facts.</p><div className="collect-review-controls"><Input type="number" min="1" step="1" aria-label={`Existing alumnus ID for Collect history ${item.id}`} placeholder="Existing alumnus ID" value={reviewAlumnusIds[item.id] ?? ""} onChange={event => setReviewAlumnusIds(current => ({ ...current, [item.id]: event.target.value }))} /><label><input type="checkbox" checked={reviewedIdentityIds.includes(item.id)} onChange={event => setReviewedIdentityIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I reviewed the person and LinkedIn identity</label><label><input type="checkbox" checked={reviewedEducationIds.includes(item.id)} onChange={event => setReviewedEducationIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I reviewed the education evidence</label><Button size="sm" variant="outline" disabled={!Number.isSafeInteger(Number(reviewAlumnusIds[item.id])) || Number(reviewAlumnusIds[item.id]) < 1 || !reviewedIdentityIds.includes(item.id) || !reviewedEducationIds.includes(item.id)} onClick={() => onApproveCollectIdentity(item, Number(reviewAlumnusIds[item.id]))}>Approve exact-match association</Button></div></section>}
           {item.provider === "lusha" && item.operation === "Contact Search Preview" && item.lushaReview && <section><h3>Lusha identity evidence</h3><p>Search did not reveal an email or phone and did not change the canonical alumnus. Compare the saved and returned profile identity before any association.</p><dl><div><dt>Review</dt><dd>{item.lushaReview.status} · #{item.lushaReview.id}</dd></div><div><dt>Contact ID</dt><dd>{item.lushaReview.evidence?.contactId || "Not retained"}</dd></div><div><dt>Requested profile</dt><dd>{item.lushaReview.evidence?.requestedProfileUrl || "Not recorded"}</dd></div><div><dt>Returned profile</dt><dd>{item.lushaReview.evidence?.returnedProfileUrl || "Not reported"}</dd></div><div><dt>Identity assessment</dt><dd>{item.lushaReview.evidence?.identityReason || "Evidence unavailable"}</dd></div><div><dt>Returned role</dt><dd>{[item.lushaReview.evidence?.returnedTitle, item.lushaReview.evidence?.returnedCompany].filter(Boolean).join(" · ") || "Not reported"}</dd></div></dl>{item.lushaReview.status === "Pending identity review" && item.lushaReview.evidence?.identityReason === "PROFILE_URL_MATCH" && <div className="collect-review-controls"><label><input type="checkbox" checked={reviewedLushaIds.includes(item.id)} onChange={event => setReviewedLushaIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I compared the saved and returned LinkedIn profiles and approve this exact contact ID</label><Button size="sm" variant="outline" disabled={!reviewedLushaIds.includes(item.id)} onClick={() => onApproveLushaIdentity(item)}>Approve Lusha identity association</Button></div>}{item.lushaReview.status === "Identity exception" && <p>This observation cannot be approved. Resolve the identity or billing exception outside this one-request review.</p>}{["Pending identity review", "Identity exception"].includes(item.lushaReview.status) && <Button size="sm" variant="outline" onClick={() => onRejectLushaIdentity(item)}>Reject Lusha identity proposal</Button>}</section>}
+          {item.provider === "lusha" && item.lushaReview?.contactEvidence && <section>
+            <h3>Lusha {item.lushaReview.contactEvidence.channel} evidence — Admin review</h3>
+            <p>Restricted provider evidence; no canonical contact field changed and review makes no provider call.</p>
+            <dl><div><dt>Review</dt><dd>{item.lushaReview.status} · #{item.lushaReview.id}</dd></div><div><dt>Proposed value</dt><dd>{item.lushaReview.contactEvidence.value}</dd></div><div><dt>Existing value</dt><dd>{item.lushaReview.contactEvidence.previousValue || "None"}</dd></div><div><dt>Associated contact ID</dt><dd>{item.lushaReview.contactEvidence.contactId}</dd></div><div><dt>Decision</dt><dd>{item.lushaReview.reviewedBy ? `${item.lushaReview.reviewedBy} · ${item.lushaReview.reviewedAt}` : "Awaiting Admin"}</dd></div></dl>
+            {item.lushaReview.status === "Pending contact review" && <div className="collect-review-controls">
+              <label><input type="checkbox" checked={reviewedLushaContacts.includes(item.id)} onChange={event => setReviewedLushaContacts(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> I verified this Lusha identity and the proposed {item.lushaReview.contactEvidence.channel}.</label>
+              {Boolean(item.lushaReview.contactEvidence.previousValue && item.lushaReview.contactEvidence.previousValue !== item.lushaReview.contactEvidence.value) && <label><input type="checkbox" checked={replaceLushaContacts.includes(item.id)} onChange={event => setReplaceLushaContacts(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))} /> Replace the existing unverified value.</label>}
+              <Button size="sm" variant="outline" disabled={!reviewedLushaContacts.includes(item.id) || Boolean(item.lushaReview.contactEvidence.previousValue && item.lushaReview.contactEvidence.previousValue !== item.lushaReview.contactEvidence.value && !replaceLushaContacts.includes(item.id))} onClick={() => onDecideLushaContact(item, "approve", replaceLushaContacts.includes(item.id))}>Approve {item.lushaReview.contactEvidence.channel}</Button>
+            </div>}
+            {item.lushaReview.status === "Contact exception" && <p>Usage or identity exception: this observation cannot be applied. Reject it or reconcile the charge separately.</p>}
+            {["Pending contact review", "Contact exception"].includes(item.lushaReview.status) && <Button size="sm" variant="outline" onClick={() => onDecideLushaContact(item, "reject", false)}>Reject proposal</Button>}
+          </section>}
           <section><h3>Usage and limits</h3><dl><div><dt>Usage state</dt><dd>{usage.label}</dd></div><div><dt>Application attribution</dt><dd>{item.applicationUnits ?? 0} unit{(item.applicationUnits ?? 0) === 1 ? "" : "s"}</dd></div><div className="provider-history-wide"><dt>Evidence</dt><dd>{usage.detail}</dd></div>{item.reconciliationSource && <div className="provider-history-wide"><dt>Reconciliation source</dt><dd>{item.reconciliationSource}</dd></div>}</dl>{item.provider === "lusha" && usage.label === "Reconciliation required" && <div className="usage-reconcile"><Input type="number" min="0" step="1" value={usageReconciliationDrafts[item.id] ?? ""} onChange={event => onUsageReconciliationChange(item.id, event.target.value)} aria-label={`Observed account delta for ${item.operation}`} placeholder="Observed delta" /><Button size="sm" variant="outline" onClick={() => onReconcile(item)}>Reconcile</Button></div>}</section>
           <section><h3>Technical diagnostics</h3><p>Requested by {item.requestedBy || "Not recorded"}. Provider-reported credit balance is shown only when retained and is not treated as verified billable cost.</p>{item.searchEvidence?.state === "RETAINED" || item.collectEvidence?.state === "RETAINED" ? <details className="provider-history-json"><summary>View sanitized stored metadata</summary><pre>{JSON.stringify(item.searchEvidence?.state === "RETAINED" ? item.searchEvidence.evidence : item.collectEvidence?.state === "RETAINED" ? item.collectEvidence.evidence : null, null, 2)}</pre></details> : <p className="history-evidence-unavailable">No structured diagnostic envelope was retained for this operation.</p>}</section>
         </div>
@@ -780,6 +798,7 @@ export default function Home() {
   const [mockDiscoveryEnabled, setMockDiscoveryEnabled] = useState(false)
   const [providerUsage, setProviderUsage] = useState<ProviderUsage>({ coresignal: { used: 0, limit: 25, remaining: 25, configured: false }, lusha: { used: 0, limit: 100, remaining: 100, configured: false } })
   const [providerHistory, setProviderHistory] = useState<ProviderHistory[]>([])
+  const [lushaReservations, setLushaReservations] = useState<LushaReservations>({ search: null, email: null, phone: null })
   const [retainedCollectCandidates, setRetainedCollectCandidates] = useState<RetainedCollectCandidate[]>([])
   const [selectedCollectEmployeeIds, setSelectedCollectEmployeeIds] = useState<string[]>([])
   const [collectSelectionPlan, setCollectSelectionPlan] = useState<CollectSelectionPlanView | null>(null)
@@ -1004,11 +1023,12 @@ export default function Home() {
   const loadEnrichment = useCallback(async () => {
     try {
       const response = await fetch(API_ROUTES.enrichment, { cache: "no-store" })
-      const data = await response.json() as { modes?: Record<Provider, ProviderMode>; usage?: ProviderUsage; history?: ProviderHistory[]; contactResume?: Record<number, { emailAvailable: boolean | null; phoneAvailable: boolean | null }>; error?: string }
+      const data = await response.json() as { modes?: Record<Provider, ProviderMode>; usage?: ProviderUsage; history?: ProviderHistory[]; lushaReservations?: LushaReservations; contactResume?: Record<number, { emailAvailable: boolean | null; phoneAvailable: boolean | null }>; error?: string }
       if (!response.ok || !data.usage) throw new Error(data.error || "Unable to load provider activity.")
       setProviderModes(data.modes ?? { coresignal: data.usage.coresignal.mode ?? "mock", lusha: data.usage.lusha.mode ?? "mock" })
       setProviderUsage(data.usage)
       setProviderHistory(data.history ?? [])
+      setLushaReservations(data.lushaReservations ?? { search: null, email: null, phone: null })
       setContactResume(data.contactResume ?? {})
       setCreditDrafts({ coresignal: String(data.usage.coresignal.limit), lusha: String(data.usage.lusha.limit) })
       if (session.canAdminister) {
@@ -1787,7 +1807,7 @@ export default function Home() {
       })
       const data = await response.json() as { result?: { status: string; creditsUsed: number | null }; error?: string }
       if (!response.ok || !data.result) throw new Error(data.error || "Unable to reveal the Lusha email.")
-      setEnrichmentMessage(data.result.status === "review_required" ? "Lusha returned ambiguous identity or billing evidence. No email was applied; Admin review is required." : data.result.status === "success" ? "Lusha returned an email. The provider-sourced value and actual reported usage are recorded." : "Lusha did not return an email. The provider outcome and reported usage are recorded.")
+      setEnrichmentMessage(data.result.status === "review_required" ? "Lusha email evidence was retained for Admin review. No canonical email changed. Any unknown charge requires reconciliation before approval." : "Lusha did not return an email. The provider outcome and reported usage are recorded.")
       setLushaRevealConfirmOpen(false)
       setLushaTarget(null)
       setLushaPreview(null)
@@ -1812,7 +1832,7 @@ export default function Home() {
       })
       const data = await response.json() as { result?: { status: string; creditsUsed: number | null }; error?: string }
       if (!response.ok || !data.result) throw new Error(data.error || "Unable to reveal the Lusha phone.")
-      setEnrichmentMessage(data.result.status === "review_required" ? "Lusha returned ambiguous identity or billing evidence. No phone was applied; Admin review is required." : data.result.status === "success" ? "Lusha returned a phone. The provider-sourced value and actual reported usage are recorded; the existing email was preserved." : "Lusha did not return a phone. The provider outcome and reported usage are recorded.")
+      setEnrichmentMessage(data.result.status === "review_required" ? "Lusha phone evidence was retained for Admin review. No canonical phone changed. Any unknown charge requires reconciliation before approval." : "Lusha did not return a phone. The provider outcome and reported usage are recorded.")
       setLushaRevealConfirmOpen(false)
       setLushaTarget(null)
       setLushaPreview(null)
@@ -1888,6 +1908,18 @@ export default function Home() {
       setEnrichmentMessage(`Lusha identity review #${item.lushaReview.id} was rejected. No alumnus field was changed.`)
       await loadEnrichment()
     } catch (error) { setEnrichmentMessage(error instanceof Error ? error.message : "Lusha identity rejection could not be saved.") }
+  }
+
+  async function decideLushaContact(item: ProviderHistory, decision: "approve" | "reject", replaceExisting: boolean) {
+    if (!item.lushaReview?.contactEvidence) return
+    setEnrichmentMessage("")
+    try {
+      const response = await fetch(API_ROUTES.enrichment, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: decision === "approve" ? "lusha_approve_contact" : "lusha_reject_contact", reviewId: item.lushaReview.id, confirmed: true, replaceExisting }) })
+      const data = await response.json() as { approved?: boolean; rejected?: boolean; error?: string }
+      if (!response.ok || !(decision === "approve" ? data.approved : data.rejected)) throw new Error(data.error || "Lusha contact review could not be saved.")
+      setEnrichmentMessage(`Lusha ${item.lushaReview.contactEvidence.channel} review #${item.lushaReview.id} ${decision === "approve" ? "approved" : "rejected"}. No provider call was made.`)
+      await Promise.all([loadWorkspace(), loadEnrichment()])
+    } catch (error) { setEnrichmentMessage(error instanceof Error ? error.message : "Lusha contact review could not be saved.") }
   }
 
   async function validateLushaConnection() {
@@ -3232,7 +3264,7 @@ export default function Home() {
 
             {session.canAdminister ? <section className="panel history-panel">
               <div className="panel-heading"><div><p className="eyebrow">Provider-response history</p><h2>{session.canOperate ? "Complete enrichment audit trail" : "Operational history restricted"}</h2><span>{session.canOperate ? "Sanitised request outcomes are shared centrally. API secrets and raw sensitive payloads are never stored here." : "Developer access includes provider health and usage status, not alumni-specific provider responses."}</span></div>{session.canAdminister && <Button variant="ghost" size="sm" onClick={() => void refreshProviderHistory()}>Refresh history</Button>}</div>
-              <ProviderHistoryAudit items={providerHistoryPagination.items} usageReconciliationDrafts={usageReconciliationDrafts} onUsageReconciliationChange={(id, value) => setUsageReconciliationDrafts(current => ({ ...current, [id]: value }))} onReconcile={item => void reconcileProviderUsage(item)} onApproveCollectIdentity={(item, alumnusId) => void approveCollectIdentity(item, alumnusId)} onApproveLushaIdentity={item => void approveLushaIdentity(item)} onRejectLushaIdentity={item => void rejectLushaIdentity(item)} />
+              <ProviderHistoryAudit items={providerHistoryPagination.items} usageReconciliationDrafts={usageReconciliationDrafts} onUsageReconciliationChange={(id, value) => setUsageReconciliationDrafts(current => ({ ...current, [id]: value }))} onReconcile={item => void reconcileProviderUsage(item)} onApproveCollectIdentity={(item, alumnusId) => void approveCollectIdentity(item, alumnusId)} onApproveLushaIdentity={item => void approveLushaIdentity(item)} onRejectLushaIdentity={item => void rejectLushaIdentity(item)} onDecideLushaContact={(item, decision, replaceExisting) => void decideLushaContact(item, decision, replaceExisting)} />
               <PaginationFooter model={providerHistoryPagination} label="Provider history pagination" />
               {!providerHistory.length && <div className="empty-state"><Activity /><h3>No provider responses yet</h3><p>Run a manual or batch enrichment to create the first audit entry.</p></div>}
             </section> : <section className="panel history-panel"><div className="empty-state"><ShieldCheck /><h3>Administrative provider history is restricted</h3><p>Your operational actions remain available above. Provider requests, credit accounting, evidence envelopes, and technical diagnostics are available only in the Admin workspace.</p></div></section>}
@@ -3417,13 +3449,25 @@ export default function Home() {
 
       <Dialog open={Boolean(lushaTarget) && !lushaRevealConfirmOpen} onOpenChange={open => { if (!open && !lushaRevealConfirmOpen) { setLushaTarget(null); setLushaPreview(null) } }}>
         <DialogContent className="refresh-confirm-dialog">
-          {lushaTarget && !lushaPreview && <><DialogHeader><DialogTitle>Check Lusha contact availability?</DialogTitle><DialogDescription>This first V3 step searches for a stable Lusha contact ID and availability flags. It does not reveal an email or phone.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Preferred identifier</span><strong>{normalizeProfessionalProfileUrl(lushaTarget.linkedinUrl) ? "Professional profile URL" : "Name and current company"}</strong></div><div><span>Requested contact data</span><strong>Availability preview only</strong></div><div><span>Application capacity</span><strong>{providerUsage.lusha.remaining} internal units available</strong></div></div><div className="credit-notice"><Activity /><span>Lusha V3 Search may incur request/result usage under your account plan. The app will record usage reported by Lusha; this application limit is not the Lusha account balance. No email or phone is revealed in this step.</span></div>{enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}<DialogFooter><Button variant="outline" onClick={() => setLushaTarget(null)}>Cancel</Button><Button disabled={enriching || providerUsage.lusha.remaining < 1 || !providerUsage.lusha.configured} onClick={() => void searchLushaContactPreview()}>{enriching ? <LoaderCircle className="spin" /> : <Search />} Confirm Contact Search</Button></DialogFooter></>}
+          {lushaTarget && !lushaPreview && <p className="section-help" role="note">One saved LinkedIn profile only. Internal Search reservation: {lushaReservations.search === null ? "not configured — request blocked" : `${lushaReservations.search} unit${lushaReservations.search === 1 ? "" : "s"}`} · {providerUsage.lusha.remaining} units remaining. Provider billing and current-key entitlement require separate verification.</p>}
+          {lushaTarget && !lushaPreview && <>
+            <DialogHeader><DialogTitle>Check Lusha contact availability?</DialogTitle><DialogDescription>This first V3 step searches one saved LinkedIn profile for a stable Lusha contact ID and availability flags. It does not reveal an email or phone.</DialogDescription></DialogHeader>
+            <div className="refresh-confirm-summary"><div><span>Alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Identifier</span><strong>{normalizeProfessionalProfileUrl(lushaTarget.linkedinUrl) ? "Saved LinkedIn profile URL" : "Missing — Search blocked"}</strong></div><div><span>Requested contact data</span><strong>Availability preview only</strong></div><div><span>Application capacity</span><strong>{providerUsage.lusha.remaining} internal units available</strong></div></div>
+            <div className="credit-notice"><Activity /><span>Lusha V3 Search may incur request/result usage under your account plan. The app records usage reported by Lusha; its application limit is not the Lusha account balance. No email or phone is revealed.</span></div>
+            {enrichmentMessage && <div className="enrichment-message"><Activity /> <span>{enrichmentMessage}</span></div>}
+            <DialogFooter><Button variant="outline" onClick={() => setLushaTarget(null)}>Cancel</Button><Button disabled={enriching || !normalizeProfessionalProfileUrl(lushaTarget.linkedinUrl) || lushaReservations.search === null || providerUsage.lusha.remaining < (lushaReservations.search ?? 1) || !providerUsage.lusha.configured} onClick={() => void searchLushaContactPreview()}>{enriching ? <LoaderCircle className="spin" /> : <Search />} Confirm Contact Search</Button></DialogFooter>
+          </>}
           {lushaTarget && lushaPreview && <><DialogHeader><DialogTitle>Lusha contact preview</DialogTitle><DialogDescription>{lushaPreview.resumedFromStoredContact ? "Resume from the previously completed contact match without running another Lusha Search." : `Review the non-contact match before deciding whether to reveal a ${lushaRevealChannel}.`}</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Internal alumnus</span><strong>{lushaTarget.name}</strong></div><div><span>Lusha match</span><strong>{lushaPreview.fullName || "No match returned"}</strong></div><div><span>Role</span><strong>{lushaPreview.resumedFromStoredContact ? "Previously reviewed match" : [lushaPreview.jobTitle, lushaPreview.company].filter(Boolean).join(" · ") || "Not reported"}</strong></div><div><span>Email availability</span><strong>{lushaPreview.resumedFromStoredContact ? lushaPreview.emailAvailable === true ? "Available in the completed preview" : lushaPreview.emailAvailable === false ? "Not available in the completed preview" : "Previously checked · not re-queried" : lushaPreview.emailAvailable === null ? "Not reported" : lushaPreview.emailAvailable ? "Available to reveal" : "Not available"}</strong></div><div><span>Phone availability</span><strong>{lushaPreview.resumedFromStoredContact ? lushaPreview.phoneAvailable === true ? "Available in the completed preview" : lushaPreview.phoneAvailable === false ? "Not available in the completed preview" : "Previously checked · availability not retained" : lushaPreview.phoneAvailable === null ? "Not reported" : lushaPreview.phoneAvailable ? "Available to reveal" : "Not available"}</strong></div><div><span>Search usage</span><strong>{lushaPreview.resumedFromStoredContact ? "Previously completed · 0 new Search calls" : lushaPreview.creditsUsed === null ? "Not returned · reconcile account usage" : `${lushaPreview.creditsUsed} credit${lushaPreview.creditsUsed === 1 ? "" : "s"} reported`}</strong></div></div><div className="credit-notice"><Activity /><span>{lushaPreview.resumedFromStoredContact ? `Corporate Network will reuse the saved stable Lusha contact ID. Continuing does not repeat Contact Search; only the separately confirmed ${lushaRevealChannel} reveal can reach Lusha.` : `${lushaRevealChannel === "email" ? "Email" : "Phone"} reveal is a separate live provider call and may include request/result usage plus the selected field. The actual charge is not hard-coded. Combined and bulk reveal remain disabled.`}</span></div><DialogFooter><Button variant="outline" onClick={() => { setLushaTarget(null); setLushaPreview(null) }}>Close</Button><Button disabled={lushaPreview.status !== "success" || (lushaRevealChannel === "email" ? lushaPreview.emailAvailable === false : lushaPreview.phoneAvailable === false) || enriching} onClick={() => setLushaRevealConfirmOpen(true)}>{lushaRevealChannel === "email" ? <Mail /> : <ContactRound />} Continue to {lushaRevealChannel === "email" ? "Email" : "Phone"} Reveal</Button></DialogFooter></>}
         </DialogContent>
       </Dialog>
 
       <Dialog open={lushaRevealConfirmOpen} onOpenChange={setLushaRevealConfirmOpen}>
-        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Reveal {lushaRevealChannel} through Lusha?</DialogTitle><DialogDescription>This is the final human confirmation before a live {lushaRevealChannel}-only contact reveal.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Alumnus</span><strong>{lushaTarget?.name ?? "Not selected"}</strong></div><div><span>Lusha contact</span><strong>{lushaPreview?.fullName || "Stable contact ID matched"}</strong></div><div><span>Requested field</span><strong>{lushaRevealChannel === "email" ? "Email" : "Phone"} only</strong></div><div><span>{lushaRevealChannel === "email" ? "Phone" : "Email"}</span><strong>Not requested</strong></div></div><div className="credit-notice"><Activity /><span>This live call may consume request/result usage plus {lushaRevealChannel} reveal usage. Corporate Network records provider-reported actual usage; if Lusha omits per-call metadata, the history will require reconciliation against the Lusha account usage view.</span></div><DialogFooter><Button variant="outline" onClick={() => setLushaRevealConfirmOpen(false)}>Cancel</Button><Button disabled={enriching || !lushaPreview?.contactId || (lushaRevealChannel === "email" ? lushaPreview.emailAvailable === false : lushaPreview.phoneAvailable === false)} onClick={() => void (lushaRevealChannel === "email" ? revealLushaEmail() : revealLushaPhone())}>{enriching ? <LoaderCircle className="spin" /> : lushaRevealChannel === "email" ? <Mail /> : <ContactRound />} Confirm {lushaRevealChannel === "email" ? "Email" : "Phone"}-Only Reveal</Button></DialogFooter></DialogContent>
+        <DialogContent className="refresh-confirm-dialog">
+          <DialogHeader><DialogTitle>Reveal {lushaRevealChannel} through Lusha?</DialogTitle><DialogDescription>This is the final human confirmation before a live {lushaRevealChannel}-only contact reveal.</DialogDescription></DialogHeader>
+          <div className="refresh-confirm-summary"><div><span>Alumnus</span><strong>{lushaTarget?.name ?? "Not selected"}</strong></div><div><span>Lusha contact</span><strong>{lushaPreview?.fullName || "Stable contact ID matched"}</strong></div><div><span>Requested field</span><strong>{lushaRevealChannel === "email" ? "Email" : "Phone"} only</strong></div><div><span>{lushaRevealChannel === "email" ? "Phone" : "Email"}</span><strong>Not requested</strong></div><div><span>Internal reservation</span><strong>{(lushaRevealChannel === "email" ? lushaReservations.email : lushaReservations.phone) === null ? "Not configured — request blocked" : `${lushaRevealChannel === "email" ? lushaReservations.email : lushaReservations.phone} units`} · {providerUsage.lusha.remaining} remaining</strong></div></div>
+          <div className="credit-notice"><Activity /><span>This is a separate provider request. Published phone-reveal pricing is higher than email; account-specific total billing is unverified. Corporate Network records provider-reported usage; missing usage requires reconciliation. A returned value remains pending Admin review, not canonical.</span></div>
+          <DialogFooter><Button variant="outline" onClick={() => setLushaRevealConfirmOpen(false)}>Cancel</Button><Button disabled={enriching || (lushaRevealChannel === "email" ? lushaReservations.email : lushaReservations.phone) === null || !lushaPreview?.contactId || (lushaRevealChannel === "email" ? lushaPreview.emailAvailable === false : lushaPreview.phoneAvailable === false)} onClick={() => void (lushaRevealChannel === "email" ? revealLushaEmail() : revealLushaPhone())}>{enriching ? <LoaderCircle className="spin" /> : lushaRevealChannel === "email" ? <Mail /> : <ContactRound />} Confirm {lushaRevealChannel === "email" ? "Email" : "Phone"}-Only Reveal</Button></DialogFooter>
+        </DialogContent>
       </Dialog>
 
       <Dialog open={Boolean(pendingDiscoveryContinuation)} onOpenChange={open => { if (!open) setPendingDiscoveryContinuation(null) }}>
