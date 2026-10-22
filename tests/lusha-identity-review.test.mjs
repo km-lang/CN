@@ -31,7 +31,7 @@ function isolatedDb(filename = ":memory:") {
 }
 
 function evidence(overrides = {}) {
-  return review.lushaIdentityEvidence({ returnedCount: 1, contactId: "lusha-synthetic-1", requestedProfileUrl: profile, returnedProfileUrl: profile, returnedName: "Synthetic Alumnus", returnedCompany: "Example", returnedTitle: "Manager", emailAvailable: true, phoneAvailable: false, identityReason: "PROFILE_URL_MATCH", providerStatus: "success", providerReportedCredits: 2, ...overrides })
+  return review.lushaIdentityEvidence({ returnedCount: 1, alumnusRecordVersion: 1, contactId: "lusha-synthetic-1", requestedProfileUrl: profile, returnedProfileUrl: profile, returnedName: "Synthetic Alumnus", returnedCompany: "Example", returnedTitle: "Manager", emailAvailable: true, phoneAvailable: false, identityReason: "PROFILE_URL_MATCH", providerStatus: "success", providerReportedCredits: 2, ...overrides })
 }
 
 function pending(db, proposal = evidence(), alumnusId = 1, status = "Pending identity review") {
@@ -41,7 +41,7 @@ function pending(db, proposal = evidence(), alumnusId = 1, status = "Pending ide
 }
 
 function approve(db, ids, proposal = evidence(), savedProfile = profile, recordVersion = 1) {
-  if (!review.lushaIdentityApprovalEligible(proposal, savedProfile, "")) return false
+  if (!review.lushaIdentityApprovalEligible(proposal, savedProfile, "", recordVersion)) return false
   const key = `lusha-identity-review:${ids.reviewId}`
   db.exec("BEGIN IMMEDIATE")
   try {
@@ -79,14 +79,25 @@ test("mock V3 exact match stores a pending provider proposal without any canonic
 
 test("ambiguous, mismatched, missing ID and changed saved profile cannot be approved", () => {
   for (const item of [evidence({ returnedCount: 2, identityReason: "MULTIPLE_RESULTS", providerStatus: "review_required" }), evidence({ returnedProfileUrl: "https://www.linkedin.com/in/other-synthetic/", identityReason: "PROFILE_URL_CONFLICT", providerStatus: "review_required" }), evidence({ contactId: "" }), evidence({ providerStatus: "review_required" })]) {
-    assert.equal(review.lushaIdentityApprovalEligible(item, profile, ""), false)
+    assert.equal(review.lushaIdentityApprovalEligible(item, profile, "", 1), false)
   }
-  assert.equal(review.lushaIdentityApprovalEligible(evidence(), "https://www.linkedin.com/in/changed/", ""), false)
+  assert.equal(review.lushaIdentityApprovalEligible(evidence(), "https://www.linkedin.com/in/changed/", "", 1), false)
+  assert.equal(review.lushaIdentityApprovalEligible(evidence(), profile, "", 2), false)
   const db = isolatedDb()
   try {
     const ids = pending(db)
     db.exec("UPDATE alumni SET linkedin_url='https://www.linkedin.com/in/changed/',record_version=2 WHERE id=1")
     assert.equal(approve(db, ids, evidence(), profile, 1), false)
+    assert.equal(db.prepare("SELECT lusha_person_id FROM alumni WHERE id=1").get().lusha_person_id, "")
+  } finally { db.close() }
+})
+
+test("a canonical edit invalidates a pending proposal even if its LinkedIn URL is restored", () => {
+  const db = isolatedDb()
+  try {
+    const ids = pending(db)
+    db.prepare("UPDATE alumni SET record_version=2 WHERE id=1").run()
+    assert.equal(approve(db, ids, evidence(), profile, 2), false)
     assert.equal(db.prepare("SELECT lusha_person_id FROM alumni WHERE id=1").get().lusha_person_id, "")
   } finally { db.close() }
 })

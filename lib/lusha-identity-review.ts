@@ -4,6 +4,7 @@ export type LushaIdentityEvidence = {
   kind: "LUSHA_CONTACT_IDENTITY"
   version: 1
   returnedCount: number
+  alumnusRecordVersion: number
   contactId: string
   requestedProfileUrl: string
   returnedProfileUrl: string
@@ -29,15 +30,17 @@ export function parseLushaIdentityEvidence(value: string): LushaIdentityEvidence
     if (row.kind !== "LUSHA_CONTACT_IDENTITY" || row.version !== 1) return null
     if (!["contactId", "requestedProfileUrl", "returnedProfileUrl", "returnedName", "returnedCompany", "returnedTitle", "identityReason", "providerStatus"].every(key => typeof row[key] === "string")) return null
     if (!Number.isSafeInteger(row.returnedCount) || Number(row.returnedCount) < 1) return null
+    if (!Number.isSafeInteger(row.alumnusRecordVersion) || Number(row.alumnusRecordVersion) < 1) return null
     if (![null, true, false].includes(row.emailAvailable as null | boolean) || ![null, true, false].includes(row.phoneAvailable as null | boolean)) return null
     if (row.providerReportedCredits !== null && (typeof row.providerReportedCredits !== "number" || !Number.isSafeInteger(row.providerReportedCredits) || row.providerReportedCredits < 0)) return null
     return row as LushaIdentityEvidence
   } catch { return null }
 }
 
-export function lushaIdentityApprovalEligible(evidence: LushaIdentityEvidence, savedProfileUrl: string, currentContactId: string) {
+export function lushaIdentityApprovalEligible(evidence: LushaIdentityEvidence, savedProfileUrl: string, currentContactId: string, currentRecordVersion: number) {
   const saved = linkedinProfileIdentifier(savedProfileUrl)
   return Boolean(evidence.contactId.trim()) && !currentContactId.trim()
+    && evidence.alumnusRecordVersion === currentRecordVersion
     && evidence.returnedCount === 1
     && evidence.providerStatus === "success" && evidence.identityReason === "PROFILE_URL_MATCH"
     && Boolean(saved) && saved === linkedinProfileIdentifier(evidence.requestedProfileUrl)
@@ -60,6 +63,7 @@ export const LUSHA_REVIEWED_ATTACH_ID_SQL = `
         AND CASE WHEN json_valid(r.proposed_changes_json) THEN json_extract(r.proposed_changes_json,'$.identityReason') END='PROFILE_URL_MATCH'
         AND CASE WHEN json_valid(r.proposed_changes_json) THEN json_extract(r.proposed_changes_json,'$.providerStatus') END='success'
         AND CASE WHEN json_valid(r.proposed_changes_json) THEN json_extract(r.proposed_changes_json,'$.returnedCount') END=1
+        AND CASE WHEN json_valid(r.proposed_changes_json) THEN json_extract(r.proposed_changes_json,'$.alumnusRecordVersion') END=alumni.record_version
         AND h.id=? AND h.alumnus_id=alumni.id AND h.provider='lusha' AND h.operation='Contact Search Preview'
         AND h.mode='live' AND h.status='review_required' AND h.result_count=1
     )
