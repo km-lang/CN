@@ -3,7 +3,7 @@ import { and, desc, eq, gte, inArray, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
 import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, coresignalWebhookEvents, externalDiscoveryResults, externalDiscoverySearches, providerResponseHistory, providerSettings } from "@/db/schema"
-import { collectCoresignalEmployeeWithMetadata, safeCoresignalError } from "@/lib/coresignal-client"
+import { CoresignalProviderError, collectCoresignalEmployeeWithMetadata, safeCoresignalError } from "@/lib/coresignal-client"
 import {
   CORESIGNAL_COLLECT_OPERATION,
   CORESIGNAL_COLLECT_CLAIM_SQL,
@@ -12,6 +12,7 @@ import {
   candidateFromDiscoveryPreview,
   candidateFromSearchHistory,
   collectPreflight,
+  CORESIGNAL_COLLECT_MAX_PROVIDER_CREDITS,
   collectSelectionPlan,
   createCollectConfirmation,
   executeCollectOnce,
@@ -213,7 +214,7 @@ export async function POST(request: Request) {
     if (payload.webhookEventId && preflight.runtime.applicationUnitsRemaining < CORESIGNAL_COLLECT_ESTIMATED_CREDITS) { preflight.allowed = false; preflight.blockers.push("The application budget cannot cover this full-record Collect.") }
     if (payload.action === "preflight") {
       const token = preflight.allowed ? createCollectConfirmation({ searchHistoryId: resolved.candidate.searchHistoryId, employeeId: resolved.candidate.employeeId, searchAttemptId: resolved.searchAttemptId }, confirmationSecret()) : null
-      return Response.json({ preflight, confirmationToken: token, applicationReservationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, maximumAuthorizedProviderCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, providerBalanceKnown: false, providerDebitKnown: false, automaticCollect: false })
+      return Response.json({ preflight, confirmationToken: token, applicationReservationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, maximumAuthorizedProviderCredits: CORESIGNAL_COLLECT_MAX_PROVIDER_CREDITS, providerBalanceKnown: false, providerDebitKnown: false, automaticCollect: false })
     }
     if (payload.action !== "execute" || payload.confirmed !== true || typeof payload.confirmationToken !== "string") return Response.json({ error: "Explicit Collect confirmation is required." }, { status: 400 })
     const confirmationValid = verifyCollectConfirmation(payload.confirmationToken, { searchHistoryId: resolved.candidate.searchHistoryId, employeeId: resolved.candidate.employeeId, searchAttemptId: resolved.searchAttemptId }, confirmationSecret())
@@ -261,6 +262,9 @@ export async function POST(request: Request) {
     const safeWorkflowMessage = error instanceof Error && /^(The Collect execution confirmation is invalid or expired\.|Collect preflight is blocked\.|A Collect attempt already exists|This notification is not eligible for profile collection\.|Identity review is required before collecting this notification\.|The application budget cannot cover this full-record Collect\.|Coresignal server authentication is not configured\.|Coresignal live mode is disabled\.|The independent Collect execution gate is disabled\.|The account-specific Base Employee Collect entitlement is unknown\.|The configured account is not entitled to Base Employee Collect\.|The Coresignal application allowance has fewer than)/.test(error.message)
       ? error.message
       : null
-    return Response.json({ error: safeWorkflowMessage ?? failure.message }, { status: safeWorkflowMessage ? 409 : failure.status || 409 })
+    const diagnostic = error instanceof CoresignalProviderError
+      ? { failureOrigin: error.origin, upstreamHttpStatus: error.upstreamHttpStatus, providerRequestId: error.providerRequestId }
+      : { failureOrigin: "local_processing", upstreamHttpStatus: null, providerRequestId: null }
+    return Response.json({ error: safeWorkflowMessage ?? failure.message, ...diagnostic }, { status: safeWorkflowMessage ? 409 : failure.status || 409 })
   }
 }

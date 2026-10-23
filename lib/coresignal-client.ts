@@ -30,9 +30,19 @@ export type CoresignalPreviewTransportResult = {
 }
 
 export type CoresignalFailureKind = "authentication" | "insufficient_credits" | "rate_limit" | "timeout" | "unavailable" | "invalid_request" | "invalid_response"
+export type CoresignalFailureOrigin = "local_configuration" | "local_validation" | "upstream_http" | "transport_timeout" | "transport_network" | "response_parse"
 
 export class CoresignalProviderError extends Error {
-  constructor(message: string, public readonly kind: CoresignalFailureKind, public readonly status: number, public readonly successfulOperationCredits = 0) { super(message) }
+  constructor(
+    message: string,
+    public readonly kind: CoresignalFailureKind,
+    public readonly status: number,
+    public readonly successfulOperationCredits = 0,
+    public readonly origin: CoresignalFailureOrigin = "local_validation",
+    public readonly upstreamHttpStatus: number | null = null,
+    public readonly providerRequestId: string | null = null,
+    public readonly providerCreditsRemaining: number | null = null,
+  ) { super(message) }
 }
 
 export type CoresignalEducationEndNarrowing = {
@@ -356,19 +366,25 @@ export function coresignalCollectContract(employeeId: string) {
   return { method: "GET" as const, path: `${CORESIGNAL_COLLECT_PATH}/${encodeURIComponent(employeeId)}` }
 }
 
-function failure(status: number) {
-  if (status === 401 || status === 403) return new CoresignalProviderError("Coresignal authentication failed.", "authentication", status)
-  if (status === 402) return new CoresignalProviderError("Coresignal account credits are insufficient for this request.", "insufficient_credits", status)
-  if (status === 429) return new CoresignalProviderError("Coresignal rate limit reached.", "rate_limit", status)
-  if (status >= 500) return new CoresignalProviderError("Coresignal is temporarily unavailable.", "unavailable", status)
-  return new CoresignalProviderError("Coresignal rejected the request.", "invalid_request", status)
+function safeProviderRequestId(headers: Headers) {
+  const value = headers.get("x-request-id") ?? headers.get("x-correlation-id")
+  return value && /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : null
+}
+
+function failure(status: number, headers: Headers) {
+  const metadata = [0, "upstream_http", status, safeProviderRequestId(headers), optionalNonNegativeIntegerHeader(headers, "x-credits-remaining")] as const
+  if (status === 401 || status === 403) return new CoresignalProviderError("Coresignal authentication failed.", "authentication", status, ...metadata)
+  if (status === 402) return new CoresignalProviderError("Coresignal account credits are insufficient for this request.", "insufficient_credits", status, ...metadata)
+  if (status === 429) return new CoresignalProviderError("Coresignal rate limit reached.", "rate_limit", status, ...metadata)
+  if (status >= 500) return new CoresignalProviderError("Coresignal is temporarily unavailable.", "unavailable", status, ...metadata)
+  return new CoresignalProviderError("Coresignal rejected the request.", "invalid_request", status, ...metadata)
 }
 
 type RequestOptions = { fetcher?: typeof fetch; timeoutMs?: number; signal?: AbortSignal }
 
 async function response(path: string, init: RequestInit, options: RequestOptions = {}) {
   const key = providerSecret("coresignal")
-  if (!key) throw new CoresignalProviderError("Coresignal authentication is not configured.", "authentication", 401)
+  if (!key) throw new CoresignalProviderError("Coresignal authentication is not configured.", "authentication", 401, 0, "local_configuration")
   const controller = new AbortController()
   const abortFromCaller = () => controller.abort()
   if (options.signal?.aborted) controller.abort()
@@ -382,13 +398,13 @@ async function response(path: string, init: RequestInit, options: RequestOptions
       signal: controller.signal,
     })
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") throw new CoresignalProviderError("Coresignal request timed out.", "timeout", 504)
-    throw new CoresignalProviderError("Coresignal is temporarily unavailable.", "unavailable", 503)
+    if (error instanceof Error && error.name === "AbortError") throw new CoresignalProviderError("Coresignal request timed out.", "timeout", 504, 0, "transport_timeout")
+    throw new CoresignalProviderError("Coresignal is temporarily unavailable.", "unavailable", 503, 0, "transport_network")
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener("abort", abortFromCaller)
   }
-  if (!response.ok) throw failure(response.status)
+  if (!response.ok) throw failure(response.status, response.headers)
   return response
 }
 
@@ -413,7 +429,7 @@ export async function collectCoresignalEmployeeWithMetadata(employeeId: string, 
   const contract = coresignalCollectContract(employeeId)
   const providerResponse = await response(contract.path, { method: contract.method, redirect: "error" }, options)
   let body: unknown
-  try { body = await providerResponse.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable response.", "invalid_response", 502) }
+  try { body = await providerResponse.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable response.", "invalid_response", 502, 0, "response_parse", providerResponse.status, safeProviderRequestId(providerResponse.headers), optionalNonNegativeIntegerHeader(providerResponse.headers, "x-credits-remaining")) }
   return {
     body,
     upstreamHttpStatus: providerResponse.status,

@@ -1,11 +1,15 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 
 import { deserializeCoresignalSearchEvidence, type CoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
+import { CoresignalProviderError } from "@/lib/coresignal-client"
 import { linkedinProfileIdentifier } from "@/lib/professional-profile"
 import { CORESIGNAL_COLLECT_ESTIMATED_CREDITS } from "@/lib/coresignal-webhooks"
 import type { CoresignalCollectEntitlement } from "@/lib/provider-runtime"
 
 export const CORESIGNAL_COLLECT_OPERATION = "Base Employee Collect-only"
+/** Account-specific core-profile price confirmed by Coresignal Support on 2026-10-23.
+ * This is distinct from the conservative 20-unit internal application reservation. */
+export const CORESIGNAL_COLLECT_MAX_PROVIDER_CREDITS = 10
 export const CORESIGNAL_COLLECT_EVIDENCE_MARKER = "\n\n[coresignal-collect-evidence:v1]\n"
 export const CORESIGNAL_COLLECT_EVIDENCE_VERSION = 1
 export const CORESIGNAL_COLLECT_CONFIRMATION_TTL_MS = 5 * 60_000
@@ -17,6 +21,18 @@ export function collectFailureRequiresReconciliation(error: unknown, providerRes
   return !(typeof failure?.status === "number"
     && [400, 401, 402, 403, 404, 422, 429].includes(failure.status)
     && ["authentication", "insufficient_credits", "invalid_request", "rate_limit"].includes(String(failure.kind)))
+}
+
+/** Persist only bounded, non-sensitive failure provenance; never retain raw fetch or provider error text. */
+export function collectFailureDiagnostic(error: unknown, providerResponseReceived: boolean, attemptId: string, elapsedMs: number) {
+  const providerError = error instanceof CoresignalProviderError ? error : null
+  const origin = providerError?.origin ?? "local_processing"
+  const requestId = providerError?.providerRequestId && /^[A-Za-z0-9._:-]{1,128}$/.test(providerError.providerRequestId)
+    ? providerError.providerRequestId : "unavailable"
+  const upstreamStatus = providerError?.upstreamHttpStatus ?? "unavailable"
+  const balanceHeader = providerError?.providerCreditsRemaining ?? "unavailable"
+  const safeAttemptId = /^[A-Za-z0-9-]{1,128}$/.test(attemptId) ? attemptId : "unavailable"
+  return `Collect failure; attempt_id=${safeAttemptId}; origin=${origin}; upstream_status=${upstreamStatus}; provider_request_id=${requestId}; balance_header=${balanceHeader}; response_received=${providerResponseReceived}; elapsed_ms=${Math.max(0, Math.floor(elapsedMs))}. No retry.`
 }
 export const CORESIGNAL_COLLECT_CLAIM_SQL = `
   INSERT INTO provider_response_history
@@ -317,7 +333,7 @@ export function sanitizeCollectResponse(input: { body: unknown; candidate: Retai
       freshnessEvidence: checkedAt || updatedAt ? "NOT_INDEPENDENTLY_VERIFIED" : "MISSING",
     },
     reviewState: "REVIEW_REQUIRED",
-    applicationAccounting: { applicationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, maximumAuthorizedProviderCredits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, confirmedDebit: null },
+    applicationAccounting: { applicationUnits: CORESIGNAL_COLLECT_ESTIMATED_CREDITS, maximumAuthorizedProviderCredits: CORESIGNAL_COLLECT_MAX_PROVIDER_CREDITS, confirmedDebit: null },
     providerCreditsRemaining: input.providerCreditsRemaining,
     providerActions: { searchRequests: 0, previewRequests: 0, collectRequests: 1, retries: 0, pagination: false, canonicalMutations: 0, identityAttachments: 0 },
     audit: { requestedAt: input.requestedAt, completedAt: input.completedAt, durationMs, provenance: "provider_response_history" },
@@ -400,6 +416,7 @@ export async function executeCollectOnce(input: {
   if (!claim.acquired) return { state: "DUPLICATE_BLOCKED" as const, providerCalls: 0 }
   const now = input.now ?? (() => new Date())
   const requestedAt = now().toISOString()
+  const startedAt = Date.now()
   let providerResponseReceived = false
   try {
     const response = await input.transport(input.preflight.candidate.employeeId)
@@ -412,7 +429,7 @@ export async function executeCollectOnce(input: {
     }
     return { state: "REVIEW_REQUIRED" as const, providerCalls: 1, claimId: claim.claimId, evidence }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Coresignal Collect failed."
+    const message = collectFailureDiagnostic(error, providerResponseReceived, attemptId, Date.now() - startedAt)
     const ambiguous = collectFailureRequiresReconciliation(error, providerResponseReceived)
     await input.store.fail({ claimId: claim.claimId, candidate: input.preflight.candidate, status: ambiguous ? "ambiguous" : "error", message })
     throw error

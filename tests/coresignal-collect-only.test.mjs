@@ -10,6 +10,7 @@ const vite = await createServer({ appType: "custom", configFile: false, root, re
 after(() => vite.close())
 
 const collect = await vite.ssrLoadModule("/lib/coresignal-collect-only.ts")
+const client = await vite.ssrLoadModule("/lib/coresignal-client.ts")
 const searchEvidence = await vite.ssrLoadModule("/lib/coresignal-search-evidence.ts")
 const search = await vite.ssrLoadModule("/lib/alumni-search.ts")
 const localDevelopment = await vite.ssrLoadModule("/lib/local-development.ts")
@@ -62,13 +63,13 @@ function profile(options = {}) {
 }
 
 function memoryStore({ duplicate = false } = {}) {
-  const writes = { acquired: 0, completed: 0, failed: 0, failureStatus: null, evidence: null, transportMode: null }
+  const writes = { acquired: 0, completed: 0, failed: 0, failureStatus: null, failureMessage: null, evidence: null, transportMode: null }
   return {
     writes,
     store: {
       acquire: async input => { writes.acquired += 1; writes.transportMode = input.transportMode; return duplicate || writes.acquired > 1 ? { acquired: false } : { acquired: true, claimId: 44 } },
       complete: async input => { writes.completed += 1; writes.evidence = input.evidence; return true },
-      fail: async input => { writes.failed += 1; writes.failureStatus = input.status; return true },
+      fail: async input => { writes.failed += 1; writes.failureStatus = input.status; writes.failureMessage = input.message; return true },
     },
   }
 }
@@ -272,6 +273,44 @@ test("HTTP/auth/rate-limit/timeout/malformed failures are single-attempt and ret
   }
 })
 
+test("Collect failure provenance distinguishes upstream, network, parse and local faults without retaining secrets", async () => {
+  const previousKey = process.env.CORESIGNAL_API_KEY
+  process.env.CORESIGNAL_API_KEY = "synthetic-test-secret"
+  try {
+    const upstream = await client.collectCoresignalEmployeeWithMetadata("289351894", {
+      fetcher: async () => new Response("private body", { status: 503, headers: { "x-request-id": "req-test-503", "x-credits-remaining": "120" } }),
+    }).catch(error => error)
+    assert.equal(upstream.origin, "upstream_http")
+    assert.equal(upstream.upstreamHttpStatus, 503)
+    assert.equal(upstream.providerRequestId, "req-test-503")
+    assert.equal(upstream.providerCreditsRemaining, 120)
+
+    const network = await client.collectCoresignalEmployeeWithMetadata("289351894", {
+      fetcher: async () => { throw new Error("synthetic-test-secret and private payload") },
+    }).catch(error => error)
+    assert.equal(network.origin, "transport_network")
+    assert.equal(network.upstreamHttpStatus, null)
+
+    const parse = await client.collectCoresignalEmployeeWithMetadata("289351894", {
+      fetcher: async () => new Response("not json", { status: 200, headers: { "x-request-id": "req-test-parse" } }),
+    }).catch(error => error)
+    assert.equal(parse.origin, "response_parse")
+    assert.equal(parse.upstreamHttpStatus, 200)
+
+    for (const [error, expectedOrigin] of [[upstream, "upstream_http"], [network, "transport_network"], [parse, "response_parse"], [new Error("private payload"), "local_processing"]]) {
+      const state = memoryStore()
+      await assert.rejects(() => collect.executeCollectOnce({ preflight: collect.collectPreflight(candidate(), runtime()), confirmationValid: true, actor: "Synthetic Admin", uuid: () => "attempt-test-1", store: state.store, transport: async () => { throw error } }))
+      assert.equal(state.writes.failed, 1)
+      assert.equal(state.writes.failureStatus, "ambiguous")
+      assert.match(state.writes.failureMessage, new RegExp(`origin=${expectedOrigin}`))
+      assert.doesNotMatch(state.writes.failureMessage, /synthetic-test-secret|private payload|private body/)
+    }
+  } finally {
+    if (previousKey === undefined) delete process.env.CORESIGNAL_API_KEY
+    else process.env.CORESIGNAL_API_KEY = previousKey
+  }
+})
+
 test("wrong returned ID is rejected after one call and never retained as evidence", async () => {
   const state = memoryStore(); let calls = 0
   await assert.rejects(() => collect.executeCollectOnce({ preflight: collect.collectPreflight(candidate(), runtime()), confirmationValid: true, actor: "A", store: state.store, transport: async () => { calls += 1; return { body: profile({ id: 123456 }), upstreamHttpStatus: 200, providerCreditsRemaining: 4949 } } }), /different Employee ID/)
@@ -306,7 +345,7 @@ test("an explicitly non-current experience is never promoted by a missing end da
 test("unchanged provider credit header stays separate from documented cost and confirmed debit", () => {
   const evidence = collect.sanitizeCollectResponse({ body: profile(), candidate: candidate(), attemptId: "a", requestedAt: "2026-10-17T03:00:00Z", completedAt: "2026-10-17T03:00:01Z", upstreamHttpStatus: 200, providerCreditsRemaining: 4950 })
   assert.equal(evidence.providerCreditsRemaining, 4950)
-  assert.deepEqual(evidence.applicationAccounting, { applicationUnits: 20, maximumAuthorizedProviderCredits: 20, confirmedDebit: null })
+  assert.deepEqual(evidence.applicationAccounting, { applicationUnits: 20, maximumAuthorizedProviderCredits: 10, confirmedDebit: null })
 })
 
 test("Collect metadata transport is one GET with apikey auth, redirect refusal and retained balance header", async () => {
@@ -363,6 +402,7 @@ test("successful Collect evidence is stripped from summary and presented as stru
 
 test("Admin-only route uses atomic durable claim and never reuses Profile Refresh", async () => {
   const route = await readFile(new URL("../app/api/admin/coresignal-collect/route.ts", import.meta.url), "utf8")
+  assert.match(route, /maximumAuthorizedProviderCredits: CORESIGNAL_COLLECT_MAX_PROVIDER_CREDITS/)
   assert.match(route, /authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/)
   assert.match(collect.CORESIGNAL_COLLECT_CLAIM_SQL, /INSERT INTO provider_response_history[\s\S]*WHERE NOT EXISTS[\s\S]*RETURNING id/)
   assert.match(route, /WHERE id=\? AND status='in_progress'/)
