@@ -4,13 +4,62 @@
 
 Requirements: Node.js 22.13 or newer and the repository dependencies.
 
+### Windows local login
+
+From the repository in PowerShell or Command Prompt, with dependencies installed:
+
+```powershell
+npm run dev:local:windows
+```
+
+The existing `dev`, `dev:local` and `local:setup` scripts use POSIX assignments or
+Bash. The Windows launcher invokes installed Node CLIs directly and needs no Bash
+or additional dependency. It creates a **fresh** temporary D1 on every launch,
+applies migrations using `--local --persist-to <new temporary directory>` and
+loads `scripts/local-development-fixture.sql` there only. Never run the old
+`local:setup` against the original `.wrangler/state`: fixture upserts can replace
+existing rows. The new launcher ignores inherited database paths and leaves the
+original D1 and `.env.local` unchanged. The printed temporary directory is
+disposable demo state; it is not a copy of institutional alumni or provider history.
+
+- Admin entry: <http://localhost:3000/login/admin>
+- PCOM entry: <http://localhost:3000/login/pcom>
+- Select **Enter local Admin workspace** or **Enter local PCOM workspace**.
+- Port 3000 is loopback-only and fixed; startup fails if occupied. The ordinary
+  Vite server on 5173 may remain running. Use `Ctrl+C` to stop a foreground demo.
+- Each launch resets demo data and generates a random process-only session secret;
+  sign in again after restarting. A browser session holds one role at a time.
+
+The existing `/auth/local/start` route requires `NODE_ENV=development`,
+`LOCAL_DEV_AUTH_ENABLED=true`, a supported `LOCAL_DEV_AUTH_ROLE`, a loopback host,
+and the matching enabled fixture user/identity in D1. `LOCAL_DEV_AUTH_ROLE=ADMIN`
+enables the development runtime; the selected entry resolves its own Admin or
+PCOM fixture. Normal signed sessions and database authorization remain enforced.
+The launcher forces Coresignal Search/Preview/Collect, Lusha/Signals, Bright Data,
+live-demo/mock transport flags, webhook receiving and live mail off. It does not
+enable PDL or call paid providers. Google OAuth and bootstrap account settings are
+unnecessary for this mode, and no credentials are printed.
+
+If an ordinary server shows **Google Workspace sign-in unavailable**, it is using
+institutional auth because the explicit development opt-in was not supplied.
+`isGoogleOAuthConfigured()` requires nonempty `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET` and `AUTH_SESSION_SECRET` (the signing secret must also be
+at least 32 characters). Institutional setup additionally needs the intended
+`GOOGLE_ALLOWED_DOMAIN`, correct `APP_PUBLIC_URL`/`APP_BASE_PATH`, a Google Web
+OAuth client with the exact `/auth/google/callback` redirect URI, and an approved
+enabled user in the application database. `BOOTSTRAP_ADMIN_EMAILS` belongs to the
+separate ChatGPT recovery/bootstrap flow; it does not authorize Google users.
+Use the local launcher for exploration instead of inventing OAuth credentials.
+
+### Existing Bash workflow
+
 ```bash
 npm ci
 npm run local:setup
 npm run dev:local
 ```
 
-`local:setup` applies migrations to isolated local D1 and loads deterministic fixtures. `dev:local` listens on loopback port 3000, enables only the development authentication path, forces Coresignal/Lusha/Signals gates off, and keeps mail in mock mode. It requires no production secret and must never use a production D1 binding.
+`local:setup` targets `.wrangler/state` and loads deterministic fixtures; run it only in a disposable checkout, never against the original local data. `dev:local` listens on loopback port 3000, enables only the development authentication path, forces Coresignal/Lusha/Signals gates off, and keeps mail in mock mode. It requires no production secret and must never use a production D1 binding.
 
 For a separately isolated local D1, an Admin may put an existing Lusha key in the gitignored `.env.local` as `LUSHA_API_KEY=...`, using a local editor rather than a shell argument or chat message. Restrict that file to the local user (`chmod 600 .env.local`). Set `LOCAL_DEV_D1_PERSIST_PATH` to an existing temporary-directory checkout of the isolated D1, and leave `LUSHA_LIVE_ENABLED=false`, `LOCAL_LUSHA_LIVE_DEMO_ENABLED=false`, `LUSHA_SIGNALS_LIVE_ENABLED=false`, and endpoint entitlements `unknown`. A prepared per-operation ceiling does not itself enable live execution. The local Vite worker receives the key only for an Admin session with that isolated D1; this permits credential-presence checks without calling Lusha. A future live test requires both explicit live flags, source/date-backed per-operation entitlements, account usage, ceilings and separate authorization for its exact request. Never set an entitlement to `confirmed` merely to pass preflight.
 
@@ -109,3 +158,9 @@ bash scripts/sites-env.sh -- ./node_modules/.bin/vinext build
 ## Release discipline
 
 Local acceptance does not authorize live providers or deployment. Before release, configure isolated staging, server-side secrets, migration and rollback verification, provider/account/credit readiness, explicit live gates, controlled provider acceptance, and security/release approval.
+
+## PCOM redesign acceptance (2026-10-28)
+
+Use `npm run dev:local:windows` for a new disposable D1 and the seeded Admin/PCOM identities. Sign in as PCOM to upload a fictional .xlsx, map columns and preview; sign in as Admin with the same source file to approve the import. Test primary batch/company/name filters, profile corrections and retained professional-evidence decisions. PCOM import execution, provider identity/contact decisions and provider settings must remain denied. The active navigation omits Engagement, Opportunities and standalone Intelligence; retired deep links are sanitized to Directory without invoking those workflows. All provider gates and live mail remain off. Do not apply fixtures or acceptance writes to the original `.wrangler/state`, production, or retained real-provider evidence.
+
+For explicitly isolated synthetic Lusha acceptance, the existing `LOCAL_LUSHA_V3_MOCK_TRANSPORT=true` gate now also recognizes a Windows `corporate-network-local-*` directory under the standard per-user or packaged-app temporary directory. Vite must independently realpath-validate it beneath `os.tmpdir()`, outside the project. All other Admin, development, loopback and live-disabled safeguards remain. The normal launcher still forces this mock gate off.

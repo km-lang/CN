@@ -1,10 +1,29 @@
 # Corporate Network
 
-Corporate Network is an internal alumni intelligence and engagement platform for the Placement Committee. It brings together canonical alumni records, company targeting, outreach and engagement, data import, enrichment, provider evidence, human review, and controlled external alumni discovery.
+Corporate Network is a Placement Committee workspace for alumni ingestion, discovery and professional-data accuracy. The primary journey is Excel/CSV upload → governed import review → Alumni Directory → missing/outdated-data review → approved professional evidence → batch/current-company filtering → reviewed alumni profile.
 
 Provider output is evidence, not canonical truth. Corporate Network owns its institutional alumni record and never silently overwrites it from a provider response.
 
-## Current status (2026-10-23)
+## PCOM workflow redesign (2026-10-28)
+
+This is local development only. Institutional data, provider histories, the unresolved Coresignal Collect reservation and production recovery restrictions are preserved.
+
+- **PCOM upload:** authorized PCOM and Admin users can upload Excel (.xlsx) or CSV, map columns to supported fields, validate and preview up to 10,000 rows / 8 MB, inspect row errors and duplicates, and download a review report. Only Admin can execute an explicitly reviewed import. PCOM provides the source file and review report to Admin; there is no new background approval queue. Execution revalidates stale previews, maintains idempotency/audit history and retains bounded transactional batches. Invalid, duplicate, conflicting and unresolved rows are excluded; partial outcomes remain explicit. Missing company is allowed as an unverified claim rather than invented employment. Stable source identity and other existing required fields still apply.
+- **Directory:** Batch / Graduation Year and Current Company are primary, alongside simple name search, Reset and server pagination/counts. Company case/whitespace normalization and existing verified mapping/alias rules are retained; a Missing current company option handles absent employer data. Secondary search APIs and stored fields remain available to existing integrations.
+- **Profile accuracy:** missing company (highest priority), designation and profile URL are flagged. Explicit outdated states and provider observations older than 180 days prompt review; timestamps do not prove an employment change. Conflicting retained career evidence or pending protected corrections are shown in the profile. VERIFIED / RECENTLY REVIEWED requires existing positive verification states and a dated human field-verification audit; generic edits and provider fetches are insufficient.
+- **Professional evidence:** profile review compares canonical values with retained professional observations, shows review status and provenance, and supports explicit Admin apply/keep decisions for pending Coresignal professional reviews. Stale selected-field evidence is rejected before updates. Protected profile corrections retain Admin accept/reject and version checks. New professional lookup preparation retains existing Coresignal/Bright Data gates and confirmations. Discovery, enrichment and human verification remain separate; there is no automatic provider-to-canonical promotion.
+- **Lusha-only Enrichment:** the primary screen shows Contact Search, separate Email/Phone preparation, Lusha allowance and Lusha evidence/reviews. Stable identity approval, separate contact approvals, credit reservations, duplicate fences, restricted contacts and backend authorization are preserved. Lusha contact matches and Reveal do **not** independently verify current employment. No provider has been substituted for professional evidence.
+- **Retired UI:** Engagement, its dependent Outreach workspace, Opportunities and standalone Intelligence navigation, Overview shortcuts, profile entry points and workspace menus are inactive. Their backend routes, tables, migrations, mail/webhook/audit history and shared utilities remain. Retired deep links resolve to Directory. Overview no longer presents Professional Signals, Birthday Engagement or Recommended Outreach Route; it uses stored alumni/import metrics and the upload/review journey. Previous dry-run language is removed from import actions in favor of preview/validation; legitimate saved discovery and Admin operational histories remain available. Legacy JSX is retained behind a non-rendering retirement boundary to avoid a broad backend refactor.
+- **Admin governance:** Administration retains all-provider credit governance, retained Collect candidates, complete sanitized provider history, Lusha identity/contact decisions and audit visibility. Removing provider cards from Enrichment does not release unresolved reservations or delete evidence. PCOM cannot commit imports, approve provider identities/contacts, change spending limits or read secrets. Existing operational professional-field verification permissions are retained.
+- **Provider status:** local acceptance uses fictional fixtures and disposable D1. Live providers and mail stay disabled. Production-live professional accuracy, provider entitlement and billing are not established by local tests. No production migration, publishing or deployment is authorized.
+
+Final redesign validation (2026-10-28): **873 total, 857 passed, 0 failed, 16 skipped** in the full serial suite; focused functional tests **50/50 passed**. TypeScript, ESLint, direct production build and scoped/staged Git whitespace checks passed. The 16 optional rendered email-composer tests remain skipped under their existing opt-in guard and are not browser acceptance. Authenticated disposable-D1 API checks cover import approval/idempotency, protected corrections, provider identity/contact decisions, contact redaction, stale selected-field rejection, audit and zero-paid-request accounting.
+
+Browser acceptance for this redesign is **PARTIAL**: real local Admin/PCOM login, PCOM Excel mapping/validation, Directory filters/counts/pagination, missing/outdated indicators, retained professional comparison, simplified navigation, Lusha-only presentation and reload checks passed. Admin import execution, protected correction/professional review, Lusha identity and separate contact approvals were verified through authenticated disposable-D1 APIs; their final browser confirmation buttons and mobile layout remain unverified. Computer Use stopped because the active Windows Chrome URL could not be verified for policy enforcement, after Chrome access was approved. No further UI automation was attempted after that stop.
+
+Regression, exact checkpoint and detailed limitations are recorded in the task's final acceptance report. The existing Windows local launcher remains the supported provider-free start; its original database and .env.local are unchanged.
+
+## Preserved provider/release status (2026-10-23)
 
 **Implemented** means code exists; **mock-tested** means provider-free fixtures exercised it; **locally live-verified** means an actual local browser/database or explicitly identified provider operation was observed. None of these means deployed or accepted on the current production Sites database.
 
@@ -25,10 +44,9 @@ See [Architecture](docs/architecture.md), [Providers and safety](docs/providers.
 - Alumni Directory and Add Alumnus
 - External Discovery
 - Company Intelligence
-- Engagement and Outreach
-- Data Import
-- Enrichment
-- Intelligence
+- Alumni upload and governed import review
+- Lusha contact enrichment
+- Professional evidence review within alumni profiles
 - Administration
 
 Growth-prone stored-data lists share pagination; Overview stays compact. External Discovery is intentionally separate from internal Directory filtering.
@@ -112,6 +130,29 @@ npm run db:generate
 
 ## Safe local start
 
+On Windows PowerShell or Command Prompt, with dependencies already installed:
+
+```powershell
+npm run dev:local:windows
+```
+
+This uses the existing development-only, session-backed Admin/PCOM authentication,
+creates a fresh disposable D1 under the Windows temporary directory, applies local
+migrations, and loads the existing synthetic fixtures. It leaves `.env.local`, the
+original `.wrangler/state`, alumni records and provider history untouched. All live
+provider/mail gates are forced off. Open [Admin](http://localhost:3000/login/admin)
+or [PCOM](http://localhost:3000/login/pcom), then select **Enter local … workspace**.
+No Google credentials or `.env.local` edits are required. Port 3000 must be free;
+the existing ordinary Vite server on 5173 can remain running. See the Windows
+details in [Local development](docs/local-development.md#windows-local-login).
+
+Windows local acceptance (2026-10-27): Admin and PCOM sign-in, Directory and
+Discovery access were browser-verified on disposable D1; PCOM Admin API access
+returned 403. The 50 targeted local-auth, login, institutional-auth and security
+tests passed. Live providers remained disabled.
+
+For the existing Bash workflow, use only an already isolated checkout/database:
+
 ```bash
 npm ci
 npm run local:setup
@@ -157,3 +198,11 @@ Provider work still requires key-specific entitlement, account charge evidence, 
 ## Documentation maintenance
 
 Any milestone that changes architecture, schema semantics, provider behavior or status, setup/environment, operational or user-facing workflows, or release status must update the relevant README/docs in the same milestone. If no documentation change is needed, the milestone report must say why.
+
+Windows synthetic Lusha browser acceptance recognizes only the dedicated `corporate-network-local-*` directory under the standard per-user Windows Temp / packaged-app Temp paths, with no parent traversal. Vite still requires an existing real path under its OS temporary root, outside the project; development/Admin/loopback and live-disabled checks remain mandatory. The normal Windows launcher keeps this mock option off.
+
+New professional refresh reviews retain the complete sanitized field comparison, including unchanged company/designation observations, so reviewers can compare observed values with their stored baseline. Previously retained evidence is not rewritten; applying still requires an explicit authorized field selection and a fresh baseline check.
+
+The dependent Outreach menu and company route-planning card are inactive alongside Engagement because their actions opened the retired queue. Existing mail/outreach routes and records remain authorized and preserved. Duplicate legacy profile-refresh buttons are retired in favor of the explicit professional-lookup chooser; comparison prioritizes company and designation and leaves technical identity envelopes in Admin history.
+
+The fixed fictional Lusha transport normalizes a trailing slash when matching its allowlisted mock URLs, so URLs produced by the import normalizer exercise the same isolated fixture safely; live request code is unchanged and retained no-match history is preserved. Normal profile history loads Corporate Network retained evidence; the standalone Intelligence history integration remains authorized and available in source/API but inactive in the normal UI by default.

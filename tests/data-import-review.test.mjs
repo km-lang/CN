@@ -84,7 +84,7 @@ test("validation classifies new, existing, invalid and in-file duplicate rows be
 
 test("UI hides the native file control and requires validate then review then import", () => {
   assert.match(page, /accept="\.csv,text\/csv,\.xlsx/)
-  assert.match(page, /Preview dry run<\/Button>/)
+  assert.match(page, /Preview &amp; validate<\/Button>/)
   assert.match(page, /Import reviewed records/)
   assert.match(page, /Apply safe changes; preserve verified fields/)
   assert.match(styles, /input\.file-input\s*\{[^}]*opacity:\s*0[^}]*appearance:\s*none/s)

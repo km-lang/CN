@@ -1,6 +1,6 @@
 # Alumni import readiness
 
-Corporate Network supports governed CSV and `.xlsx` imports through the Admin-only Data Import workspace. A file is parsed, normalized and matched on the server before any write. The dry-run result must be reviewed and explicitly confirmed. Unresolved, duplicate and invalid rows are excluded.
+Corporate Network supports governed CSV and `.xlsx` imports through the Alumni Upload workspace: PCOM and Admin can map and preview files; only Admin can execute imports. A file is parsed, normalized and matched on the server before any write. The validation preview must be reviewed and explicitly confirmed. Unresolved, duplicate and invalid rows are excluded.
 
 ## Capability inventory
 
@@ -8,7 +8,7 @@ Corporate Network supports governed CSV and `.xlsx` imports through the Admin-on
 | --- | --- | --- |
 | CSV and first-worksheet XLSX parsing | Existing, client-side | Reused with UTF-8, quoted-cell, malformed-quote, size and 10,000-row checks |
 | Dry run | Client-only | Server-authoritative and non-mutating |
-| Authorization | PCOM operation permission | Admin-only server authorization; PCOM direct API requests are denied |
+| Authorization | PCOM operation permission | PCOM/Admin preview; Admin-only execution is checked before mutation or idempotency replay |
 | Stable source identity | Not represented | `source_system` + `source_alumni_id` map to the unique `alumni.profile_key` |
 | Duplicate handling | Email, profile URL or name/year/company | Trusted identifiers can match; weak name/programme/year evidence requires review and never auto-merges |
 | Existing-record updates | User-selected; protected fields partly preserved | User-selected, stale-preview revalidated, blank values never clear data, verified professional fields remain protected |
@@ -20,7 +20,7 @@ No schema migration is required. The existing schema cannot retain every raw inp
 
 ## Data contract
 
-Required fields are `source_alumni_id`, `source_system`, `name`, `programme`, `graduation_year`, and `company`. All other fields are optional.
+For new records, required fields are `source_alumni_id`, `source_system`, `name`, `programme`, and `graduation_year`. Company can remain missing and unverified for professional review. Update-only mode retains its stable-identity rules. All other fields are optional.
 
 | Import column | Required | Persisted mapping | Rule |
 | --- | --- | --- | --- |
@@ -29,7 +29,7 @@ Required fields are `source_alumni_id`, `source_system`, `name`, `programme`, `g
 | name | Yes | `alumni.name`, derived initials | Whitespace collapsed; not used alone for automatic identity matching |
 | programme | Yes | `alumni.programme` | Must match active Programme Reference Data (code or name) |
 | graduation_year | Yes | `batch`, `graduation_year` | Plausible four-digit year from 1940 through current year + 10 |
-| company | Yes | `alumni.company` | Whitespace collapsed; spelling is not fuzzy-merged |
+| company | No | `alumni.company` | Whitespace collapsed; spelling is not fuzzy-merged |
 | title | No | `title`, `raw_title` | Missing values use `Role not recorded` for a new row |
 | function | No | `function` | Missing values use `Not assessed` |
 | seniority | No | `seniority` | Missing values use `Not assessed` |
@@ -64,10 +64,10 @@ If trusted signals identify different alumni, the row is a conflict. Repeated so
 
 1. Start from the CSV or XLSX template. Excel must save cached cell values; formulas are not evaluated by Corporate Network.
 2. Keep stable source IDs unchanged across retries and future updates.
-3. Open Administration → Data Import, select the file and choose **Preview dry run**.
+3. Open **Alumni upload**, select the file, review the column mapping, and choose **Preview & validate**. PCOM may preview and download the report, then provides the report and source file to Admin for execution.
 4. Review counts and every exception. Download the review CSV when a source-data owner needs to correct rows.
 5. Select only supported existing-record changes. Unresolved rows remain excluded.
-6. Confirm the dry-run review and choose **Import reviewed records**.
+6. An Admin confirms the preview and chooses **Import reviewed records**. PCOM direct execution returns 403.
 7. Record the execution summary. If execution stops mid-file, correct the failure and rerun the same file; unique source keys prevent duplicate alumnus creation.
 
 The import does not call Coresignal, Lusha, Bright, Socai, PDL, Signals or Gmail. Provider evidence and professional claims still require their existing review-before-apply workflows.
@@ -90,3 +90,7 @@ Neither pilot below is authorized by this milestone:
 - **Bright:** one active alumnus with an approved public LinkedIn profile, confirmed CN identity, stable `cn:<id>` Intelligence mapping, configured Intelligence service/dataset, and a one-job budget. Preflight must show zero canonical mutations. Poll only within the existing bounded asynchronous job contract, prevent duplicate submission, normalize/compare evidence, and require human review. Stop for identity disagreement, missing dataset/account readiness, timeout, partial evidence, unexpected cost, or service authentication failure.
 
 Any live pilot requires fresh, operation-specific authorization after credentials, account entitlement/billing, application limits, audit visibility, and rollback/stop conditions are confirmed. No live provider accuracy is claimed by the provider-free tests.
+
+## Windows PCOM redesign acceptance
+
+Column mappings are schema-bound; duplicate destinations and unsupported field targets fail validation. Raw headings may be inspected before mapping; ignored columns never enter canonical records. First-worksheet/cached-cell Excel behavior and malformed/oversize-file rejection are retained. Imports never mark company, designation, identity or contacts as independently verified. The new primary Directory filters do not narrow or execute external discovery.

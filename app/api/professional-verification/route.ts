@@ -80,6 +80,7 @@ export async function GET(request: Request) {
             createdAt: coresignalHistory[0].createdAt,
           } : null,
           review: refreshReview ? {
+            id: refreshReview.id,
             status: refreshReview.status,
             proposedChanges,
             reviewedBy: refreshReview.reviewedBy,

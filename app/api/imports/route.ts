@@ -101,8 +101,9 @@ async function loadReview(records: ImportRecord[], mode: "upsert" | "update_only
 
 export async function POST(request: Request) {
   try {
-    const context = await authorizeRequest(request, "MANAGE_USERS")
+    const context = await authorizeRequest(request, "OPERATE_PCOM")
     const payload = await request.json() as ImportPayload
+    if (payload.action !== "preview") await authorizeRequest(request, "MANAGE_USERS")
     const mode = payload.mode === "update_only" ? "update_only" : "upsert"
     if (!Array.isArray(payload.records) || payload.records.length < 1 || payload.records.length > MAX_IMPORT_ROWS) return Response.json({ error: `Import between 1 and ${MAX_IMPORT_ROWS.toLocaleString()} records.` }, { status: 400 })
     const filename = safeFilename(payload.filename)

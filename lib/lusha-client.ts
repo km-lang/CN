@@ -115,7 +115,7 @@ function mockV3Response(path: string, init: RequestInit) {
   const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>
   if (path === "/v3/contacts/search") {
     const input = Array.isArray(body.contacts) ? body.contacts[0] as Record<string, unknown> | undefined : undefined
-    const url = textValue(input?.linkedinUrl)
+    const url = textValue(input?.linkedinUrl).replace(/\/+$/, "") + "/"
     if (url === "https://www.linkedin.com/in/failure-demo-only-904/") return new Response(JSON.stringify({ error: { message: "Synthetic provider failure" } }), { status: 503 })
     const contact = syntheticContacts[url as keyof typeof syntheticContacts]
     return Response.json({ results: contact ? [{ id: contact.id, fullName: contact.fullName, jobTitle: { title: "Synthetic Manager" }, company: { name: "Fictional Systems" }, socialLinks: { linkedin: url.includes("mismatch-") ? "https://www.linkedin.com/in/unrelated-demo-only/" : url }, has: ["emails", "phones"] }] : [] })

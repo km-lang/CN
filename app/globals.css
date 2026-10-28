@@ -1361,3 +1361,34 @@ button { cursor: pointer; }
 .provider-credit-internal { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 @media (max-width: 950px) { .provider-credit-grid, .provider-credit-attestation { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 650px) { .provider-credit-grid, .provider-credit-attestation { grid-template-columns: minmax(0, 1fr); } }
+
+/* PCOM alumni accuracy workflow — existing operational/history APIs are retained. */
+.simplified-navigation { flex-wrap: wrap; height: auto; gap: 5px 18px; overflow: visible; }
+.workflow-intro { padding: 26px; display: grid; gap: 16px; }
+.workflow-intro h2 { margin: 0; font-size: clamp(24px, 3vw, 34px); }
+.workflow-intro p { max-width: 85ch; color: var(--muted-foreground, #526875); }
+.workflow-steps { display: flex; flex-wrap: wrap; gap: 12px; }
+.workflow-steps span, .review-status-list strong { padding: 7px 12px; border-radius: 8px; background: #eef4f5; color: #244354; font-size: 12px; }
+.simplified-overview { display: grid; gap: 22px; }
+.simplified-overview > .panel, .lusha-only-enrichment > .panel { padding: 24px; }
+.directory-primary-filters { display: grid; grid-template-columns: 1fr 1.4fr 1.2fr auto; align-items: end; gap: 16px; margin: 22px 0; }
+.directory-primary-filters label, .import-mapping-grid label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; }
+.directory-actions, .review-status-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.directory-panel table { min-width: 760px; }
+.professional-data-state { font-size: 11px; color: #87521a; }
+.professional-review-panel { padding: 20px; margin: 12px 0; border: 1px solid #d8e4e8; border-radius: 12px; background: #f7fafb; }
+.professional-review-panel h3 { margin: 8px 0 14px; }
+.professional-review-panel p { margin: 12px 0; font-size: 13px; line-height: 1.65; }
+.professional-review-panel .profile-opportunity-actions { margin: 16px 0; }
+.professional-evidence-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.professional-evidence-table th, .professional-evidence-table td { padding: 10px; text-align: left; border-bottom: 1px solid #d8e4e8; overflow-wrap: anywhere; }
+.import-column-mapping { padding: 20px; background: #f6f9fa; border: 1px solid #d8e4e8; border-radius: 12px; margin: 20px 0; }
+.import-mapping-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.import-mapping-grid select { background: white; width: 100%; padding: 10px; border: 1px solid #b8c9d0; border-radius: 8px; font: inherit; }
+.import-approval-note { background: #fff6df; color: #684d16; border-radius: 10px; padding: 14px; line-height: 1.6; }
+.lusha-only-enrichment, .professional-lookup-options, .admin-provider-operations { display: grid; gap: 20px; }
+.lusha-only-enrichment .enrichment-header { align-items: start; }
+.lusha-only-enrichment .enrichment-header p { max-width: 80ch; line-height: 1.6; }
+.block { display: block; }
+@media (max-width: 900px) { .directory-primary-filters { grid-template-columns: 1fr 1fr; } .import-mapping-grid { grid-template-columns: 1fr 1fr; } .simplified-overview .stats-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .directory-primary-filters, .import-mapping-grid, .simplified-overview .stats-grid { grid-template-columns: 1fr; } .workflow-intro, .simplified-overview > .panel, .lusha-only-enrichment > .panel { padding: 18px; } .directory-actions { width: 100%; } .professional-evidence-table { font-size: 11px; } }

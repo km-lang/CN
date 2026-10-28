@@ -10,7 +10,7 @@ export type PublicAppEnvironment = {
 const defaults = {
   name: "Corporate Network",
   subtitle: "Placement Committee Workspace",
-  tagline: "Connect alumni relationships to corporate opportunities.",
+  tagline: "Find alumni. Review professional data. Keep profiles accurate.",
   publicUrl: "http://localhost:3000",
 }
 

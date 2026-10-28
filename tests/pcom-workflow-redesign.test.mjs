@@ -1,0 +1,63 @@
+import assert from "node:assert/strict"
+import test, { after } from "node:test"
+import { readFile } from "node:fs/promises"
+import { fileURLToPath } from "node:url"
+import { createServer } from "vite"
+import { strToU8, zipSync } from "fflate"
+import ts from "typescript"
+import { ACTIVE_WORKSPACE_TABS, activeWorkspaceUrl, professionalReviewStatus, MISSING_COMPANY_FILTER } from "../lib/pcom-workflow.ts"
+const root = fileURLToPath(new URL("..", import.meta.url))
+const vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true, hmr: false }, optimizeDeps: { noDiscovery: true, include: [] } })
+after(() => vite.close())
+const importer = await vite.ssrLoadModule("/lib/alumni-import.ts")
+const search = await vite.ssrLoadModule("/lib/alumni-search.ts")
+const query = await vite.ssrLoadModule("/lib/directory-query.ts")
+const updates = await vite.ssrLoadModule("/lib/alumni-profile-update.ts")
+const local = await import("../lib/local-development.ts")
+const lushaMockClient = await vite.ssrLoadModule("/lib/lusha-client.ts")
+const page = await readFile(new URL("../app/page.tsx",import.meta.url),"utf8")
+const route = await readFile(new URL("../app/api/imports/route.ts",import.meta.url),"utf8")
+const source = ts.createSourceFile("page.tsx",page,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX)
+function activeJsx(className) { let result=""; const walk=node=>{if(ts.isJsxElement(node)){const opening=node.openingElement;if(opening.tagName.getText(source)==="RetiredUi")return;const attr=opening.attributes.properties.find(a=>ts.isJsxAttribute(a)&&a.name.getText(source)==="className"&&ts.isStringLiteral(a.initializer)&&a.initializer.text.split(" ").includes(className));if(attr)result+=node.getText(source);}ts.forEachChild(node,walk)};walk(source);return result; }
+const row={source_alumni_id:"PCOM-1",source_system:"fictional-acceptance",name:"Fictional Asha One",programme:"PGP",graduation_year:"2018",company:"Example Labs",title:"Director",linkedin_url:"https://www.linkedin.com/in/fictional-asha-one"}
+function xlsx(headers,values) {const col=i=>String.fromCharCode(65+i);const xmlRows=[headers,values].map((cells,r)=>`<row r="${r+1}">${cells.map((v,c)=>`<c r="${col(c)}${r+1}" t="inlineStr"><is><t>${v}</t></is></c>`).join("")}</row>`).join("");return zipSync({"xl/workbook.xml":strToU8('<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Fictional alumni" r:id="r1"/></sheets></workbook>'),"xl/_rels/workbook.xml.rels":strToU8('<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/></Relationships>'),"xl/worksheets/sheet1.xml":strToU8(`<worksheet><sheetData>${xmlRows}</sheetData></worksheet>`)});}
+test("PCOM spreadsheet mapping preserves cached values and rejects ambiguous destinations",()=>{const bytes=xlsx(["Full Name","Batch","Employer"],["Fictional Asha One","2018","Example Labs"]);const raw=importer.parseXlsx(bytes,"inspect");assert.deepEqual(Object.keys(raw.records[0]),["Full Name","Batch","Employer"]);assert.equal(importer.parseXlsx(bytes,{"Full Name":"name",Batch:"graduation_year",Employer:"company"}).records[0].company,"Example Labs");assert.throws(()=>importer.parseXlsx(bytes,{"Full Name":"name",Batch:"name"}),/duplicate/i);assert.throws(()=>importer.parseCsv('A,B\nx,y',{A:"provider_person_id",B:"name"}),/unsupported/i);});
+test("malformed Excel and unterminated CSV fail before preview",()=>{assert.throws(()=>importer.parseXlsx(new Uint8Array([1,2,3])),/invalid|worksheet/i);assert.throws(()=>importer.parseCsv('name\n"bad'),/unterminated/i)});
+test("missing company is retained without fabricated employment",()=>{const review=importer.validateImport([{...row,company:""}],[],["PGP"]);assert.equal(review.rows[0].kind,"new");assert.equal(review.rows[0].record.company,"");assert.equal(professionalReviewStatus({...row,linkedinUrl:row.linkedin_url,company:""}).status,"MISSING DATA")});
+test("stable source duplicates and contradictory identities cannot create duplicate alumni",()=>{const duplicate=importer.validateImport([row,{...row}],[],["PGP"]);assert.equal(duplicate.counts.duplicates,1);const existing=[{id:1,profileKey:importer.institutionalProfileKey(row),...row,batch:2018,graduationYear:2018,linkedinUrl:"https://www.linkedin.com/in/first-person",email:"",phone:"",function:"",seniority:"",location:""},{id:2,profileKey:"other",...row,batch:2018,graduationYear:2018,linkedinUrl:row.linkedin_url,email:"",phone:"",function:"",seniority:"",location:""}];assert.equal(importer.validateImport([row],existing,["PGP"]).counts.conflicts,1)});
+test("verified employment corrections are proposals rather than silent updates",()=>{const plan=updates.planProfileUpdate({company:"Reviewed Co",title:"Director",currentCompanyVerification:"Verified",designationVerification:"Verified"},{company:"Unreviewed Co"},[],"PCOM");assert.equal(plan.direct.company,undefined);assert.equal(plan.proposed[0].proposedValue,"Unreviewed Co")});
+test("preview is PCOM authorized while execute retains Admin authorization before mutation",()=>{assert.match(route,/authorizeRequest\(request, "OPERATE_PCOM"\)/);assert.match(route,/payload.action !== "preview"\) await authorizeRequest\(request, "MANAGE_USERS"\)/);assert.ok(route.indexOf('payload.action !== "preview"')<route.indexOf('const executeIdentity'));assert.match(route,/canonicalMutations: 0/)});
+const person={name:"Fictional Asha One",batch:2018,graduationYear:2018,programme:"PGP",company:"Example Labs",title:"Director",function:"Strategy",seniority:"Director",location:"India",previous:"",confidence:50,status:"Not contacted",assessment:{iimlRelationship:"Unknown"}};
+for(const [name,filters,expected] of [["batch only",{batch:"2018"},true],["company only",{company:"example labs"},true],["combined",{batch:"2018",company:"Example Labs"},true],["empty combined",{batch:"2019",company:"Example Labs"},false]]) test(`Directory ${name} has consistent matching`,()=>{assert.equal(query.directoryMatches(person,query.normalizeDirectoryQuery(filters),50,"Needs verification"),expected)});
+test("missing company is an explicit filter and does not match known employers",()=>{const filters={...search.defaultDirectoryFilters(),company:MISSING_COMPANY_FILTER};assert.equal(search.matchesInternalFilters({...person,company:""},filters,50,"Needs verification"),true);assert.equal(search.matchesInternalFilters(person,filters,50,"Needs verification"),false)});
+const now=Date.parse("2026-10-28T00:00:00Z"),complete={company:"Example Labs",title:"Director",linkedinUrl:"https://www.linkedin.com/in/fictional-asha-one",verification:{profileMatch:"Confirmed",currentCompany:"Verified",designation:"Verified"}};
+test("old observation prompts review without asserting changed employment",()=>{const status=professionalReviewStatus({...complete,providerFreshnessAt:"2025-01-01"},now);assert.equal(status.status,"POTENTIALLY OUTDATED");assert.match(status.note,/not proof/);assert.equal(professionalReviewStatus({...complete,updatedAt:"2020-01-01"},now).status,"REVIEW REQUIRED")});
+test("recently reviewed requires a dated human review; fetch time is insufficient",()=>{assert.equal(professionalReviewStatus({...complete,providerFreshnessAt:"2026-10-27"},now).status,"REVIEW REQUIRED");assert.equal(professionalReviewStatus({...complete,professionalReviewedAt:"2026-10-27"},now).status,"VERIFIED / RECENTLY REVIEWED");assert.equal(professionalReviewStatus({...complete,professionalReviewedAt:"2026-10-27",providerFreshnessAt:"2020-01-01"},now).outdated,false)});
+test("conflicting retained provider or pending protected corrections require review",()=>{assert.equal(professionalReviewStatus({...complete,employmentHistory:[{originalCompanyName:"Other Employer",originalJobTitle:"Director",isCurrent:true,isDeleted:false,observedAt:"2026-10-01"}]},now).status,"CONFLICTING EVIDENCE");assert.equal(professionalReviewStatus({...complete,profileProposals:[{field:"company",status:"PENDING",proposedValue:"Other Employer"}]},now).conflict,true)});
+test("retired module URLs and compose state resolve to supported screens",()=>{for(const tab of ["engagement","opportunities","intelligence"]){assert.ok(!ACTIVE_WORKSPACE_TABS.includes(tab));const url=new URL(activeWorkspaceUrl(`http://localhost:3000/?tab=${tab}&compose=email&alumnusId=1&view=refresh`));assert.equal(url.searchParams.get("tab"),"directory");assert.equal(url.searchParams.get("compose"),null)}assert.ok(ACTIVE_WORKSPACE_TABS.includes("data-import"))});
+test("Overview and active navigation contain no retired module entry points",()=>{const nav=activeJsx("simplified-navigation"),overview=activeJsx("simplified-overview");assert.ok(nav.includes("Alumni upload"));for(const label of ['value="engagement"','value="opportunities"','value="intelligence"'])assert.ok(!nav.includes(label));for(const label of ["Professional signals","Birthday engagement","Recommended outreach route","Assigned actions and follow-ups","Active opportunities"])assert.ok(!overview.includes(label))});
+test("primary Enrichment is Lusha only and keeps separate identity/contact review handlers",()=>{const ui=activeJsx("lusha-only-enrichment");assert.ok(ui.includes("Contact Search"));assert.ok(!ui.includes("Coresignal"));assert.ok(!ui.includes("Bright Data"));assert.ok(ui.includes("onApproveLushaIdentity"));assert.ok(ui.includes("onDecideLushaContact"));assert.ok(ui.includes('prepareLushaReveal(person, "email")'));assert.ok(ui.includes('prepareLushaReveal(person, "phone")'))});
+
+test("Windows synthetic Lusha remains disposable, loopback/Admin/development-only", () => {
+  const path = "C:/Users/Fictional/AppData/Local/Temp/corporate-network-local-fixture"
+  const allowed = { NODE_ENV:"development", LOCAL_DEV_AUTH_ENABLED:"true", LOCAL_DEV_AUTH_ROLE:"ADMIN", LOCAL_PROVIDER_LIVE_DEMO_HOST:"127.0.0.1", LOCAL_LUSHA_V3_MOCK_TRANSPORT:"true", LUSHA_LIVE_ENABLED:"false", LOCAL_DEV_D1_PERSIST_PATH:path }
+  assert.equal(local.localLushaV3MockTransportEnabled(allowed),true)
+  for(const change of [{NODE_ENV:"production"},{LOCAL_DEV_AUTH_ROLE:"PCOM"},{LOCAL_PROVIDER_LIVE_DEMO_HOST:"public.example"},{LUSHA_LIVE_ENABLED:"true"},{LOCAL_DEV_D1_PERSIST_PATH:path+"/../original"},{LOCAL_DEV_D1_PERSIST_PATH:"C:/Users/Fictional/Desktop/original"}]) assert.equal(local.localLushaV3MockTransportEnabled({...allowed,...change}),false)
+})
+test("retained professional review rejects stale fields and gates identity attachment as Admin", async () => {
+  const route = await readFile(new URL("../app/api/enrichment/route.ts",import.meta.url),"utf8")
+  assert.match(route,/STALE_PROFESSIONAL_REVIEW/)
+  assert.match(route,/if \(identityChange\) \{\s*await authorizeRequest\(request, "MANAGE_PROVIDER_SETTINGS"\)/)
+})
+
+test("new professional snapshots retain unchanged observations without applying them", async () => { const route=await readFile(new URL("../app/api/enrichment/route.ts",import.meta.url),"utf8"); assert.match(route,/proposedChangesJson: JSON.stringify\(fields\), status: reviewStatus/); assert.match(route,/change.oldValue === change.newValue\) continue/); })
+
+test("import-normalized Lusha fixture URL works without a provider request", async () => {
+  const keys=["NODE_ENV","LOCAL_DEV_AUTH_ENABLED","LOCAL_DEV_AUTH_ROLE","LOCAL_PROVIDER_LIVE_DEMO_HOST","LOCAL_LUSHA_V3_MOCK_TRANSPORT","LUSHA_LIVE_ENABLED","LOCAL_DEV_D1_PERSIST_PATH"]
+  const before=Object.fromEntries(keys.map(key=>[key,process.env[key]]))
+  Object.assign(process.env,{NODE_ENV:"development",LOCAL_DEV_AUTH_ENABLED:"true",LOCAL_DEV_AUTH_ROLE:"ADMIN",LOCAL_PROVIDER_LIVE_DEMO_HOST:"127.0.0.1",LOCAL_LUSHA_V3_MOCK_TRANSPORT:"true",LUSHA_LIVE_ENABLED:"false",LOCAL_DEV_D1_PERSIST_PATH:"C:/Users/Fictional/AppData/Local/Temp/corporate-network-local-fixture"})
+  try {
+    for(const suffix of ["", "/"]) { const result=await lushaMockClient.searchLushaContact({name:"Bela Demo-Only",company:"Fictional Systems",linkedinUrl:"https://www.linkedin.com/in/bela-demo-only-902"+suffix},{fetcher:async()=>{throw new Error("Unexpected real provider transport")}}); assert.equal(result.status,"success");assert.equal(result.contactId,"mock-v3-902") }
+  } finally { for(const key of keys) { if(before[key]===undefined)delete process.env[key];else process.env[key]=before[key] } }
+})
+test("normal history does not activate the retired standalone workspace", async () => { const panel=await readFile(new URL("../components/alumni-history-panel.tsx",import.meta.url),"utf8");assert.match(panel,/includeStandalone = false/);assert.match(panel,/if \(includeStandalone\) \{/);assert.match(panel,/source=intelligence/); })

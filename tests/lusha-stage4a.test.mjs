@@ -181,7 +181,7 @@ test("stage4a 8: live UI requires search preview and a second channel-only confi
 });
 
 test("stage4a 9: live channel-specific reveals are offered while combined and bulk reveals remain unavailable", () => {
-  const liveBatch = page.match(/lushaV3Workflow \? <>[\s\S]*? : <><Button/)?.[0] ?? "";
+  const liveBatch = page.match(/<TabsContent value="enrichment" className="tab-panel lusha-only-enrichment">[\s\S]*?<\/TabsContent>/)?.[0] ?? "";
   assert.match(liveBatch, /Prepare Email Reveal/);
   assert.match(liveBatch, /Prepare Phone Reveal/);
   assert.doesNotMatch(liveBatch, /Get Both|Get Phones|batch/);

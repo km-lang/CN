@@ -1,3 +1,4 @@
+import { MISSING_COMPANY_FILTER, missingProfessionalValue } from "@/lib/pcom-workflow";
 import { matchesLinkedinProfileFilter, normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
 import { DEFAULT_DISCOVERY_PROGRAMMES, normalizeDiscoveryProgrammeSelections, type AlumniStatus, type AlumniStatusFilter, type ProgrammeStatus } from "@/lib/discovery-qualification";
 
@@ -291,7 +292,7 @@ export function matchesInternalFilters(
     ? matchesSeniority(person.seniority, `${selectedSeniorities[0].replace(/\+$/, "")}+`)
     : selectedSeniorities.some(level => matchesSeniority(person.seniority, level)));
   return contains(person.name, filters.name)
-    && exactOrAll(person.company, filters.company, "All companies")
+    && (filters.company === MISSING_COMPANY_FILTER ? missingProfessionalValue(person.company) : exactOrAll(person.company, filters.company, "All companies"))
     && contains(person.title, filters.role)
     && exactOrAll(normalizeFunction(person.function, person.title), filters.function, "All functions")
     && matchesSelectedSeniority

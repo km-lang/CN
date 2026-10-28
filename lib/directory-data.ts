@@ -3,6 +3,7 @@ import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core"
 
 import { getDb } from "@/db"
 import { alumni, alumniDataLifecycle, companyPriorities, engagementEvents, providerCompanyAliases, providerCompanyMappings } from "@/db/schema"
+import { MISSING_COMPANY_FILTER } from "@/lib/pcom-workflow"
 import { contactReadiness } from "@/lib/alumni-metrics"
 import { effectiveIntakeStatus, effectiveIntakeStatusSql } from "@/lib/intake-status"
 import type { DirectoryQuery } from "@/lib/directory-query"
@@ -27,7 +28,7 @@ export function directoryPublicRow(row: AlumniRow, relevance: number | null) {
     verified: row.verified, intakeStatus: effectiveIntakeStatus(row), status: row.status, note: row.note,
     assessment: { hiringInfluence: row.hiringInfluence, iimlRelationship: row.iimlRelationship, warmIntroPotential: row.warmIntroPotential },
     verification: { profileMatch: row.profileMatch, currentCompany: row.currentCompanyVerification, designation: row.designationVerification, email: row.emailVerification, phone: row.phoneVerification, location: row.locationVerification },
-    discoverySource: row.discoverySource, providerFreshnessAt: row.providerFreshnessAt, source: row.source, updatedBy: row.updatedBy, updatedAt: row.updatedAt,
+    professionalDataStatus: row.professionalDataStatus, lastProfessionalDataRefresh: row.lastProfessionalDataRefresh, discoverySource: row.discoverySource, providerFreshnessAt: row.providerFreshnessAt, source: row.source, updatedBy: row.updatedBy, updatedAt: row.updatedAt,
     relevance, contactStatus: directoryContactStatus(row), providerIdentityReady: Boolean(row.coresignalEmployeeId),
   }
 }
@@ -35,7 +36,7 @@ export function directoryPublicRow(row: AlumniRow, relevance: number | null) {
 export async function runDirectoryQuery(query: Omit<DirectoryQuery, "pageSize"> & { pageSize: number }, includeFacets = false) {
   const db = getDb()
   const f = query.filters
-  const directoryCompanyKey = f.company === "All companies" ? "" : f.company.toLowerCase().trim()
+  const directoryCompanyKey = f.company === "All companies" ? "" : f.company.toLowerCase().trim().replace(/\s+/g, " ")
   const conditions: SQL[] = [or(eq(alumniDataLifecycle.status, "Active"), sql`${alumniDataLifecycle.status} is null`)!]
   if (f.alumniIds.length) conditions.push(inArray(alumni.id, f.alumniIds))
   if (f.excludeProvisional) conditions.push(sql`${alumni.intakeStatus} != 'PROVISIONAL'`)
@@ -71,14 +72,16 @@ export async function runDirectoryQuery(query: Omit<DirectoryQuery, "pageSize"> 
   else if (f.graduationYearMode === "multiple" && years.length) conditions.push(inArray(alumni.graduationYear, years))
   else if (f.batch) conditions.push(eq(alumni.graduationYear, Number(f.batch)))
 
-  if (f.company !== "All companies") {
+  if (f.company === MISSING_COMPANY_FILTER) {
+    conditions.push(sql`lower(trim(${alumni.company})) in ('', 'unknown', 'not recorded', 'company not recorded', 'unavailable', 'n/a', '-')`)
+  } else if (f.company !== "All companies") {
     const normalizedCompany = directoryCompanyKey
     const aliases = await db.select({ displayAlias: providerCompanyAliases.displayAlias, displayName: providerCompanyMappings.displayName, providerCompanyId: providerCompanyMappings.providerCompanyId }).from(providerCompanyAliases).innerJoin(providerCompanyMappings, eq(providerCompanyMappings.id, providerCompanyAliases.mappingId)).where(and(eq(providerCompanyAliases.normalizedAlias, normalizedCompany), eq(providerCompanyAliases.status, "VERIFIED"), eq(providerCompanyMappings.status, "VERIFIED")))
     if (aliases.length > 1) conditions.push(sql`0 = 1`)
     else if (aliases.length === 1) conditions.push(or(eq(alumni.company, aliases[0].displayName), eq(alumni.company, aliases[0].displayAlias), eq(alumni.currentCompanyId, aliases[0].providerCompanyId))!)
     else {
       const mappings = await db.select().from(providerCompanyMappings).where(and(eq(providerCompanyMappings.normalizedCompanyKey, normalizedCompany), eq(providerCompanyMappings.status, "VERIFIED")))
-      conditions.push(mappings.length === 1 ? or(eq(alumni.company, mappings[0].displayName), eq(alumni.currentCompanyId, mappings[0].providerCompanyId))! : eq(alumni.company, f.company))
+      conditions.push(mappings.length === 1 ? or(eq(alumni.company, mappings[0].displayName), eq(alumni.currentCompanyId, mappings[0].providerCompanyId))! : sql`lower(trim(replace(replace(${alumni.company}, '  ', ' '), '  ', ' '))) = ${normalizedCompany}`)
     }
   }
 
@@ -103,7 +106,7 @@ export async function runDirectoryQuery(query: Omit<DirectoryQuery, "pageSize"> 
   const pageCount = Math.max(1, Math.ceil(total / query.pageSize))
   const page = Math.min(query.page, pageCount)
   const order = query.sort === "name" ? [asc(alumni.name), asc(alumni.id)] : query.sort === "graduationYear" ? [asc(alumni.graduationYear), asc(alumni.name), asc(alumni.id)] : query.sort === "seniority" ? [desc(seniority), asc(alumni.name), asc(alumni.id)] : [desc(sql`relevance`), asc(alumni.name), asc(alumni.id)]
-  const rows = await db.select({ person: alumni, relevance: relevance.as("relevance") }).from(alumni).leftJoin(alumniDataLifecycle, eq(alumniDataLifecycle.alumnusId, alumni.id)).leftJoin(companyPriorities, eq(companyPriorities.company, alumni.company)).where(where).orderBy(...order).limit(query.pageSize).offset((page - 1) * query.pageSize)
+  const rows = await db.select({ person: alumni, professionalReviewedAt: sql<string>`(select max(created_at) from field_change_history where alumnus_id = ${alumni.id} and field in ('current_company_verification','designation_verification') and source = 'Manual verification' and new_value in ('Verified','Likely'))`, relevance: relevance.as("relevance") }).from(alumni).leftJoin(alumniDataLifecycle, eq(alumniDataLifecycle.alumnusId, alumni.id)).leftJoin(companyPriorities, eq(companyPriorities.company, alumni.company)).where(where).orderBy(...order).limit(query.pageSize).offset((page - 1) * query.pageSize)
   const [functionRows, aggregateRows] = includeFacets ? await Promise.all([
     db.select({ value: alumni.function, total: count() }).from(alumni).leftJoin(alumniDataLifecycle, eq(alumniDataLifecycle.alumnusId, alumni.id)).leftJoin(companyPriorities, eq(companyPriorities.company, alumni.company)).where(where).groupBy(alumni.function),
     db.select({
@@ -111,7 +114,7 @@ export async function runDirectoryQuery(query: Omit<DirectoryQuery, "pageSize"> 
       contactReady: sql<number>`sum(case when ${alumni.intakeStatus} != 'PROVISIONAL' and ${alumni.profileMatch} = 'Confirmed' and ${alumni.currentCompanyVerification} = 'Verified' and ${alumni.designationVerification} in ('Verified','Likely') and (${alumni.emailVerification} = 'Verified' or ${alumni.phoneVerification} = 'Verified') then 1 else 0 end)`,
     }).from(alumni).leftJoin(alumniDataLifecycle, eq(alumniDataLifecycle.alumnusId, alumni.id)).leftJoin(companyPriorities, eq(companyPriorities.company, alumni.company)).where(where),
   ]) : [[], []]
-  return { items: rows.map(row => directoryPublicRow(row.person, row.relevance === null ? null : Number(row.relevance))), all: [], total, page, pageSize: query.pageSize, pageCount, facets: { functions: Object.fromEntries(functionRows.map(item => [item.value, Number(item.total)])), seniorLeaders: Number(aggregateRows[0]?.seniorLeaders ?? 0), contactReady: Number(aggregateRows[0]?.contactReady ?? 0) } }
+  return { items: rows.map(row => ({ ...directoryPublicRow(row.person, row.relevance === null ? null : Number(row.relevance)), professionalReviewedAt: row.professionalReviewedAt || "" })), all: [], total, page, pageSize: query.pageSize, pageCount, facets: { functions: Object.fromEntries(functionRows.map(item => [item.value, Number(item.total)])), seniorLeaders: Number(aggregateRows[0]?.seniorLeaders ?? 0), contactReady: Number(aggregateRows[0]?.contactReady ?? 0) } }
 }
 
 export async function runDirectoryExportQuery(query: DirectoryQuery, maximumRows = 10_000) {

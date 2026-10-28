@@ -15,7 +15,7 @@ function belongsToView(entry: AlumniHistoryEntry, view: HistoryView) {
   return ["SOURCE_BASELINE", "CANONICAL_CHANGE", "REVIEW_DECISION"].includes(entry.kind)
 }
 
-export function AlumniHistoryPanel({ alumnusId }: { alumnusId: number }) {
+export function AlumniHistoryPanel({ alumnusId, includeStandalone = false }: { alumnusId: number; includeStandalone?: boolean }) {
   const [entries, setEntries] = useState<AlumniHistoryEntry[]>([])
   const [intelligenceEntries, setIntelligenceEntries] = useState<AlumniHistoryEntry[]>([])
   const [comparisons, setComparisons] = useState<Record<string, Comparison[]>>({})
@@ -40,15 +40,17 @@ export function AlumniHistoryPanel({ alumnusId }: { alumnusId: number }) {
         if (!response.ok) throw new Error(result.error || "History is unavailable.")
         setEntries(result.entries); setComparisons(current => ({ ...current, ...result.comparisons })); setPage(1); setHasMore(result.hasMore); setLimitations(result.limitations); setMessage("")
       }).catch(error => { if (error?.name !== "AbortError") setMessage(error instanceof Error ? error.message : "History is unavailable.") }).finally(() => { if (!controller.signal.aborted) setBusy(false) })
+      if (includeStandalone) {
       setIntelligenceBusy(true)
       void fetch(`/api/alumni/${alumnusId}/history?source=intelligence&page=1`, { cache: "no-store", signal: controller.signal }).then(async response => {
         const result = await response.json() as HistoryResponse & { error?: string }
         if (!response.ok) throw new Error(result.error || "Standalone intelligence history is unavailable.")
         setIntelligenceEntries(result.entries); setComparisons(current => ({ ...current, ...result.comparisons })); setIntelligencePage(1); setIntelligenceHasMore(result.hasMore); setIntelligenceLimitations(result.limitations)
       }).catch(error => { if (error?.name !== "AbortError") setIntelligenceLimitations(error instanceof Error ? error.message : "Standalone intelligence history is unavailable.") }).finally(() => { if (!controller.signal.aborted) setIntelligenceBusy(false) })
+      } else { setIntelligenceBusy(false) }
     }, 0)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [alumnusId])
+  }, [alumnusId, includeStandalone])
 
   async function loadMore() {
     if (busy || !hasMore) return
@@ -78,7 +80,7 @@ export function AlumniHistoryPanel({ alumnusId }: { alumnusId: number }) {
     finally { setIntelligenceBusy(false) }
   }
 
-  const visible = [...entries, ...intelligenceEntries].filter(entry => belongsToView(entry, view)).sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.key.localeCompare(b.key))
+  const visible = [...entries, ...(includeStandalone ? intelligenceEntries : [])].filter(entry => belongsToView(entry, view)).sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.key.localeCompare(b.key))
   return <section className="profile-section alumni-history-panel" aria-label="Alumni extraction and change history">
     <div className="verification-heading"><div><h3>Retained alumni history</h3><small>Read-only source observations, career evidence and canonical changes</small></div></div>
     <div className="profile-opportunity-actions" role="group" aria-label="History category">
@@ -95,8 +97,8 @@ export function AlumniHistoryPanel({ alumnusId }: { alumnusId: number }) {
       {comparisons[entry.key]?.length ? <details className="permission-details"><summary>Compare retained observation</summary><div className="alumni-history-table-wrap"><table><thead><tr><th>Field</th><th>Previous observed</th><th>New observed</th><th>Current canonical</th><th>Verification</th></tr></thead><tbody>{comparisons[entry.key].map(item => <tr key={item.field}><td>{item.field}</td><td>{item.previousObserved ?? "Not observed"}</td><td>{item.newObserved}</td><td>{item.currentCanonical ?? "Unknown"}</td><td>{item.verification}</td></tr>)}</tbody></table></div><small>Compared exact retained records: {comparisons[entry.key][0].previousSnapshotKey ?? "no earlier observation"} → {comparisons[entry.key][0].snapshotKey}. Missing evidence is not treated as a removal.</small></details> : null}
       </div></article>)}</div>
     {hasMore && <Button size="sm" variant="outline" disabled={busy} onClick={() => void loadMore()}>{busy ? "Loading…" : "Load more Corporate Network history"}</Button>}
-    {intelligenceHasMore && <Button size="sm" variant="outline" disabled={intelligenceBusy} onClick={() => void loadMoreIntelligence()}>{intelligenceBusy ? "Loading…" : "Load more standalone snapshots"}</Button>}
+    {includeStandalone && intelligenceHasMore && <Button size="sm" variant="outline" disabled={intelligenceBusy} onClick={() => void loadMoreIntelligence()}>{intelligenceBusy ? "Loading…" : "Load more standalone snapshots"}</Button>}
     {limitations && <p className="section-help">{limitations}</p>}
-    {intelligenceLimitations && <p className="section-help">{intelligenceLimitations}</p>}
+    {includeStandalone && intelligenceLimitations && <p className="section-help">{intelligenceLimitations}</p>}
   </section>
 }

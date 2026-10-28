@@ -16,18 +16,24 @@ const CONTACT_STATUSES = new Set(["", "Unknown", "Standard engagement allowed", 
 const CONSENT_SOURCES = new Set(["", "Unknown", "Internal institutional record", "Alumni-confirmed", "Manual PCOM record", "Provider sourced"])
 
 function canonicalHeader(value: string) { const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""); return HEADER_ALIASES[normalized] ?? normalized }
-function recordsFromRows(rows: string[][]) {
+export type ImportColumnMapping = Record<string, string>
+export function suggestedImportMapping(headers: string[]): ImportColumnMapping {
+  return Object.fromEntries(headers.map(header => { const target = canonicalHeader(header); return [header, (IMPORT_TEMPLATE_COLUMNS as readonly string[]).includes(target) ? target : ""] }))
+}
+function recordsFromRows(rows: string[][], mapping?: ImportColumnMapping | "inspect") {
   if (rows.length < 2) throw new Error("The file must contain a header row and at least one alumnus.")
-  const headers = rows[0].map(header => canonicalHeader(header.replace(/^\uFEFF/, "")))
-  if (headers.some(header => !header)) throw new Error("Every import column needs a header.")
-  if (new Set(headers).size !== headers.length) throw new Error("The file contains duplicate or equivalent column headers.")
+  const originalHeaders = rows[0].map(header => header.replace(/^\uFEFF/, "").trim())
+  const headers = originalHeaders.map(header => mapping === "inspect" ? header : mapping ? mapping[header] || "" : canonicalHeader(header))
+  if (mapping && mapping !== "inspect" && !headers.some(Boolean)) throw new Error("Map at least one supported column.")
+  if ((!mapping || mapping === "inspect") && headers.some(header => !header)) throw new Error("Every import column needs a header.")
+  if (new Set(headers.filter(Boolean)).size !== headers.filter(Boolean).length) throw new Error("The file contains duplicate or equivalent column headers.")
   const supported = new Set<string>([...IMPORT_TEMPLATE_COLUMNS, "confidence", "status"])
-  const unsupported = headers.filter(header => !supported.has(header))
+  const unsupported = headers.filter(header => header && mapping !== "inspect" && !supported.has(header))
   if (unsupported.length) throw new Error(`Unsupported import column${unsupported.length === 1 ? "" : "s"}: ${unsupported.join(", ")}.`)
-  return rows.slice(1).filter(row => row.some(value => value.trim())).map(values => Object.fromEntries(headers.map((header, index) => [header, values[index]?.trim() ?? ""])))
+  return rows.slice(1).filter(row => row.some(value => value.trim())).map(values => Object.fromEntries(headers.flatMap((header, index) => header ? [[header, values[index]?.trim() ?? ""]] : [])))
 }
 
-export function parseCsv(content: string): ImportRecord[] {
+export function parseCsv(content: string, mapping?: ImportColumnMapping | "inspect"): ImportRecord[] {
   if (new TextEncoder().encode(content).byteLength > MAX_IMPORT_BYTES) throw new Error("The file exceeds the 8 MB import limit.")
   const rows: string[][] = []; let row: string[] = []; let cell = ""; let quoted = false
   for (let index = 0; index < content.length; index += 1) {
@@ -45,7 +51,7 @@ export function parseCsv(content: string): ImportRecord[] {
   }
   if (quoted) throw new Error("The CSV contains an unterminated quoted field.")
   row.push(cell); if (row.some(value => value.trim())) rows.push(row)
-  return recordsFromRows(rows)
+  return recordsFromRows(rows, mapping)
 }
 
 function decodeXml(value: string) { return value.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code))) }
@@ -70,7 +76,7 @@ function excelDate(value: string, date1904: boolean) {
   const date = new Date(Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 30) + days * 86_400_000)
   return Number.isFinite(date.getTime()) && date.getUTCFullYear() <= 9999 ? date.toISOString().slice(0, 10) : ""
 }
-export function parseXlsx(input: ArrayBuffer | Uint8Array): { records: ImportRecord[]; sheetName: string } {
+export function parseXlsx(input: ArrayBuffer | Uint8Array, mapping?: ImportColumnMapping | "inspect"): { records: ImportRecord[]; sheetName: string } {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input)
   if (bytes.byteLength > MAX_IMPORT_BYTES) throw new Error("The file exceeds the 8 MB import limit.")
   let entries: Record<string, Uint8Array>; try { entries = unzipSync(bytes) } catch { throw new Error("The Excel workbook is invalid, encrypted, or password-protected.") }
@@ -85,7 +91,7 @@ export function parseXlsx(input: ArrayBuffer | Uint8Array): { records: ImportRec
   const worksheet = decodeEntry(entries, sheetPath)
   const rows = [...worksheet.matchAll(/<(?:[A-Za-z_][\w.-]*:)?row\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>/g)].map(rowMatch => { const row: string[] = []; for (const cell of rowMatch[1].matchAll(/<(?:[A-Za-z_][\w.-]*:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?c>)/g)) { const reference = cell[1].match(/\br="([^"]+)"/)?.[1] ?? "A1"; const type = cell[1].match(/\bt="([^"]+)"/)?.[1] ?? "n"; const raw = cell[2]?.match(/<(?:[A-Za-z_][\w.-]*:)?v>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?v>/)?.[1] ?? ""; const value = type === "s" ? shared[Number(raw)] ?? "" : type === "inlineStr" ? xmlText(cell[2] ?? "") : decodeXml(raw); const style = Number(cell[1].match(/\bs="(\d+)"/)?.[1]); row[columnIndex(reference)] = type === "d" && /^\d{4}-\d{2}-\d{2}T/.test(value) ? value.slice(0, 10) : type === "n" && dateStyles.has(style) && raw ? excelDate(value, date1904) || value : value } return row })
   if (rows.length > MAX_IMPORT_ROWS + 1) throw new Error(`The workbook contains more than the ${MAX_IMPORT_ROWS.toLocaleString()}-row import limit.`)
-  return { records: recordsFromRows(rows), sheetName: name }
+  return { records: recordsFromRows(rows, mapping), sheetName: name }
 }
 
 function normalized(value: unknown) { return String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() }
@@ -119,7 +125,7 @@ export function validateImport(records: ImportRecord[], existing: ImportExisting
     const updateOnly = options.mode === "update_only"
     const hasStableIdentity = Boolean((record.source_alumni_id && record.source_system) || record.canonical_alumni_id || record.linkedin_url || record.email)
     if (updateOnly && !hasStableIdentity) issues.push("Update-only rows require a stable source ID, canonical alumni ID, LinkedIn profile, or verified email")
-    if (!updateOnly) { if (!record.source_alumni_id) issues.push("Source alumni identifier is required"); if (!record.source_system) issues.push("Source system is required"); if (!record.name) issues.push("Name is required"); if (!record.company) issues.push("Company is required"); if (!record.programme) issues.push("Programme is required") }
+    if (!updateOnly) { if (!record.source_alumni_id) issues.push("Source alumni identifier is required"); if (!record.source_system) issues.push("Source system is required"); if (!record.name) issues.push("Name is required"); if (!record.programme) issues.push("Programme is required") }
     if (record.graduation_year && (!Number.isInteger(year) || year < 1940 || year > new Date().getUTCFullYear() + 10)) issues.push("Graduation year must be a plausible four-digit year")
     if (!updateOnly && (!Number.isInteger(year) || year < 1940 || year > new Date().getUTCFullYear() + 10)) issues.push("Graduation year must be a plausible four-digit year")
     if (record.programme && !allowedProgrammes.has(normalized(record.programme))) issues.push(`Programme “${record.programme}” is not configured`)

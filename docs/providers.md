@@ -163,3 +163,11 @@ Institutional Gmail is independently gated and mock/off in ordinary local develo
 
 The locally tested send fence retains the original action key after a timeout, incomplete receipt or uncertain post-send persistence; it must not silently retry or claim that an unknown outcome was undelivered. Live OAuth/send-scope setup, approved recipient and an explicitly authorized controlled send remain outstanding. No production Gmail send has been accepted.
 
+
+## PCOM presentation boundary (2026-10-28)
+
+The active Enrichment workspace presents Lusha only. Its Search identity evidence, Admin identity approval, separate Email/Phone Reveal and contact decisions, request claims, credit accounting, duplicate safeguards and redaction remain intact. Lusha Contact Search / Reveal is not an independent current-employment verification service. Professional lookup and retained evidence remain available from alumni profiles through the existing Coresignal/Bright Data workflows and authorization. No backend adapter, provider history, source migration or unresolved Collect reservation is removed. Administration retains complete provider history and accounting/reconciliation.
+
+A profile shows missing fields, potentially old observations and conflicts before any professional lookup. Old timestamps prompt review; they do not establish changed employment. Pending professional evidence can be compared and explicitly applied or kept through the existing review route. Selected fields whose stored value no longer matches the staged baseline are rejected as stale; provider identity attachment remains Admin-only. PCOM protected corrections stay pending for Admin. Provider fetches do not silently become verified alumni facts. Local acceptance uses disposable fictional data and never calls a live provider.
+
+The isolated Lusha mock allowlist accepts the import-normalized LinkedIn form with or without its trailing slash. This changes only fictional local mock matching, never live transport or identity approval. Earlier no-match outcomes remain retained. Normal profile history does not activate the retired standalone Intelligence integration; its backend and historical data are preserved.

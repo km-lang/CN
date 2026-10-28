@@ -26,6 +26,13 @@ type LocalDevelopmentEnvironment = {
   LUSHA_LIVE_ENABLED?: string
 }
 
+/** Vite separately realpath-validates this existing directory under os.tmpdir(). */
+export function isTemporaryLocalD1Path(path: string) {
+  if (path.split(/[\\/]/).includes("..")) return false
+  return path.startsWith("/tmp/") || path.startsWith("/private/tmp/")
+    || /^[a-z]:[\\/]Users[\\/][^\\/]+[\\/]AppData[\\/]Local[\\/](?:Temp[\\/]|Packages[\\/][^\\/]+[\\/]AC[\\/]Temp[\\/])corporate-network-local-[^\\/]+(?:[\\/]|$)/i.test(path)
+}
+
 /** Never available outside an Admin loopback server backed by a temporary D1. */
 export function localLushaV3MockTransportEnabled(values: LocalDevelopmentEnvironment = process.env) {
   const path = values.LOCAL_DEV_D1_PERSIST_PATH?.trim() ?? ""
@@ -34,8 +41,7 @@ export function localLushaV3MockTransportEnabled(values: LocalDevelopmentEnviron
     && isLoopbackHost(values.LOCAL_PROVIDER_LIVE_DEMO_HOST)
     && values.LOCAL_LUSHA_V3_MOCK_TRANSPORT === "true"
     && values.LUSHA_LIVE_ENABLED !== "true"
-    && (path.startsWith("/tmp/") || path.startsWith("/private/tmp/"))
-    && !path.split("/").includes("..")
+    && isTemporaryLocalD1Path(path)
 }
 
 export function localBrightDataLiveDemoEnabled(values: LocalDevelopmentEnvironment = process.env) {

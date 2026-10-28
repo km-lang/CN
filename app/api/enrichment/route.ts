@@ -443,10 +443,13 @@ export async function POST(request: Request) {
       const proposed = JSON.parse(review.proposedChangesJson) as Array<{ field: string; oldValue: string; newValue: string }>;
       const allowedFields = new Set(["company", "title", "rawTitle", "function", "seniority", "location", "previous", "linkedinUrl", "coresignalEmployeeId", "graduationYear", "iimlAffiliationStatus", "iimlEducationProgramme", "iimlEducationStartDate", "iimlEducationEndDate", "iimlInstitutionId", "iimlInstitutionUrl", "currentCompanyId", "currentCompanyUrl", "currentRoleStartDate", "currentIndustry", "currentRoleAmbiguous", "providerFreshnessAt"]);
       const requested = new Set((payload.fields ?? []).filter(field => allowedFields.has(field)));
-      const updates: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: new Date().toISOString() };
+      const staleField = proposed.find(change => requested.has(change.field) && change.oldValue !== change.newValue && String((person as unknown as Record<string, unknown>)[change.field] ?? "") !== String(change.oldValue ?? ""));
+      if (staleField) return Response.json({ error: "The canonical profile changed after this evidence was staged. Review the latest profile before applying it.", code: "STALE_PROFESSIONAL_REVIEW" }, { status: 409 });
+      const updates: Partial<typeof alumni.$inferInsert> = { updatedBy: actor, updatedAt: new Date().toISOString(), recordVersion: person.recordVersion + 1 };
       const applied: string[] = [];
       const identityChange = proposed.find(change => change.field === "coresignalEmployeeId" && requested.has(change.field) && change.newValue && change.oldValue !== change.newValue);
       if (identityChange) {
+        await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS");
         const proposedProfile = proposed.find(change => change.field === "linkedinUrl")?.newValue || person.linkedinUrl;
         const identity = await attachCoresignalIdentity({ coresignalEmployeeId: identityChange.newValue, profileUrl: proposedProfile, expectedAlumnusId: person.id, source: `profile_refresh_review:${review.id}`, actor }, coresignalIdentityStore(db, context));
         if (["CONFLICT", "IDENTITY_REVIEW_REQUIRED", "NEW_CANDIDATE"].includes(identity.outcome)) return Response.json({ error: identity.rationale, identityOutcome: identity.outcome }, { status: 409 });
@@ -503,7 +506,7 @@ export async function POST(request: Request) {
           .map(([field, value]) => ({ field, label: labels[field], oldValue: String(person[field as keyof typeof person] ?? ""), newValue: String(value ?? "") }));
         const changed = fields.filter(field => field.newValue && field.oldValue !== field.newValue);
         const reviewStatus = result.status === "no_match" ? "No match" : result.status === "error" ? "Provider error" : changed.length ? "Pending review" : "No changes";
-        const [review] = await db.insert(providerRefreshReviews).values({ providerResponseId: history.id, alumnusId: person.id, proposedChangesJson: JSON.stringify(changed), status: reviewStatus, requestedBy: actor }).returning();
+        const [review] = await db.insert(providerRefreshReviews).values({ providerResponseId: history.id, alumnusId: person.id, proposedChangesJson: JSON.stringify(fields), status: reviewStatus, requestedBy: actor }).returning();
         if (result.status === "success") {
           const now = new Date().toISOString();
           await db.update(alumni).set({
