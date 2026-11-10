@@ -165,21 +165,18 @@ test("reopening stored results is a GET-only operation scoped by searchId", () =
   assert.match(page, /No provider call was made and 0 credits were used/)
 })
 
-test("persisted discovery history loads independently on initial page load", () => {
+test("persisted discovery history remains available to APIs but is not listed on the page", () => {
   assert.match(discoveryRoute, /const history = previousDiscoveryRuns\(recentSearches, historyResults, null\)/)
   assert.match(discoveryRoute, /searches: recentSearches, history, previousSearches/)
-  assert.match(page, /setDiscoveryRunHistory\(data\.history \?\? \[\]\)/)
-  assert.match(page, /Previous discovery runs/)
-  assert.match(page, /Loading saved discovery runs/)
-  assert.match(page, /No saved discovery runs yet/)
-  assert.match(page, /Retry history/)
-  assert.ok(page.indexOf('id="discovery-history-heading"') < page.indexOf('(discoveryState !== "idle"'))
+  assert.doesNotMatch(page, /Previous discovery runs|previous-discovery-runs|Saved runs are read-only/)
+  assert.match(page, /Review Results/)
+  assert.match(page, /discovery-run-history/)
 })
 
 test("opening history preserves active search inputs and uses only the stored GET path", () => {
   const reopen = page.match(/async function reviewPendingDiscoveryResults[\s\S]*?async function runDiscovery/)?.[0] ?? ""
   assert.match(reopen, /setLastDiscoveryFilters\(data\.filters \?\? null\)/)
-  assert.match(reopen, /setDiscoveryRunHistory\(data\.history/)
+  assert.match(reopen, /setActiveDiscoveryRun\(data\.activeSearch \?\? null\)/)
   assert.doesNotMatch(reopen, /setDiscoveryFilters/)
   assert.doesNotMatch(reopen, /method:\s*"POST"/)
 })

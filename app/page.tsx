@@ -28,7 +28,6 @@ import { CompanyCombobox, CompanySearchCombobox, normalizeCompanyOptions } from 
 import { PaginationFooter, usePagination } from "@/components/pagination"
 import { IntelligenceWorkspace } from "@/components/intelligence/intelligence-workspace"
 import { OpportunitiesWorkspace } from "@/components/opportunities/opportunities-workspace"
-import { BrightDataWorkflow } from "@/components/brightdata-workflow"
 import { ProviderCreditsDashboard } from "@/components/provider-credits-dashboard"
 import { ProfileIntelligencePanel } from "@/components/intelligence/profile-intelligence-panel"
 import { AlumniHistoryPanel } from "@/components/alumni-history-panel"
@@ -822,7 +821,6 @@ export default function Home() {
   const [usageReconciliationDrafts, setUsageReconciliationDrafts] = useState<Record<number, string>>({})
   const [creditDrafts, setCreditDrafts] = useState<Record<Provider, string>>({ coresignal: "25", lusha: "100" })
   const [selectedForEnrichment, setSelectedForEnrichment] = useState<number[]>([])
-  const [brightProfileTarget, setBrightProfileTarget] = useState<{ alumnusId: number; profileUrl: string } | null>(null)
   const [selectedForIntelligence, setSelectedForIntelligence] = useState<number[]>([])
   const [enriching, setEnriching] = useState(false)
   const [enrichmentMessage, setEnrichmentMessage] = useState("")
@@ -837,16 +835,9 @@ export default function Home() {
   const [lastDiscoveryFilters, setLastDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
   const [pendingDiscoveryFilters, setPendingDiscoveryFilters] = useState<DiscoveryFilters | null>(null)
   const [pendingDiscoveryContinuation, setPendingDiscoveryContinuation] = useState<{ searchId: number; page: number } | null>(null)
-  const [pendingRegularSearchFilters, setPendingRegularSearchFilters] = useState<DiscoveryFilters | null>(null)
-  const [regularSearchPreparation, setRegularSearchPreparation] = useState<{ provider: string; operation: string; institution: string; company: string; companyMapping: string; graduationYear: string; seniority: string; pageSize: number; maximumSearchRequests: number; automaticPagination: boolean; automaticCollect: boolean; automaticCanonicalUpdate: boolean; searchMode: string } | null>(null)
-  const [regularSearchResultEvidence, setRegularSearchResultEvidence] = useState<CoresignalSearchEvidence | null>(null)
-  const [regularSearchStatus, setRegularSearchStatus] = useState({ enabled: false, configured: false, maxRequests: 1, automaticPagination: false })
   const [exactYearPreviewStatus, setExactYearPreviewStatus] = useState({ enabled: false, entitlement: "unknown", endpoint: "/cdapi/v2/employee_base/search/es_dsl/preview", maximumRequests: 1, maximumPreviewResults: 20, maximumPages: 50, automaticPagination: false, automaticCollect: false, providerCost: "20 search credits per requested Preview page" })
   const [coresignalLiveMaximum, setCoresignalLiveMaximum] = useState(5)
   const [activeDiscoveryRun, setActiveDiscoveryRun] = useState<DiscoveryRunSummary | null>(null)
-  const [discoveryRunHistory, setDiscoveryRunHistory] = useState<DiscoveryRunSummary[]>([])
-  const [discoveryHistoryLoading, setDiscoveryHistoryLoading] = useState(true)
-  const [discoveryHistoryError, setDiscoveryHistoryError] = useState("")
   const [activeDiscoveryHistory, setActiveDiscoveryHistory] = useState<ProviderHistory[]>([])
   const [discoveryCoverage, setDiscoveryCoverage] = useState<DiscoveryCoveragePlan | null>(null)
   const [discoveryCoverageLoading, setDiscoveryCoverageLoading] = useState(false)
@@ -1137,21 +1128,17 @@ export default function Home() {
 
   const loadPendingDiscoverySummary = useCallback(async () => {
     if (!session.canOperate) return
-    setDiscoveryHistoryLoading(true)
-    setDiscoveryHistoryError("")
     try {
       const response = await fetch(`${API_ROUTES.discovery}?view=summary`, { cache: "no-store" })
-      const data = await response.json() as { pendingCount?: number; history?: DiscoveryRunSummary[]; liveMaximum?: number; mockDiscoveryEnabled?: boolean; exactYearPreview?: typeof exactYearPreviewStatus; regularSearch?: { enabled: boolean; configured: boolean; maxRequests: number; automaticPagination: boolean }; error?: string }
+      const data = await response.json() as { pendingCount?: number; liveMaximum?: number; mockDiscoveryEnabled?: boolean; exactYearPreview?: typeof exactYearPreviewStatus; error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to load pending external-review status.")
       setPendingDiscoveryCount(data.pendingCount ?? 0)
-      setDiscoveryRunHistory(data.history ?? [])
       setCoresignalLiveMaximum(data.liveMaximum ?? 5)
       setMockDiscoveryEnabled(data.mockDiscoveryEnabled === true)
-      setRegularSearchStatus(data.regularSearch ?? { enabled: false, configured: false, maxRequests: 1, automaticPagination: false })
       setExactYearPreviewStatus(data.exactYearPreview ?? { enabled: false, entitlement: "unknown", endpoint: "/cdapi/v2/employee_base/search/es_dsl/preview", maximumRequests: 1, maximumPreviewResults: 20, maximumPages: 50, automaticPagination: false, automaticCollect: false, providerCost: "20 search credits per requested Preview page" })
     } catch (error) {
-      setDiscoveryHistoryError(error instanceof Error ? error.message : "Unable to load saved discovery runs.")
-    } finally { setDiscoveryHistoryLoading(false) }
+      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to load pending external-review status.")
+    }
   }, [session.canOperate])
 
   useEffect(() => {
@@ -2393,8 +2380,6 @@ export default function Home() {
         counts?: DiscoveryCounts
         filters?: DiscoveryFilters
         activeSearch?: DiscoveryRunSummary | null
-        history?: DiscoveryRunSummary[]
-        previousSearches?: DiscoveryRunSummary[]
         providerHistory?: ProviderHistory[]
         reconciliationSummary?: ReconciliationSummary | null
         executionSummary?: DiscoveryExecutionSummary | null
@@ -2411,7 +2396,6 @@ export default function Home() {
       setSelectedProvisionalIds([])
       setLastDiscoveryFilters(data.filters ?? null)
       setActiveDiscoveryRun(data.activeSearch ?? null)
-      setDiscoveryRunHistory(data.history ?? [data.activeSearch, ...(data.previousSearches ?? [])].filter((run): run is DiscoveryRunSummary => Boolean(run)).sort((left, right) => right.searchId - left.searchId))
       setActiveDiscoveryHistory(data.providerHistory ?? [])
       setDiscoveryReconciliation(data.reconciliationSummary ?? null)
       setDiscoveryExecution(data.executionSummary ?? null)
@@ -2437,7 +2421,7 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "search", filters: searchFilters, limit: Number(discoveryLimit), confirmed: providerModes.coresignal === "live" }),
       })
-      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; reconciliationSummary?: ReconciliationSummary | null; executionSummary?: DiscoveryExecutionSummary | null; activeSearch?: DiscoveryRunSummary; previousSearches?: DiscoveryRunSummary[]; providerHistory?: ProviderHistory[]; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; storedResultCount?: number; error?: string; blocked?: boolean }
+      const data = await response.json() as { results?: DiscoveryResult[]; counts?: DiscoveryCounts; reconciliationSummary?: ReconciliationSummary | null; executionSummary?: DiscoveryExecutionSummary | null; activeSearch?: DiscoveryRunSummary; providerHistory?: ProviderHistory[]; creditsUsed?: number | null; applicationUnits?: number; effectiveLimit?: number; requestedCount?: number; returnedCount?: number; storedResultCount?: number; error?: string; blocked?: boolean }
       if (data.blocked) {
         setDiscoveryState("blocked")
         setDiscoveryMessage(data.error || "External search could not be run because the Coresignal application limit has been reached.")
@@ -2445,7 +2429,6 @@ export default function Home() {
       }
       if (!response.ok || !data.results || !data.counts) throw new Error(data.error || "Unable to search external professional data.")
       if (data.effectiveLimit) setDiscoveryLimit(String(data.effectiveLimit))
-      setDiscoveryRunHistory([data.activeSearch, ...(data.previousSearches ?? (activeDiscoveryRun ? [activeDiscoveryRun] : []))].filter((run): run is DiscoveryRunSummary => Boolean(run)).sort((left, right) => right.searchId - left.searchId))
       setActiveDiscoveryRun(data.activeSearch ?? null)
       setActiveDiscoveryHistory(data.providerHistory ?? [])
       setDiscoveryResults(data.results)
@@ -2486,59 +2469,6 @@ export default function Home() {
     } finally {
       setDiscovering(false)
       setPendingDiscoveryContinuation(null)
-    }
-  }
-
-  async function runRegularSearch(searchFilters: DiscoveryFilters) {
-    setDiscovering(true)
-    setDiscoveryMessage("")
-    setRegularSearchResultEvidence(null)
-    try {
-      const response = await fetch(API_ROUTES.discovery, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "regular_search", filters: { ...searchFilters, graduationYear: searchFilters.graduationYear || undefined }, limit: Number(discoveryLimit), confirmed: true }),
-      })
-      const data = await response.json() as {
-        routing?: { providerSearch: { totalResults: number | null; pageIdsReceived: number; totalPages: number | null }; summary: { identityResolved: number; identityResolutionRequired: number; identityReviewRequired: number } }
-        searchEvidence?: CoresignalSearchEvidence
-        previewRequests?: number
-        collectRequests?: number
-        providerCreditsRemaining?: number | null
-        error?: string
-      }
-      if (!response.ok || !data.routing) throw new Error(data.error || "Unable to run Coresignal Base Employee Search.")
-      const summary = data.routing.summary
-      setRegularSearchResultEvidence(data.searchEvidence ?? null)
-      setDiscoveryMessage(`Coresignal Search returned ${data.routing.providerSearch.pageIdsReceived} Employee ID${data.routing.providerSearch.pageIdsReceived === 1 ? "" : "s"} on this page (${data.routing.providerSearch.totalResults === null ? "total not supplied" : `${data.routing.providerSearch.totalResults} total reported`}): ${summary.identityResolved} mapped, ${summary.identityResolutionRequired} require identity resolution, ${summary.identityReviewRequired} require identity review. Preview ${data.previewRequests ?? 0}; Collect ${data.collectRequests ?? 0}; provider remaining credits ${data.providerCreditsRemaining == null ? "not reported" : data.providerCreditsRemaining}. No alumnus or profile field was changed.`)
-      await Promise.all([loadEnrichment(), loadPendingDiscoverySummary()])
-    } catch (error) {
-      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to run Coresignal Base Employee Search.")
-    } finally {
-      setDiscovering(false)
-      setPendingRegularSearchFilters(null)
-      setRegularSearchPreparation(null)
-    }
-  }
-
-  async function prepareRegularSearch(searchFilters: DiscoveryFilters) {
-    setDiscovering(true)
-    setDiscoveryMessage("")
-    try {
-      const response = await fetch(API_ROUTES.discovery, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "regular_search_preflight", filters: { ...searchFilters, graduationYear: searchFilters.graduationYear || undefined }, limit: Number(discoveryLimit) }),
-      })
-      const data = await response.json() as { preparation?: typeof regularSearchPreparation; error?: string }
-      if (!response.ok || !data.preparation) throw new Error(data.error || "Unable to prepare Coresignal Search.")
-      setRegularSearchPreparation(data.preparation)
-      setPendingRegularSearchFilters(searchFilters)
-    } catch (error) {
-      setDiscoveryMessage(error instanceof Error ? error.message : "Unable to prepare Coresignal Search.")
-      setDiscoveryState("blocked")
-    } finally {
-      setDiscovering(false)
     }
   }
 
@@ -3048,18 +2978,7 @@ export default function Home() {
               </div>
               {discoveryCoverageError && <small className="discovery-coverage-error">{discoveryCoverageError}</small>}
               {discoveryCountControl("Discover More Alumni")}
-              <div className="coresignal-id-search"><div className="coresignal-id-search-copy"><strong>Find Alumni on Coresignal (ID-only)</strong><p>Discover potential IIM Lucknow alumni using education and controlled company criteria. Search returns candidate Employee IDs for review, not complete professional profiles.</p><div className="coresignal-search-flow" aria-label="Coresignal Search workflow"><span><strong>Search</strong>Candidate Employee IDs</span><span><strong>Collect</strong>Separately authorized full-profile retrieval</span><span><strong>Review</strong>Human verification before canonical changes</span></div><div className="coresignal-search-safety"><span>Verified provider ID preferred; exact-name fallback is unverified</span><span>Status: provider-free preparation available</span><span>{regularSearchStatus.enabled ? "LIVE execution gate enabled" : "LIVE execution gate disabled"}</span><span>Maximum {regularSearchStatus.maxRequests} request</span><span>Pagination {regularSearchStatus.automaticPagination ? "enabled" : "disabled"}</span><span>No automatic Collect or canonical update</span></div><small>Graduation year is optional. Programme, role, function, seniority and location remain local qualification filters. Conflicting, invalid, or stale saved selections block before any provider request; name fallback remains subject to human identity review.</small></div><div className="coresignal-id-search-action"><Button variant="outline" title={discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear) ? "Enter an exact four-digit graduation year or leave it blank for all years." : "Prepare and inspect the Search contract without calling Coresignal."} disabled={discovering || Boolean(discoveryFilters.graduationYear && !/^\d{4}$/.test(discoveryFilters.graduationYear)) || !discoveryCountValidation.ok} onClick={() => void prepareRegularSearch(discoveryFilters)}><Search /> {discovering ? "Preparing…" : "Review Search Criteria"}</Button><small>This provider-free action opens confirmation; it does not call Search, Preview or Collect.</small></div></div>
             </section>}
-
-            {session.canOperate && <section className="panel previous-discovery-runs" aria-labelledby="discovery-history-heading" aria-busy={discoveryHistoryLoading}>
-              <div><strong id="discovery-history-heading">Previous discovery runs</strong><small>Saved runs are read-only. Opening one restores its stored criteria and evidence without changing the current discovery form or calling a provider.</small></div>
-              {discoveryHistoryLoading ? <div role="status"><small>Loading saved discovery runs…</small></div>
-                : discoveryHistoryError ? <div role="alert"><small>{discoveryHistoryError}</small><Button size="sm" variant="outline" onClick={() => void loadPendingDiscoverySummary()}>Retry history</Button></div>
-                  : discoveryRunHistory.length ? <div>{discoveryRunHistory.map(run => <Button key={run.searchId} size="sm" variant={activeDiscoveryRun?.searchId === run.searchId ? "default" : "outline"} aria-pressed={activeDiscoveryRun?.searchId === run.searchId} disabled={loadingPendingReview} onClick={() => void reviewPendingDiscoveryResults(run.searchId)}><span>#{run.searchId} · {run.provider.toUpperCase()} · {run.mode.toUpperCase()}</span><small>{run.criteriaSummary || "Criteria unavailable"} · {run.pendingCount} actionable · {displayEventDate(run.createdAt)}</small></Button>)}</div>
-                    : <div role="status"><small>No saved discovery runs yet.</small></div>}
-            </section>}
-
-            {session.canAdminister && <BrightDataWorkflow apiUrl={API_ROUTES.brightData} target={brightProfileTarget} />}
 
             {(discoveryState !== "idle" || discoveryResults.length > 0 || discoveryMessage) && <section className="panel discovery-panel">
               <div className="discovery-header">
@@ -3344,7 +3263,7 @@ export default function Home() {
             <ProfessionalReviewPanel person={selected} canOperate={session.canOperate} canAdminister={session.canAdminister} onReviewed={() => { setDirectoryRevision(value => value + 1); openAlumnusProfile(selected) }} onReview={() => void openProfessionalVerification(selected)} onCorrection={() => openProfileEdit(selected)} onLookup={() => setProfessionalLookupTarget(selected)} />
             <section className="profile-section profile-order-professional"><div className="profile-engagement-heading"><h3>Professional profile</h3>{session.canOperate && <Button size="sm" variant="outline" onClick={() => openProfileEdit(selected)}><Pencil /> Edit profile</Button>}</div><div className="detail-grid"><div><Building2 /><span>Current company<strong>{selected.company}</strong></span></div><div><BriefcaseBusiness /><span>Current designation<strong>{selected.title}</strong><small>Normalized seniority: {selected.seniority || "Unclassified"}</small></span></div><div><MapPin /><span>Location<strong>{selected.location}</strong></span></div><div><History /><span>Experience<strong>{selectedExperienceSummary}</strong></span></div></div>{selectedProfessionalProfileUrl && <a className="profile-link" href={selectedProfessionalProfileUrl} target="_blank" rel="noopener noreferrer">Open professional profile <ArrowUpRight /></a>}{Boolean(selected.employmentHistory?.length) && <details className="permission-details"><summary>Provider employment evidence ({selected.employmentHistory!.length})</summary><div className="verification-history">{selected.employmentHistory!.map(position => <div key={position.id}><strong>{position.originalJobTitle || "Title not returned"} · {position.originalCompanyName || "Company not returned"}</strong><span>{position.isCurrent ? "Current evidence" : "Historical evidence"}{position.startDate || position.endDate ? ` · ${position.startDate || "Unknown start"}–${position.endDate || "Present"}` : ""}</span><small>{position.evidenceSource} · {position.verificationStatus} · observed {new Date(position.observedAt).toLocaleDateString()}</small></div>)}</div></details>}{Boolean(selected.profileProposals?.filter(item => item.status === "PENDING").length) && <details className="permission-details" open><summary>Pending protected corrections ({selected.profileProposals!.filter(item => item.status === "PENDING").length})</summary><div className="verification-history">{selected.profileProposals!.filter(item => item.status === "PENDING").map(proposal => <div key={proposal.id}><strong>{proposal.field}: {proposal.oldValue || "Empty"} → {proposal.proposedValue || "Empty"}</strong><span>{proposal.source} · proposed by {proposal.proposedBy}</span>{session.canAdminister && <span className="profile-opportunity-actions"><Button size="sm" onClick={() => void decideProfileProposal(selected, proposal.id, "accept_proposal")}>Accept</Button><Button size="sm" variant="outline" onClick={() => void decideProfileProposal(selected, proposal.id, "reject_proposal")}>Reject</Button></span>}</div>)}</div></details>}</section>
             <RetiredUi><ProfileIntelligencePanel alumnusId={selected.id} canOperate={session.canOperate} onOpenIntelligence={view => { closeAlumnusProfile(); window.setTimeout(() => changeIntelligenceView(view), 0) }} /></RetiredUi>
-            {session.canAdminister && <RetiredUi><section className="profile-section"><h3>Manual provider refresh</h3><p className="section-help">Prepare the exact saved provider identity. Opening either workflow makes no provider request; entitlement and cost are checked before separate confirmation.</p><div className="profile-opportunity-actions"><Button size="sm" variant="outline" disabled={!selectedProfessionalProfileUrl} onClick={() => { if (!selectedProfessionalProfileUrl) return; setBrightProfileTarget({ alumnusId: selected.id, profileUrl: selectedProfessionalProfileUrl }); closeAlumnusProfile(); changeWorkspaceTab("directory"); window.setTimeout(() => document.getElementById("brightdata-workflow")?.scrollIntoView({ behavior: "smooth" }), 100) }}>Refresh with Bright Data</Button><Button size="sm" variant="outline" disabled={!selected.coresignalEmployeeId || collectBusy} onClick={() => { const id = selected.id; closeAlumnusProfile(); void reviewKnownCollectEligibility(id) }}>Review Coresignal Collect eligibility</Button></div>{!selectedProfessionalProfileUrl && <small>A valid stored LinkedIn profile URL is required for Bright Data.</small>}{!selected.coresignalEmployeeId && <small>A saved Coresignal Employee ID is required for Collect.</small>}</section></RetiredUi>}
+            {session.canAdminister && <RetiredUi><section className="profile-section"><h3>Manual provider refresh</h3><p className="section-help">Prepare the exact saved provider identity. Opening the workflow makes no provider request; entitlement and cost are checked before separate confirmation.</p><div className="profile-opportunity-actions"><Button size="sm" variant="outline" disabled={!selected.coresignalEmployeeId || collectBusy} onClick={() => { const id = selected.id; closeAlumnusProfile(); void reviewKnownCollectEligibility(id) }}>Review Coresignal Collect eligibility</Button></div>{!selected.coresignalEmployeeId && <small>A saved Coresignal Employee ID is required for Collect.</small>}</section></RetiredUi>}
             <AlumniHistoryPanel alumnusId={selected.id} />
             {session.canOperate && <RetiredUi><section className="profile-section profile-opportunities"><div><h3>Corporate opportunities</h3><p className="section-help">Create or review accountable opportunities linked to this alumnus and company.</p></div><div className="profile-opportunity-actions"><Button variant="outline" onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => viewOpportunities(company, id), 0) }}><Eye /> View linked opportunities</Button><Button onClick={() => { const id = selected.id; const company = selected.company; closeAlumnusProfile(); window.setTimeout(() => createOpportunity(company, id), 0) }}><BriefcaseBusiness /> Create opportunity</Button></div></section></RetiredUi>}
             <section className="profile-section profile-order-iiml"><h3>IIM Lucknow context</h3><div className="detail-grid"><div><CircleUserRound /><span>Programme and batch<strong>{alumniEducationLabel(selected)}</strong></span></div><div><Network /><span>Placement Committee relationship<strong>{session.canOperate ? selected.assessment.iimlRelationship === "Unknown / Not assessed" ? "No prior Placement Committee engagement" : selected.assessment.iimlRelationship : "Restricted for Developer role"}</strong></span></div></div>{session.canOperate && <><div className="insight-note"><Sparkles /><p>{placementContext(selected)}</p></div><RetiredUi><Button className="profile-route-button" onClick={() => { const id = selected.id; void recommendRoute(id) }}><Network /> Recommend Outreach Route</Button></RetiredUi></>}</section>
@@ -3363,7 +3282,7 @@ export default function Home() {
         </SheetContent>
       </Sheet>
 
-      <Dialog open={Boolean(professionalLookupTarget)} onOpenChange={open => { if (!open) setProfessionalLookupTarget(null) }}><DialogContent><DialogHeader><DialogTitle>Choose professional lookup</DialogTitle><DialogDescription>Retrieve evidence for an existing alumnus. No external request runs by opening this dialog.</DialogDescription></DialogHeader>{professionalLookupTarget && <div className="professional-lookup-options"><h3>{professionalLookupTarget.name}</h3><p>Coresignal and Bright Data can retain professional observations; their live gates, identity, entitlement, budget and separate confirmations still apply. Lusha contact evidence cannot establish current employment.</p><Button variant="outline" onClick={() => { const person = professionalLookupTarget; setProfessionalLookupTarget(null); void openProfessionalVerification(person) }}>Inspect stored evidence · no provider call</Button>{session.canAdminister ? <><Button variant="outline" disabled={!professionalLookupTarget.coresignalEmployeeId} onClick={() => { const id = professionalLookupTarget.id; setProfessionalLookupTarget(null); closeAlumnusProfile(); void reviewKnownCollectEligibility(id) }}>Prepare Coresignal professional lookup</Button><Button variant="outline" disabled={!normalizeProfessionalProfileUrl(professionalLookupTarget.linkedinUrl)} onClick={() => { setBrightProfileTarget({ alumnusId: professionalLookupTarget.id, profileUrl: normalizeProfessionalProfileUrl(professionalLookupTarget.linkedinUrl) }); setProfessionalLookupTarget(null); closeAlumnusProfile(); changeWorkspaceTab("directory"); window.setTimeout(() => document.getElementById("brightdata-workflow")?.scrollIntoView({ behavior: "smooth" }), 100) }}>Prepare Bright Data known-profile lookup</Button></> : <p>Ask Admin to prepare an external professional lookup. PCOM can inspect approved stored evidence and submit profile corrections.</p>}<Button variant="outline" onClick={() => { setProfessionalLookupTarget(null); closeAlumnusProfile(); changeWorkspaceTab("enrichment") }}>Open Lusha contact enrichment</Button><p>All live provider execution remains disabled in the local acceptance runtime.</p></div>}<DialogFooter><Button variant="outline" onClick={() => setProfessionalLookupTarget(null)}>Close lookup options</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={Boolean(professionalLookupTarget)} onOpenChange={open => { if (!open) setProfessionalLookupTarget(null) }}><DialogContent><DialogHeader><DialogTitle>Choose professional lookup</DialogTitle><DialogDescription>Retrieve evidence for an existing alumnus. No external request runs by opening this dialog.</DialogDescription></DialogHeader>{professionalLookupTarget && <div className="professional-lookup-options"><h3>{professionalLookupTarget.name}</h3><p>Coresignal can retain professional observations; its live gates, identity, entitlement, budget and separate confirmations still apply. Lusha contact evidence cannot establish current employment.</p><Button variant="outline" onClick={() => { const person = professionalLookupTarget; setProfessionalLookupTarget(null); void openProfessionalVerification(person) }}>Inspect stored evidence · no provider call</Button>{session.canAdminister ? <Button variant="outline" disabled={!professionalLookupTarget.coresignalEmployeeId} onClick={() => { const id = professionalLookupTarget.id; setProfessionalLookupTarget(null); closeAlumnusProfile(); void reviewKnownCollectEligibility(id) }}>Prepare Coresignal professional lookup</Button> : <p>Ask Admin to prepare an external professional lookup. PCOM can inspect approved stored evidence and submit profile corrections.</p>}<Button variant="outline" onClick={() => { setProfessionalLookupTarget(null); closeAlumnusProfile(); changeWorkspaceTab("enrichment") }}>Open Lusha contact enrichment</Button><p>All live provider execution remains disabled in the local acceptance runtime.</p></div>}<DialogFooter><Button variant="outline" onClick={() => setProfessionalLookupTarget(null)}>Close lookup options</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={Boolean(profileEditTarget)} onOpenChange={open => { if (!open && !profileEditSaving) setProfileEditTarget(null) }}>
         <DialogContent className="profile-edit-dialog"><DialogHeader><DialogTitle>Edit alumni profile</DialogTitle><DialogDescription>Only changed fields are saved. Empty inputs preserve existing values; protected verified fields are submitted for Admin review.</DialogDescription></DialogHeader>
@@ -3592,13 +3511,6 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(pendingRegularSearchFilters && regularSearchPreparation)} onOpenChange={open => { if (!open) { setPendingRegularSearchFilters(null); setRegularSearchPreparation(null) } }}>
-        <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Run one Coresignal Base Employee ES-DSL Search?</DialogTitle><DialogDescription>Server-side preparation verified this ID-only Search contract without calling Coresignal. Live execution remains independently gated.</DialogDescription></DialogHeader><div className="refresh-confirm-summary"><div><span>Provider</span><strong>{regularSearchStatus.enabled ? "Coresignal — LIVE gate enabled" : "Coresignal — preflight only; LIVE gate disabled"}</strong></div><div><span>Operation</span><strong>{regularSearchPreparation?.operation}</strong></div><div><span>Search mode</span><strong>{regularSearchPreparation?.searchMode.replaceAll("_", " ")}</strong></div><div><span>Institution</span><strong>{regularSearchPreparation?.institution}</strong></div><div><span>Graduation year</span><strong>{regularSearchPreparation?.graduationYear}</strong></div><div><span>Company</span><strong>{regularSearchPreparation?.company}</strong></div><div><span>Company mapping</span><strong>{regularSearchPreparation?.companyMapping}</strong></div><div><span>Programme</span><strong>Not constrained</strong></div><div><span>Seniority</span><strong>{regularSearchPreparation?.seniority}</strong></div><div><span>Page size / result bound</span><strong>{regularSearchPreparation?.pageSize}</strong></div><div><span>Maximum Search requests</span><strong>{regularSearchPreparation?.maximumSearchRequests}</strong></div><div><span>Automatic pagination</span><strong>{regularSearchPreparation?.automaticPagination ? "On" : "Off"}</strong></div><div><span>Automatic Collect</span><strong>{regularSearchPreparation?.automaticCollect ? "On" : "Off"}</strong></div><div><span>Automatic canonical update</span><strong>{regularSearchPreparation?.automaticCanonicalUpdate ? "On" : "Off"}</strong></div></div><div className="credit-notice"><Activity /><span>{regularSearchStatus.enabled ? "A confirmed Search may consume provider usage." : "Live Search is unavailable because the server gate is disabled. Preparation and cancellation consume no provider usage."} No downstream provider action is automatic. Returned Employee IDs are routed against stored identities only. Search matches are not verified alumni or fresh profiles. Unknown IDs remain unresolved; no alumnus is created, no identity is attached, freshness is not evaluated, and no profile field is changed.</span></div><DialogFooter><Button variant="outline" onClick={() => { setPendingRegularSearchFilters(null); setRegularSearchPreparation(null) }}>Cancel — No Provider Call</Button><Button title={!regularSearchStatus.enabled ? "Live Search is unavailable while CORESIGNAL_SEARCH_ENABLED is off." : !regularSearchStatus.configured ? "Live Search requires configured server-side Coresignal authentication." : undefined} disabled={discovering || !pendingRegularSearchFilters || !regularSearchStatus.enabled || !regularSearchStatus.configured || Boolean(pendingRegularSearchFilters.graduationYear && !/^\d{4}$/.test(pendingRegularSearchFilters.graduationYear))} onClick={() => pendingRegularSearchFilters && void runRegularSearch(pendingRegularSearchFilters)}>{discovering ? <LoaderCircle className="spin" /> : <Search />} {regularSearchStatus.enabled ? "Confirm One Search Request" : "Live Search Unavailable — Gate Off"}</Button></DialogFooter></DialogContent>
-      </Dialog>
-
-      <Dialog open={Boolean(regularSearchResultEvidence)} onOpenChange={open => { if (!open) setRegularSearchResultEvidence(null) }}>
-        <DialogContent className="search-evidence-dialog"><DialogHeader><DialogTitle>Coresignal Search evidence</DialogTitle><DialogDescription>Sanitized ID-only evidence from the confirmed Search. These candidates are not verified alumni and their profiles were not collected or marked fresh.</DialogDescription></DialogHeader>{regularSearchResultEvidence && <CoresignalSearchEvidencePanel evidence={regularSearchResultEvidence} showIds />}<DialogFooter><Button onClick={() => setRegularSearchResultEvidence(null)}>Done</Button></DialogFooter></DialogContent>
-      </Dialog>
 
       <Dialog open={Boolean(collectPreflightView)} onOpenChange={open => { if (!open) { setCollectPreflightView(null); setCollectConfirmationToken("") } }}>
         <DialogContent className="refresh-confirm-dialog"><DialogHeader><DialogTitle>Review Coresignal Collect eligibility</DialogTitle><DialogDescription>This provider-free preflight validates the saved Employee ID, Admin authorization, application allowance, independent Collect gate and account entitlement.</DialogDescription></DialogHeader>{collectPreflightView && <><div className="refresh-confirm-summary"><div><span>Employee ID</span><strong>{collectPreflightView.candidate.employeeId}</strong></div><div><span>Origin</span><strong>{collectPreflightView.candidate.sourceAlumnusId ? `Saved alumnus #${collectPreflightView.candidate.sourceAlumnusId}` : `Search History #${collectPreflightView.candidate.searchHistoryId}`}</strong></div><div><span>Identity state</span><strong>{collectPreflightView.candidate.identityResolutionStatus.replaceAll("_", " ")}</strong></div><div><span>Collect entitlement</span><strong>{collectPreflightView.runtime.entitlement}</strong></div><div><span>Execution transport</span><strong>{collectPreflightView.runtime.transportMode === "mock" ? "Isolated local mock" : "Live provider"}</strong></div><div><span>Collect execution gate</span><strong>{collectPreflightView.runtime.collectGateEnabled ? "Enabled" : "Disabled"}</strong></div><div><span>Application capacity</span><strong>{collectPreflightView.runtime.applicationUnitsRemaining} units remaining</strong></div><div><span>Request ceiling</span><strong>1 Collect · 0 retries</strong></div><div><span>Automatic actions</span><strong>0 Search · 0 Preview · 0 attachment · 0 canonical updates</strong></div></div>{collectPreflightView.blockers.length ? <div className="enrichment-message" role="alert"><Ban /><span>{collectPreflightView.blockers.join(" ")}</span></div> : <div className="credit-notice"><Activity /><span>This core Employee Collect reserves 20 internal application units. Coresignal Support confirmed a 10-provider-credit price for this account; actual debit remains to be reconciled after the response. No Search or additional Collect runs automatically.</span></div>}</>}

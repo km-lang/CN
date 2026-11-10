@@ -130,29 +130,10 @@ test("External Discovery owns every provider-search control", () => {
   assert.match(page, /value=\{discoveryFilters\.graduationYear\}/)
 })
 
-test("ID-only Search preparation clearly confirms institution, year, and controlled company identity", () => {
-  assert.match(page, /Graduation year is optional/)
-  assert.match(page, /Find Alumni on Coresignal \(ID-only\)/)
-  assert.match(page, /Search returns candidate Employee IDs for review, not complete professional profiles/)
-  assert.match(page, /Verified provider ID preferred; exact-name fallback is unverified/)
-  assert.match(page, /Conflicting, invalid, or stale saved selections block before any provider request/)
-  assert.match(page, /Review Search Criteria/)
-  assert.match(page, /Status: provider-free preparation available/)
-  assert.match(page, /LIVE execution gate disabled/)
-  assert.match(page, />Search mode<\/span><strong>\{regularSearchPreparation\?\.searchMode\.replaceAll\("_", " "\)\}</)
-  assert.match(page, />Graduation year<\/span><strong>\{regularSearchPreparation\?\.graduationYear\}<\/strong>/)
-  assert.match(page, />Company<\/span><strong>\{regularSearchPreparation\?\.company\}<\/strong>/)
-  assert.match(page, />Company mapping<\/span><strong>\{regularSearchPreparation\?\.companyMapping\}<\/strong>/)
-  assert.match(page, />Programme<\/span><strong>Not constrained<\/strong>/)
-  assert.match(page, />Seniority<\/span><strong>\{regularSearchPreparation\?\.seniority\}<\/strong>/)
-  assert.match(page, />Page size \/ result bound<\/span><strong>\{regularSearchPreparation\?\.pageSize\}<\/strong>/)
-  assert.match(page, />Maximum Search requests<\/span><strong>\{regularSearchPreparation\?\.maximumSearchRequests\}<\/strong>/)
-  assert.match(page, />Automatic Collect<\/span><strong>\{regularSearchPreparation\?\.automaticCollect \? "On" : "Off"\}<\/strong>/)
-  assert.match(page, />Automatic canonical update<\/span><strong>\{regularSearchPreparation\?\.automaticCanonicalUpdate \? "On" : "Off"\}<\/strong>/)
-  assert.match(page, /Live Search is unavailable because the server gate is disabled/)
-  assert.match(page, /Live Search Unavailable — Gate Off/)
-  assert.doesNotMatch(page, /Requires an exact graduation year/)
-  assert.match(page, /Boolean\(discoveryFilters\.graduationYear && !\/\^\\d\{4\}\$\/\.test\(discoveryFilters\.graduationYear\)\)/)
+test("Directory keeps external discovery while omitting ID-only Search", () => {
+  assert.match(page, /<p className="eyebrow">External discovery<\/p><h2>Need more alumni\?<\/h2>/)
+  assert.match(page, /discoveryCountControl\("Discover More Alumni"\)/)
+  assert.doesNotMatch(page, /Find Alumni on Coresignal \(ID-only\)|regular_search_preflight|Review Search Criteria/)
 })
 
 test("live Search confirmation has a viewport-bound shell, scrollable body, and persistent footer", () => {

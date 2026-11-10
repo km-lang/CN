@@ -14,19 +14,10 @@ test("UI-01 aligns directory labels and controls while preserving scoped helper 
   assert.match(styles, /\.directory-filter-field > span \{ align-self: end;/)
 })
 
-test("UX-02 explains Search, Collect, and Review without changing the provider-free action", () => {
-  assert.match(page, /Find Alumni on Coresignal \(ID-only\)/)
-  assert.match(page, /Search returns candidate Employee IDs for review, not complete professional profiles/)
-  assert.match(page, /<strong>Search<\/strong>Candidate Employee IDs/)
-  assert.match(page, /<strong>Collect<\/strong>Separately authorized full-profile retrieval/)
-  assert.match(page, /<strong>Review<\/strong>Human verification before canonical changes/)
-  assert.match(page, /Review Search Criteria/)
-  assert.match(page, /This provider-free action opens confirmation; it does not call Search, Preview or Collect/)
-  assert.match(page, /onClick=\{\(\) => void prepareRegularSearch\(discoveryFilters\)\}/)
-})
-
-test("UX-02 retains the fail-closed company and execution safety disclosures", () => {
-  for (const copy of ["Verified provider ID preferred; exact-name fallback is unverified", "LIVE execution gate disabled", "Maximum ", "Pagination ", "No automatic Collect or canonical update", "remain local qualification filters"]) assert.match(page, new RegExp(copy))
+test("UX-02 removes the ID-only Search panel but keeps external discovery", () => {
+  assert.doesNotMatch(page, /Find Alumni on Coresignal \(ID-only\)|Review Search Criteria|regular_search_preflight/)
+  assert.match(page, /<p className="eyebrow">External discovery<\/p><h2>Need more alumni\?<\/h2>/)
+  assert.match(page, /discoveryCountControl\("Discover More Alumni"\)/)
 })
 
 test("UI-03 gives both history columns a shared padded body and accurate empty states", () => {

@@ -202,7 +202,7 @@ test("additive raw-evidence migration is one snapshot per attempt and preserves 
   db.close()
 })
 
-test("Admin route and UI retain explicit, review-only, provider-safe contracts", async () => {
+test("Admin route and component retain provider-safe contracts without showing Bright Data in the directory", async () => {
   const [route, page, component, example] = await Promise.all([
     readFile(new URL("../app/api/admin/bright-data/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -223,7 +223,7 @@ test("Admin route and UI retain explicit, review-only, provider-safe contracts",
   assert.match(route, /automaticRetries: 0/)
   assert.match(route, /canonicalMutations: 0/)
   assert.doesNotMatch(route, /update\(alumni\)/)
-  assert.match(page, /session\.canAdminister && <BrightDataWorkflow/)
+  assert.doesNotMatch(page, /BrightDataWorkflow|External discovery · Bright Data|Prepare Bright Data known-profile lookup|Refresh with Bright Data/)
   assert.match(component, /Check collection status/)
   assert.match(component, /Retrieve completed result/)
   assert.match(component, /No automatic polling or paid retries/)
