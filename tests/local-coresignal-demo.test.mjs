@@ -115,6 +115,8 @@ test("mock discovery cannot write the original local D1 when live execution is o
   assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled(normal), false)
   assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-isolated-demo" }), true)
   assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/../original" }), false)
+  assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "C:\\Users\\demo\\AppData\\Local\\Temp\\corporate-network-local-abc123" }), true)
+  assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "D:\\project\\.wrangler\\state" }), false)
   assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-isolated-demo", LOCAL_DEV_AUTH_ROLE: "PCOM" }), false)
   assert.equal(localDevelopment.localIsolatedDiscoveryMockEnabled({ ...normal, CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-isolated-demo", NODE_ENV: "production" }), false)
   assert.match(discoveryRoute, /if \(coresignalProvider\.mode\(\) === "mock" && !localIsolatedDiscoveryMockEnabled\(providerRuntimeEnvironment\)\) return Response\.json\(/)

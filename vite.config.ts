@@ -4,8 +4,12 @@ import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 import { isAbsolute, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { realpathSync } from "node:fs";
+import { realpathSync as fsRealpathSync } from "node:fs";
 import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
+
+// Native realpath expands Windows 8.3 short names (C:\Users\ABCDEF~1) so the
+// temp root and the launcher's persist path are compared in the same form.
+const realpathSync = fsRealpathSync.native;
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";

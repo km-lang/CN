@@ -37,7 +37,8 @@ const environment = {
   CORESIGNAL_COLLECT_ENABLED: "false",
   CORESIGNAL_COLLECT_ENTITLEMENT: "unknown",
   CORESIGNAL_COLLECT_MOCK_TRANSPORT: "false",
-  CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "false",
+  // Opts the disposable D1 into mock External Discovery (and mock webhook simulation); no provider call or webhook receipt is enabled.
+  CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true",
   CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: "false",
   LOCAL_PROVIDER_LIVE_DEMO_ENABLED: "false",
   BRIGHTDATA_LIVE_ENABLED: "false",

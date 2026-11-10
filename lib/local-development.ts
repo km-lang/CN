@@ -76,8 +76,7 @@ export function localIsolatedDiscoveryMockEnabled(values: LocalDevelopmentEnviro
   return localDevelopmentAuthEnabled(values)
     && values.LOCAL_DEV_AUTH_ROLE === "ADMIN"
     && values.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true"
-    && (path.startsWith("/tmp/") || path.startsWith("/private/tmp/"))
-    && !path.split("/").includes("..")
+    && isTemporaryLocalD1Path(path)
 }
 
 export function localCoresignalCollectMockTransportEnabled(
