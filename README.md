@@ -1,5 +1,17 @@
 # Corporate Network
 
+## Admin sign-in on Windows
+
+Open `/login/admin` on the origin registered with Google. Use `http://127.0.0.1:3000` throughout this laptop's flow. Switching to `localhost` loses the host-specific state cookie.
+
+1. In the institution's Google Cloud project, configure the Google Auth Platform consent screen and audience for the intended Workspace users. Under Clients, create a **Web application** OAuth client and register `http://127.0.0.1:3000/auth/google/callback` as an authorized redirect URI. [Google web-server OAuth setup](https://developers.google.com/identity/protocols/oauth2/web-server)
+2. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and a random `AUTH_SESSION_SECRET` of at least 32 characters in the ordinary local Worker's ignored `.env.local`. Use `APP_PUBLIC_URL=http://127.0.0.1:3000`, `APP_BASE_PATH=/` and `GOOGLE_ALLOWED_DOMAIN=iiml.ac.in`. Restart the Worker. Leave fixture authentication off for institutional login.
+3. Sign in with an enabled, pre-authorized Admin account. `/auth/google/start` issues a ten-minute signed state cookie and requests PKCE and a nonce. The callback checks state, exchanges the code, verifies the ID token and domain, and issues an eight-hour application cookie. The Admin landing route reloads the role. PCOM receives 403 there. Disabled and unknown Google users receive no session. Logout clears the browser cookie. A copied stateless token can remain valid until expiry, subject to account rechecks.
+
+Hosted Sites dispatch owns `/signin-with-chatgpt`, `/callback`, and `/signout-with-chatgpt`. It authenticates and injects identity headers for the application's `/auth/chatgpt/session` exchange. Hosted recovery requires this trusted gateway in front of the Worker. Configure the exact HTTPS `APP_PUBLIC_URL` for a custom Sites domain. Local development displays a hosted-only notice and rejects direct exchange requests.
+
+For fictional local access on Windows, `npm run dev:local:windows` creates a disposable D1 and enables the existing loopback fixture entry. Port 3000 must be available. Run `node --test tests/institutional-auth.test.mjs tests/security-access.test.mjs` for focused auth checks. The callback test disables Vite env-file loading and uses ephemeral D1, fictional users, and mocked token and signing-key responses. The migration workspace also provides `node --test tests/postgres-core-reads.test.mjs` for disposable PostgreSQL account checks.
+
 Corporate Network is a Placement Committee workspace for alumni ingestion, discovery and professional-data accuracy. The primary journey is Excel/CSV upload → governed import review → Alumni Directory → missing/outdated-data review → approved professional evidence → batch/current-company filtering → reviewed alumni profile.
 
 Provider output is evidence, not canonical truth. Corporate Network owns its institutional alumni record and never silently overwrites it from a provider response.
