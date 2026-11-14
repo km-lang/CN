@@ -354,31 +354,14 @@ test("runtime and UI integration preserve canonical immutability and explicit op
   assert.match(route, /provider_institution_id=\$\{CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID\}/)
   assert.match(route, /invalid_graduation_year/)
   assert.doesNotMatch(route, /exact_year_required/)
-  assert.match(page, /Confirm One Search Request/)
-  assert.match(page, /regularSearchPreparation\?\.graduationYear/)
-  assert.match(page, /regularSearchPreparation\?\.searchMode/)
-  assert.match(page, /regularSearchPreparation\?\.company/)
-  assert.match(page, /<span>Company mapping<\/span>/)
-  assert.match(page, /<span>Programme<\/span><strong>Not constrained<\/strong>/)
-  assert.match(page, /regularSearchPreparation\?\.seniority/)
-  assert.match(page, /Page size \/ result bound/)
-  assert.match(page, /No downstream provider action is automatic/)
-  assert.match(page, /provider-free preparation available/)
-  assert.match(page, /Coresignal — preflight only; LIVE gate disabled/)
-  assert.match(page, /Live Search Unavailable — Gate Off/)
-  assert.match(page, /Prepare and inspect the Search contract without calling Coresignal/)
-  assert.doesNotMatch(page, /disabled=\{discovering \|\| !regularSearchStatus\.enabled \|\| !regularSearchStatus\.configured \|\| Boolean\(discoveryFilters/)
-  assert.match(page, /disabled=\{discovering \|\| !pendingRegularSearchFilters \|\| !regularSearchStatus\.enabled \|\| !regularSearchStatus\.configured/)
-  assert.match(page, /graduationYear: searchFilters\.graduationYear \|\| undefined/)
-  assert.match(page, /<span>Automatic Collect<\/span>/)
-  assert.match(page, /automaticCollect \? "On" : "Off"/)
-  assert.match(page, /No downstream provider action is automatic/)
+  // The regular Search preparation/confirmation UI was retired from the page in
+  // a4e02a2 ("ui cleanup in alum directory page"). The gated API route above remains.
+  assert.doesNotMatch(page, /regularSearchPreparation|pendingRegularSearchFilters|Confirm One Search Request/)
   assert.doesNotMatch(page, /CORESIGNAL_API_KEY|apikey/)
 })
 
-test("Cancel closes the Search confirmation without transport or accounting work", async () => {
+test("the page has no client path that starts a regular Coresignal Search", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
-  const cancel = page.match(/<Button variant="outline" onClick=\{\(\) => \{ setPendingRegularSearchFilters\(null\); setRegularSearchPreparation\(null\) \}\}>Cancel — No Provider Call<\/Button>/)?.[0] ?? ""
-  assert.match(cancel, /setPendingRegularSearchFilters\(null\)/)
-  assert.doesNotMatch(cancel, /runRegularSearch|fetch\(|providerResponseHistory|applicationUnits/)
+  // With the confirmation dialog retired, no page code may post the provider-executing action.
+  assert.doesNotMatch(page, /action: "regular_search"|["']regular_search["']|runRegularSearch/)
 })

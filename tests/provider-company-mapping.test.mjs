@@ -113,7 +113,9 @@ test("Admin workflow is server-authorized and records meaningful before/after au
 test("normal product requests contain company names but never authoritative provider company IDs", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
   const route = await readFile(new URL("../app/api/discovery/route.ts", import.meta.url), "utf8")
-  assert.match(page, /filters: \{ \.\.\.searchFilters/)
+  // The page's regular Search request bodies were retired in a4e02a2; it must
+  // not reintroduce one, and it still never sends provider company IDs.
+  assert.doesNotMatch(page, /action: "regular_search(_preflight)?"/)
   assert.doesNotMatch(page, /providerCompanyId|companyId: 8469989/)
   assert.doesNotMatch(route, /payload\.(providerCompanyId|companyId)/)
   assert.match(route, /providerCompanyMappingStore\(db\)/)

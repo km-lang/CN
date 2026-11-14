@@ -63,14 +63,13 @@ test("Directory filters have intentional rows, an aligned programme field, and f
   assert.match(styles, /\.directory-clear \{ grid-area: clear;/)
 })
 
-test("Discovery actions remain bounded and the Coresignal preparation panel is readable", () => {
-  assert.match(page, /className="coresignal-id-search"/)
-  assert.match(page, /Verified provider ID preferred; exact-name fallback is unverified/)
-  assert.match(page, /No automatic Collect/)
-  assert.match(page, /This provider-free action opens confirmation; it does not call Search, Preview or Collect/)
+test("Discovery actions remain bounded and the retired Coresignal ID-search panel stays removed", () => {
+  // The Coresignal ID-search panel and its styles were retired in a4e02a2
+  // ("ui cleanup in alum directory page"); neither markup nor CSS may linger.
+  assert.doesNotMatch(page, /coresignal-id-search/)
+  assert.doesNotMatch(styles, /coresignal-id-search/)
   assert.match(styles, /\.discovery-count-control \{[^}]*minmax\(220px, 280px\)/s)
   assert.match(styles, /\.discovery-count-control > button \{[^}]*max-width: 250px/s)
-  assert.match(styles, /\.coresignal-id-search-action button \{[^}]*min-width: 190px/s)
 })
 
 test("Intelligence, Administration, and Opportunities use balanced responsive layouts and explanatory copy", () => {
@@ -81,5 +80,4 @@ test("Intelligence, Administration, and Opportunities use balanced responsive la
   assert.match(admin, /Why this matters:/)
   assert.match(styles, /\.intelligence-refresh-layout \{[^}]*1\.08fr[^}]*\.92fr/s)
   assert.match(styles, /\.opportunity-filters \{[^}]*minmax\(280px, 1\.7fr\)/s)
-  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*\.coresignal-id-search \{ grid-template-columns: minmax\(0, 1fr\)/)
 })
