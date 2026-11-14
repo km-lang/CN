@@ -19,6 +19,12 @@ export async function POST(request: Request) {
       const { postgresCollectReviewPreflight } = await import("@/lib/postgres-collect-review-preflight")
       return await postgresCollectReviewPreflight(input.collectHistoryId!, input.alumnusId!)
     }
+    // Approved 2026-11-15: intended identity attachment on PostgreSQL. The D1 path below
+    // fails at SQL compilation in coresignalIdentityStore (documented, unchanged).
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresCollectReviewConfirm } = await import("@/lib/postgres-collect-review-confirm")
+      return await postgresCollectReviewConfirm({ collectHistoryId: input.collectHistoryId!, alumnusId: input.alumnusId!, identityReviewed: input.identityReviewed, educationReviewed: input.educationReviewed }, context)
+    }
     const db = getDb()
     const [history] = await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.id, input.collectHistoryId!)).limit(1)
     const [person] = await db.select({ id: alumni.id, linkedinUrl: alumni.linkedinUrl, coresignalEmployeeId: alumni.coresignalEmployeeId, intakeStatus: alumni.intakeStatus, profileMatch: alumni.profileMatch }).from(alumni).where(eq(alumni.id, input.alumnusId!)).limit(1)

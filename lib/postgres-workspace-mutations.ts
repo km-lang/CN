@@ -1,5 +1,6 @@
 import { eq, sql } from "drizzle-orm"
 import type { PostgresDatabase } from "@/db/postgres/adapter"
+import { postgresErrorCode } from "@/lib/postgres-http-error"
 import { activityLog, alumni, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns, securityAuditEvents } from "@/db/postgres/schema"
 import type { ApplicationRole } from "@/lib/access-types"
 import type { SecurityContext } from "@/lib/security"
@@ -51,7 +52,17 @@ export async function postgresWorkspacePost(db: PostgresDatabase, context: Secur
       const keys = records.map(record => record.profileKey)
       if (new Set(keys).size !== keys.length) return Response.json({ error: "The file contains duplicate alumni rows. Remove duplicates and validate again." }, { status: 400 })
       const approved = new Set(payload.approvedUpdateKeys ?? [])
-      return db.transaction(async tx => {
+      // Approved contract (2026-11-15): a row that collides with an existing alumnus
+      // rolls back the WHOLE import (no partial rows, run, activity or audit) and
+      // returns D1's 400 status with a sanitized message instead of D1's raw
+      // constraint text. Any other database error keeps the sanitized 500.
+      try { return await importTransaction() } catch (error) {
+        if (postgresErrorCode(error) === "23505") {
+          return Response.json({ error: "An imported row conflicts with an existing alumnus record. No records were imported; review the file and validate again." }, { status: 400 })
+        }
+        throw error
+      }
+      async function importTransaction() { return db.transaction(async tx => {
         await tx.execute(sql`select pg_advisory_xact_lock(7303104)`)
         const people = await tx.select().from(alumni)
         let imported = 0
@@ -100,7 +111,7 @@ export async function postgresWorkspacePost(db: PostgresDatabase, context: Secur
         await tx.insert(securityAuditEvents).values(audit(context, "alumni_imported", "import", filename,
           { recordCount: records.length, imported, updated, protectedFields }))
         return Response.json({ imported, updated, protectedFields, filename }, { status: 201 })
-      })
+      }) }
     }
     return Response.json({ error: "A valid alumni import is required." }, { status: 400 })
   }

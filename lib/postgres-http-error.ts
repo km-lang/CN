@@ -6,6 +6,9 @@ function errorCode(error: unknown): string {
   return "cause" in error ? errorCode(error.cause) : ""
 }
 
+/** SQLSTATE (or driver code) of a PostgreSQL error, following Drizzle's `cause` chain. */
+export const postgresErrorCode = errorCode
+
 /** Hide SQL and binding details when a selected PostgreSQL read fails. */
 export function postgresDatabaseErrorResponse(error: unknown, assumeDatabaseFailure = false): Response | null {
   try { if (selectedDatabaseBackend() !== "postgres") return null } catch { return null }

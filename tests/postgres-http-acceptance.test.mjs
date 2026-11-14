@@ -6,6 +6,7 @@ import { createServer as createTcpServer } from "node:net"
 import { createServer as createHttpServer } from "node:http"
 import { createHmac } from "node:crypto"
 import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 import pg from "pg"
@@ -89,6 +90,26 @@ INSERT INTO external_discovery_results(id,search_id,provider,provider_result_id,
 VALUES (99507,${intakeSearchId},'coresignal','fictional-separate-race','Fictional Separate Race','Unknown','Unknown','Unknown','Other','Unknown/Unclassified','Unknown','Possible duplicate','99507001','https://www.linkedin.com/in/fictional-separate-race/'),
 (99508,${intakeSearchId},'coresignal','fictional-separate-rollback','Fictional Separate Rollback','Unknown','Unknown','Unknown','Other','Unknown/Unclassified','Unknown','Possible duplicate','99508001','https://www.linkedin.com/in/fictional-separate-rollback/');
 `
+// Approved 2026-11-15 Discovery review actions (link_existing, approve, apply_updates) and
+// Enrichment apply_refresh on PostgreSQL. All records are fictional.
+const reviewActionsFixtureSql = `
+INSERT INTO alumni(id,profile_key,name,initials,batch,graduation_year,programme,company,title,"function",seniority,location,intake_status,email,linkedin_url)
+VALUES (99520,'step3c:link-target','Fictional Link Target','FL',2020,2020,'PGP','Fictional Link Co','Manager','Finance','Manager','Mumbai','VERIFIED','fictional.link@example.test','https://www.linkedin.com/in/fictional-link-race/'),
+(99521,'step3c:refresh-target','Fictional Refresh Target','FR',2019,2019,'PGP','Fictional Old Co','Analyst','Finance','Analyst/Junior','Delhi','VERIFIED','fictional.refresh@example.test','');
+INSERT INTO external_discovery_results(id,search_id,provider,provider_result_id,name,education,current_company,role,"function",seniority,location,match_status,provider_person_id,linkedin_url)
+VALUES (99511,${intakeSearchId},'coresignal','fictional-approve-race','Fictional Approve Race','Unknown','Unknown','Unknown','Other','Unknown/Unclassified','Unknown','New','99511001','https://www.linkedin.com/in/fictional-approve-race/'),
+(99512,${intakeSearchId},'coresignal','fictional-link-race','Fictional Link Target','Unknown','Unknown','Unknown','Other','Unknown/Unclassified','Unknown','Possible duplicate','99512001','https://www.linkedin.com/in/fictional-link-race/');
+INSERT INTO provider_response_history(id,provider,alumnus_id,alumnus_name,operation,mode,status) VALUES (99530,'coresignal',99521,'Fictional Refresh Target','Profile Refresh','mock','success');
+INSERT INTO provider_refresh_reviews(id,provider_response_id,alumnus_id,proposed_changes_json,status,requested_by)
+VALUES (99531,99530,99521,'[{"field":"company","oldValue":"Fictional Old Co","newValue":"Fictional New Co"},{"field":"location","oldValue":"Delhi","newValue":"Pune"}]','Pending review','Fictional Requester'),
+(99532,99530,99521,'[{"field":"title","oldValue":"Stale Title","newValue":"Fictional Director"}]','Pending review','Fictional Requester');
+`
+const urlEvidenceBody = (resultId, url) => {
+  const body = evidenceBody(resultId)
+  body.observation.sourceUrl = url
+  body.observation.profileUrl = url
+  return body
+}
 const separateEvidenceBody = (resultId, suffix) => {
   const body = evidenceBody(resultId)
   const url = `https://www.linkedin.com/in/fictional-separate-${suffix}/`
@@ -104,6 +125,7 @@ const evidenceBody = (resultId, decision = "MATCH", reason = "Fictional public s
 let postgresDiscoveryEvidenceSnapshot
 let postgresDiscoveryIgnoreSnapshot
 let postgresKeepSeparateSnapshot
+let postgresSearchSnapshot
 let postgresDiscoveryEvidenceInvalidSnapshot
 let postgresDiscoveryPlanSnapshot
 let postgresSearchPreflightSnapshot
@@ -2140,11 +2162,13 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
         await pool.query("DROP FUNCTION batch1_reject_workspace_import_audit()")
       }
     })
-    await t.test("legacy workspace later-row failure rolls back PostgreSQL import", async () => {
+    await t.test("legacy workspace later-row collision rolls back atomically with D1's 400 status", async () => {
+      // Approved 2026-11-15: atomic rollback + 400 (D1 keeps earlier rows and returns raw constraint text).
       const failed = await http("/api/workspace", { cookie: admin.cookie, method: "POST", body: workspacePartialFailureBody })
-      assert.deepEqual({ status: failed.status, body: failed.body }, { status: 500, body: { error: "Database operation failed." } })
-      const state = await pool.query("SELECT count(*)::integer AS n FROM alumni WHERE profile_key LIKE 'fictional-workspace-partial-%'")
-      assert.equal(state.rows[0].n, 0)
+      assert.deepEqual({ status: failed.status, body: failed.body }, { status: 400, body: { error: "An imported row conflicts with an existing alumnus record. No records were imported; review the file and validate again." } })
+      assert.doesNotMatch(JSON.stringify(failed.body), /constraint|unique|duplicate key|alumni_/i)
+      const state = await pool.query("SELECT (SELECT count(*)::integer FROM alumni WHERE profile_key LIKE 'fictional-workspace-partial-%') AS people, (SELECT count(*)::integer FROM import_runs WHERE filename='workspace-partial-failure.csv') AS runs, (SELECT count(*)::integer FROM activity_log WHERE entity_id='workspace-partial-failure.csv') AS activity, (SELECT count(*)::integer FROM security_audit_events WHERE action='alumni_imported' AND entity_id='workspace-partial-failure.csv') AS audits")
+      assert.deepEqual(state.rows[0], { people: 0, runs: 0, activity: 0, audits: 0 })
     })
 
     const profilePatch = (cookie, body, key = "") => http("/api/alumni/1", { method: "PATCH", cookie, body, key })
@@ -2628,24 +2652,44 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
       }
     })
 
-    await t.test("Admin pre-authorization correction fails closed pending D1 concurrency parity", async () => {
+    await t.test("Admin pre-authorization correction keeps the D1 contract with one concurrent winner", async () => {
+      // Approved 2026-11-15: the losing concurrent request gets a sanitized 409 and writes no audit
+      // (D1 returns 200/200 or 200/404 and can write a second success audit).
       await pool.query(userCorrectionFixtureSql)
+      const post = (cookie, body) => http("/api/admin", { cookie, method: "POST", body })
       const body = { action: "correct_pre_authorization", userId: 99850, correctUserId: 99851, confirmation: "CORRECT USER 99850" }
-      assert.equal((await http("/api/admin", { method: "POST", body })).status, 401)
-      assert.equal((await http("/api/admin", { cookie: pcom.cookie, method: "POST", body })).status, 403)
-      const blocked = await http("/api/admin", { cookie: admin.cookie, method: "POST", body })
-      assert.deepEqual({ status: blocked.status, body: blocked.body }, { status: 501, body: { error: "Pre-authorization correction is pending PostgreSQL concurrency parity review." } })
-      const state = await pool.query("SELECT (SELECT count(*)::integer FROM application_users WHERE id=99850) AS duplicate,(SELECT count(*)::integer FROM application_users WHERE id=99851) AS correct,(SELECT count(*)::integer FROM security_audit_events WHERE action='user_pre_authorization_corrected' AND entity_id='99850') AS audits")
-      assert.deepEqual(state.rows[0], { duplicate: 1, correct: 1, audits: 0 })
+      assert.equal((await post(undefined, body)).status, 401)
+      assert.equal((await post(pcom.cookie, body)).status, 403)
+      assert.equal((await post(admin.cookie, { ...body, confirmation: "" })).status, 409)
+      assert.equal((await post(admin.cookie, { ...body, userId: 1, confirmation: "CORRECT USER 1" })).status, 409)
+      assert.equal((await post(admin.cookie, { ...body, userId: 99855, correctUserId: 99856, confirmation: "CORRECT USER 99855" })).status, 409)
+      assert.equal((await post(admin.cookie, { ...body, correctUserId: 99999 })).status, 404)
+      assert.deepEqual(await post(admin.cookie, { action: "correct_pre_authorization", userId: "99850" }).then(result => [result.status, result.body]), [400, { error: "Unsupported administration action." }])
+      const corrected = await post(admin.cookie, body)
+      assert.deepEqual({ status: corrected.status, body: corrected.body }, { status: 200, body: { corrected: true, deletedUserId: 99850, correctUserId: 99851 } })
+      assert.equal((await post(admin.cookie, body)).status, 404)
+      const concurrentBody = { action: "correct_pre_authorization", userId: 99852, correctUserId: 99854, confirmation: "CORRECT USER 99852" }
+      const concurrent = await Promise.all([post(admin.cookie, concurrentBody), post(admin.cookie, concurrentBody)])
+      assert.deepEqual(concurrent.map(result => result.status).sort(), [200, 409])
+      const loser = concurrent.find(result => result.status === 409)
+      assert.deepEqual(loser.body, { error: "This pre-authorization was already corrected by a concurrent request." })
+      const state = await pool.query("SELECT (SELECT count(*)::integer FROM application_users WHERE id IN (99850,99852)) AS duplicates,(SELECT count(*)::integer FROM application_users WHERE id IN (99851,99854)) AS correct,(SELECT count(*)::integer FROM security_audit_events WHERE action='user_pre_authorization_corrected' AND entity_id='99850') AS first_audits,(SELECT count(*)::integer FROM security_audit_events WHERE action='user_pre_authorization_corrected' AND entity_id='99852') AS race_audits")
+      assert.deepEqual(state.rows[0], { duplicates: 0, correct: 2, first_audits: 1, race_audits: 1 })
     })
 
     await t.test("retained Collect review preflight reads PostgreSQL without attaching identity", async () => {
       await pool.query(collectReviewFixtureSql)
       postgresCollectReviewSnapshot = await collectReviewPreflightContract(base, admin.cookie, pcom.cookie)
-      const confirmed = await http("/api/admin/coresignal-collect-review", { cookie: admin.cookie, method: "POST", body: { collectHistoryId: 99901, alumnusId: 99900, confirmed: true, identityReviewed: true, educationReviewed: true } })
-      assert.deepEqual({ status: confirmed.status, body: confirmed.body }, { status: 500, body: { error: "Database operation failed." } })
-      const unchanged = await pool.query("SELECT (SELECT coresignal_employee_id FROM alumni WHERE id=99900) AS employee_id,(SELECT alumnus_id FROM provider_response_history WHERE id=99901) AS history_alumnus,(SELECT count(*)::integer FROM security_audit_events WHERE action='coresignal_collect_identity_approved' AND entity_id='99901') AS audits")
-      assert.deepEqual(unchanged.rows[0], { employee_id: "", history_alumnus: null, audits: 0 })
+      // Approved 2026-11-15: intended identity attachment on PostgreSQL (the D1 identity store fails SQL compilation).
+      const confirmPost = () => http("/api/admin/coresignal-collect-review", { cookie: admin.cookie, method: "POST", body: { collectHistoryId: 99901, alumnusId: 99900, confirmed: true, identityReviewed: true, educationReviewed: true } })
+      assert.equal((await http("/api/admin/coresignal-collect-review", { cookie: admin.cookie, method: "POST", body: { collectHistoryId: 99901, alumnusId: 99900, confirmed: true } })).status, 400)
+      const confirmed = await confirmPost()
+      assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body))
+      assert.deepEqual({ associated: confirmed.body.associatedAlumnusId, outcome: confirmed.body.decision.outcome, wrote: confirmed.body.decision.wroteIdentity, providerCalls: confirmed.body.providerCalls }, { associated: 99900, outcome: "ATTACHED_PROVIDER_ID", wrote: true, providerCalls: 0 })
+      const replay = await confirmPost()
+      assert.deepEqual({ status: replay.status, outcome: replay.body.decision?.outcome, wrote: replay.body.decision?.wroteIdentity }, { status: 200, outcome: "KNOWN_PROVIDER_ID", wrote: false })
+      const attached = await pool.query("SELECT (SELECT coresignal_employee_id FROM alumni WHERE id=99900) AS employee_id,(SELECT alumnus_id FROM provider_response_history WHERE id=99901) AS history_alumnus,(SELECT count(*)::integer FROM field_change_history WHERE alumnus_id=99900 AND field='coresignalEmployeeId') AS identity_history,(SELECT count(*)::integer FROM security_audit_events WHERE action='coresignal_collect_identity_approved' AND entity_id='99901') AS audits")
+      assert.deepEqual(attached.rows[0], { employee_id: collectReviewEvidence.returnedEmployeeId, history_alumnus: 99900, identity_history: 1, audits: 2 })
       await pool.query("ALTER TABLE provider_response_history RENAME TO fictional_collect_review_history_unavailable")
       try {
         const failed = await http("/api/admin/coresignal-collect-review", { cookie: admin.cookie, method: "POST", body: { collectHistoryId: 99901, alumnusId: 99900 } })
@@ -2831,6 +2875,57 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
         await pool.query("DROP TRIGGER reject_keep_separate_audit ON security_audit_events")
         await pool.query("DROP FUNCTION reject_keep_separate_audit()")
       }
+    })
+
+    await t.test("approved Discovery review actions and profile refresh run atomically on PostgreSQL", async () => {
+      await pool.query(reviewActionsFixtureSql)
+      const discovery = (cookie, body) => http("/api/discovery", { cookie, method: "POST", body })
+      for (const [resultId, url] of [[99511, "https://www.linkedin.com/in/fictional-approve-race/"], [99512, "https://www.linkedin.com/in/fictional-link-race/"]]) {
+        const recorded = await discovery(pcom.cookie, urlEvidenceBody(resultId, url))
+        assert.equal(recorded.status, 201, JSON.stringify(recorded.body))
+      }
+      // approve: authorization, validation, one concurrent winner, single audit pair.
+      assert.equal((await discovery(undefined, { action: "approve", resultIds: [99511] })).status, 401)
+      assert.deepEqual(await discovery(pcom.cookie, { action: "approve", resultIds: [] }).then(result => [result.status, result.body]), [400, { error: "Select at least one confirmed degree alumnus." }])
+      const approvals = await Promise.all([discovery(pcom.cookie, { action: "approve", resultIds: [99511] }), discovery(pcom.cookie, { action: "approve", resultIds: [99511] })])
+      assert.deepEqual(approvals.map(result => result.status).sort(), [201, 409], JSON.stringify(approvals.map(result => result.body)))
+      const approved = approvals.find(result => result.status === 201).body
+      assert.deepEqual({ count: approved.addedCount, resultId: approved.added[0].resultId, outcome: approved.added[0].identityOutcome }, { count: 1, resultId: 99511, outcome: "NEW_VERIFIED_CANDIDATE" })
+      const { rows: [approveState] } = await pool.query("SELECT (SELECT count(*)::integer FROM alumni WHERE profile_key='coresignal:99511001') AS people,(SELECT count(*)::integer FROM external_discovery_results WHERE id=99511 AND review_status<>'Pending review' AND linked_internal_alumnus_id IS NOT NULL) AS reviewed,(SELECT count(*)::integer FROM security_audit_events WHERE action='external_candidate_approved' AND entity_id='99511') AS audits,(SELECT count(*)::integer FROM security_audit_events WHERE action='coresignal_results_approved') AS batch_audits")
+      assert.deepEqual(approveState, { people: 1, reviewed: 1, audits: 1, batch_audits: 1 })
+      // link_existing: exact LinkedIn match attaches the provider ID once; the race loser writes nothing.
+      const links = await Promise.all([discovery(pcom.cookie, { action: "link_existing", resultId: 99512 }), discovery(pcom.cookie, { action: "link_existing", resultId: 99512 })])
+      assert.deepEqual(links.map(result => result.status).sort(), [200, 409], JSON.stringify(links.map(result => result.body)))
+      assert.deepEqual(links.find(result => result.status === 200).body, { alumnusId: 99520, identityOutcome: "ATTACHED_PROVIDER_ID" })
+      assert.deepEqual(links.find(result => result.status === 409).body, { error: "This discovery result was already linked or changed concurrently." })
+      const { rows: [linkState] } = await pool.query("SELECT (SELECT coresignal_employee_id FROM alumni WHERE id=99520) AS employee_id,(SELECT linked_internal_alumnus_id FROM external_discovery_results WHERE id=99512) AS linked,(SELECT count(*)::integer FROM field_change_history WHERE alumnus_id=99520 AND field='coresignalEmployeeId') AS identity_history,(SELECT count(*)::integer FROM security_audit_events WHERE action='external_candidate_identity_linked' AND entity_id='99512') AS audits,(SELECT count(*)::integer FROM security_audit_events WHERE action='coresignal_identity_reconciled' AND entity_id='99520') AS identity_audits")
+      assert.deepEqual(linkState, { employee_id: "99512001", linked: 99520, identity_history: 1, audits: 1, identity_audits: 1 })
+      // apply_updates: unverified fields are refused; a verified identity field is reviewed once.
+      assert.deepEqual(await discovery(pcom.cookie, { action: "apply_updates", resultId: 99512, fields: ["company"] }).then(result => [result.status, result.body]), [409, { error: "Only independently verified selected fields can be applied to an existing alumnus. Provider-only values remain review evidence." }])
+      const applies = await Promise.all([discovery(pcom.cookie, { action: "apply_updates", resultId: 99512, fields: ["coresignalEmployeeId", "linkedinUrl"] }), discovery(pcom.cookie, { action: "apply_updates", resultId: 99512, fields: ["coresignalEmployeeId", "linkedinUrl"] })])
+      assert.deepEqual(applies.map(result => result.status).sort(), [200, 409], JSON.stringify(applies.map(result => result.body)))
+      assert.deepEqual(applies.find(result => result.status === 200).body, { alumnusId: 99520, changedFields: [] })
+      const { rows: [applyState] } = await pool.query("SELECT (SELECT review_status FROM external_discovery_results WHERE id=99512) AS review,(SELECT count(*)::integer FROM security_audit_events WHERE action='professional_profile_update_approved' AND entity_id='99520') AS audits")
+      assert.deepEqual(applyState, { review: "Reviewed — kept existing", audits: 1 })
+      // apply_refresh: stale evidence is refused; selected fields apply once with history; forced audit failure rolls back.
+      const enrichment = body => http("/api/enrichment", { cookie: pcom.cookie, method: "POST", body })
+      assert.deepEqual(await enrichment({ action: "apply_refresh", reviewId: 99532, fields: ["title"] }).then(result => [result.status, result.body.code]), [409, "STALE_PROFESSIONAL_REVIEW"])
+      await pool.query("CREATE FUNCTION reject_refresh_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='professional_profile_update_approved' AND NEW.entity_id='99521' THEN RAISE EXCEPTION 'fictional refresh audit failure'; END IF; RETURN NEW; END $$")
+      await pool.query("CREATE TRIGGER reject_refresh_audit BEFORE INSERT ON security_audit_events FOR EACH ROW EXECUTE FUNCTION reject_refresh_audit()")
+      try {
+        const failed = await enrichment({ action: "apply_refresh", reviewId: 99531, fields: ["company", "location"] })
+        assert.deepEqual({ status: failed.status, body: failed.body }, { status: 500, body: { error: "Database operation failed." } })
+        const { rows: [rolledBack] } = await pool.query("SELECT (SELECT company FROM alumni WHERE id=99521) AS company,(SELECT status FROM provider_refresh_reviews WHERE id=99531) AS status,(SELECT count(*)::integer FROM field_change_history WHERE alumnus_id=99521) AS history")
+        assert.deepEqual(rolledBack, { company: "Fictional Old Co", status: "Pending review", history: 0 })
+      } finally {
+        await pool.query("DROP TRIGGER reject_refresh_audit ON security_audit_events")
+        await pool.query("DROP FUNCTION reject_refresh_audit()")
+      }
+      const refreshes = await Promise.all([enrichment({ action: "apply_refresh", reviewId: 99531, fields: ["company", "location"] }), enrichment({ action: "apply_refresh", reviewId: 99531, fields: ["company", "location"] })])
+      assert.deepEqual(refreshes.map(result => result.status).sort(), [200, 409], JSON.stringify(refreshes.map(result => result.body)))
+      assert.deepEqual(refreshes.find(result => result.status === 200).body, { applied: ["company", "location"], alumnusId: 99521 })
+      const { rows: [refreshState] } = await pool.query("SELECT company,location,(SELECT status FROM provider_refresh_reviews WHERE id=99531) AS status,(SELECT count(*)::integer FROM field_change_history WHERE alumnus_id=99521) AS history,(SELECT count(*)::integer FROM security_audit_events WHERE action='professional_profile_update_approved' AND entity_id='99521') AS audits FROM alumni WHERE id=99521")
+      assert.deepEqual(refreshState, { company: "Fictional New Co", location: "Pune", status: "Applied", history: 2, audits: 1 })
     })
 
     await t.test("mock webhook renewal and stop preserve state, audit and rollback", async () => {
@@ -3160,6 +3255,81 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
       const setLimit = async value => pool.query("UPDATE provider_settings SET monthly_credit_limit=$1 WHERE provider='coresignal'", [value])
       try { postgresCollectMockExecutionSnapshot = await collectMockExecutionContract(base, admin.cookie, pcom.cookie, readRows, auditFailure, settlementFailure, claimFailure, setLimit) }
       finally { await pool.query("UPDATE provider_settings SET monthly_credit_limit=50 WHERE provider='coresignal'") }
+    })
+
+    await t.test("mock External Discovery search stores results atomically on PostgreSQL", async () => {
+      const discovery = (cookie, body) => http("/api/discovery", { cookie, method: "POST", body })
+      const searchBody = { action: "search", filters: {}, limit: 5, confirmed: false }
+      assert.equal((await discovery(undefined, searchBody)).status, 401)
+      // The credit fixture intentionally exhausts most of the Coresignal allowance (the 429 path is
+      // covered elsewhere); give this subtest headroom and restore the fixture limit afterwards.
+      const { rows: [{ monthly_credit_limit: fixtureLimit }] } = await pool.query("SELECT monthly_credit_limit FROM provider_settings WHERE provider='coresignal'")
+      await pool.query("UPDATE provider_settings SET monthly_credit_limit=100000 WHERE provider='coresignal'")
+      try {
+      const counts = async () => (await pool.query("SELECT (SELECT count(*)::integer FROM external_discovery_searches) AS searches,(SELECT count(*)::integer FROM external_discovery_results) AS results,(SELECT count(*)::integer FROM provider_response_history WHERE operation='Education affiliation search') AS history,(SELECT count(*)::integer FROM security_audit_events WHERE action='coresignal_discovery_run') AS audits")).rows[0]
+      const before = await counts()
+      const searched = await discovery(admin.cookie, searchBody)
+      assert.equal(searched.status, 200, JSON.stringify(searched.body))
+      postgresSearchSnapshot = { returned: searched.body.returnedCount, stored: searched.body.storedResultCount, units: searched.body.applicationUnits, keys: Object.keys(searched.body).sort() }
+      assert.ok(searched.body.returnedCount > 0 && searched.body.storedResultCount > 0, JSON.stringify(postgresSearchSnapshot))
+      assert.deepEqual(await counts(), { searches: before.searches + 1, results: before.results + searched.body.storedResultCount, history: before.history + 1, audits: before.audits + 1 })
+      const { rows: [linked] } = await pool.query("SELECT (SELECT count(*)::integer FROM external_discovery_results WHERE search_id=$1) AS results,(SELECT count(*)::integer FROM provider_response_history WHERE search_id=$1 AND status='success' AND mode='mock') AS history", [searched.body.searchId])
+      assert.deepEqual(linked, { results: searched.body.storedResultCount, history: 1 })
+      // A failed audit rolls back the search, its results and its provider history.
+      await pool.query("CREATE FUNCTION reject_discovery_run_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='coresignal_discovery_run' THEN RAISE EXCEPTION 'fictional discovery audit failure'; END IF; RETURN NEW; END $$")
+      await pool.query("CREATE TRIGGER reject_discovery_run_audit BEFORE INSERT ON security_audit_events FOR EACH ROW EXECUTE FUNCTION reject_discovery_run_audit()")
+      try {
+        const settled = await counts()
+        const failed = await discovery(admin.cookie, searchBody)
+        assert.deepEqual({ status: failed.status, body: failed.body }, { status: 500, body: { error: "Database operation failed." } })
+        assert.deepEqual(await counts(), settled)
+      } finally {
+        await pool.query("DROP TRIGGER reject_discovery_run_audit ON security_audit_events")
+        await pool.query("DROP FUNCTION reject_discovery_run_audit()")
+      }
+      // continue_search keeps D1's gate responses instead of failing at the D1 handle.
+      assert.deepEqual(await discovery(pcom.cookie, { action: "continue_search", searchId: searched.body.searchId, page: 2, confirmed: true }).then(result => [result.status, result.body.reason]), [403, "admin_required"])
+      assert.deepEqual(await discovery(admin.cookie, { action: "continue_search", searchId: searched.body.searchId, page: 2, confirmed: true }).then(result => [result.status, result.body.reason, result.body.providerCallMade]), [403, "preview_unavailable", false])
+      } finally {
+        await pool.query("UPDATE provider_settings SET monthly_credit_limit=$1 WHERE provider='coresignal'", [fixtureLimit])
+      }
+    })
+
+    await t.test("mock dataset preview and removal keep the Admin contract on PostgreSQL", async () => {
+      const adminPost = (cookie, body) => http("/api/admin", { cookie, method: "POST", body })
+      assert.equal((await adminPost(undefined, { action: "preview_mock_cleanup" })).status, 401)
+      assert.equal((await adminPost(pcom.cookie, { action: "preview_mock_cleanup" })).status, 403)
+      const preview = await adminPost(admin.cookie, { action: "preview_mock_cleanup" })
+      if (preview.status !== 200) await writeFile(join(tmpdir(), "cn-cleanup-preview-server.log"), childLog)
+      assert.equal(preview.status, 200, `${JSON.stringify(preview.body)}
+server log tail:
+${childLog.slice(-1500)}`)
+      assert.deepEqual(Object.keys(preview.body).sort(), ["foreignKeys", "integrity", "inventory"])
+      assert.deepEqual({ integrity: preview.body.integrity, foreignKeys: preview.body.foreignKeys }, { integrity: [{ integrity_check: "ok" }], foreignKeys: [] })
+      assert.ok(Array.isArray(preview.body.inventory.ambiguous) && preview.body.inventory.counts && preview.body.inventory.ids)
+      assert.deepEqual(await adminPost(admin.cookie, { action: "remove_mock_dataset", confirmation: "" }).then(result => [result.status, result.body]), [409, { error: "Type CLEANUP to confirm." }])
+      const before = (await pool.query("SELECT (SELECT count(*)::integer FROM alumni) AS alumni,(SELECT count(*)::integer FROM security_audit_events WHERE action='mock_dataset_removed') AS audits")).rows[0]
+      const removed = await adminPost(admin.cookie, { action: "remove_mock_dataset", confirmation: "CLEANUP" })
+      const after = (await pool.query("SELECT (SELECT count(*)::integer FROM alumni) AS alumni,(SELECT count(*)::integer FROM security_audit_events WHERE action='mock_dataset_removed') AS audits")).rows[0]
+      if (preview.body.inventory.ambiguous.length) {
+        // D1 contract: ambiguous records stop the cleanup before any write.
+        assert.deepEqual({ status: removed.status, error: removed.body.error }, { status: 409, error: "Cleanup stopped because ambiguous records require review." })
+        assert.deepEqual(after, before)
+      } else {
+        // The cleanup inventory (unchanged from D1) predates 17 foreign keys from newer tables
+        // (evidence, intakes, webhook identities, opportunities, ...). When such rows reference the
+        // dataset, the delete cannot succeed on either backend; PostgreSQL rolls back atomically.
+        if (removed.status === 500) {
+          assert.deepEqual(removed.body, { error: "Database operation failed." })
+          assert.deepEqual(after, before)
+          return
+        }
+        assert.equal(removed.status, 200, JSON.stringify(removed.body))
+        assert.equal(removed.body.final.alumni, after.alumni)
+        assert.equal(before.alumni - after.alumni, removed.body.removed.alumni)
+        assert.deepEqual({ integrity: removed.body.final.integrity, foreignKeys: removed.body.final.foreignKeys }, { integrity: [{ integrity_check: "ok" }], foreignKeys: [] })
+        assert.equal(after.audits, before.audits + 1)
+      }
     })
 
     await t.test("connection failure returns 5xx without SQL text or D1 fallback", async () => {
@@ -3749,6 +3919,17 @@ test("D1 Admin programme route retains the same HTTP contract on a separate disp
     try { d1CollectMockExecution = await collectMockExecutionContract(origin, admin.cookie, pcom.cookie, readCollectRows, collectAuditFailure, collectSettlementFailure, collectClaimFailure, setCollectLimit) }
     finally { await run(process.execPath, [wrangler, "d1", "execute", ...d1Args, "--command", "UPDATE provider_settings SET monthly_credit_limit=50 WHERE provider='coresignal'", "--yes"], { cwd: root, maxBuffer: 8 * 1024 * 1024 }) }
     assert.deepEqual(d1CollectMockExecution, postgresCollectMockExecutionSnapshot)
+    if (postgresSearchSnapshot) {
+      // Same mock External Discovery search on D1: identical counts and response fields.
+      const d1Limit = async value => run(process.execPath, [wrangler, "d1", "execute", ...d1Args, "--command", `UPDATE provider_settings SET monthly_credit_limit=${value} WHERE provider='coresignal'`], { cwd: root, maxBuffer: 8 * 1024 * 1024 })
+      const { stdout: limitJson } = await run(process.execPath, [wrangler, "d1", "execute", ...d1Args, "--command", "SELECT monthly_credit_limit FROM provider_settings WHERE provider='coresignal'", "--json"], { cwd: root, maxBuffer: 8 * 1024 * 1024 })
+      const d1FixtureLimit = JSON.parse(limitJson)[0].results[0]?.monthly_credit_limit ?? 50
+      await d1Limit(100000)
+      let d1Search
+      try { d1Search = await http("/api/discovery", { origin, cookie: admin.cookie, method: "POST", body: { action: "search", filters: {}, limit: 5, confirmed: false } }) } finally { await d1Limit(d1FixtureLimit) }
+      assert.equal(d1Search.status, 200, JSON.stringify(d1Search.body))
+      assert.deepEqual({ returned: d1Search.body.returnedCount, stored: d1Search.body.storedResultCount, units: d1Search.body.applicationUnits, keys: Object.keys(d1Search.body).sort() }, postgresSearchSnapshot)
+    }
   } catch (error) {
     if (childLog) console.error("Step 3C D1 app log tail:\n", childLog)
     throw error

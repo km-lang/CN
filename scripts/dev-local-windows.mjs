@@ -17,7 +17,11 @@ const host = "127.0.0.1"
 const portArgument = process.argv.find(argument => argument.startsWith("--port="))
 const port = portArgument ? Number(portArgument.slice("--port=".length)) : 3000
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("--port must be a whole number from 1024 to 65535.")
-const origin = `http://localhost:${port}`
+// --coresignal-live opts into REAL, PAID Coresignal External Discovery (ES-DSL Preview only; Collect,
+// Lusha, Bright Data and mail stay off). It mirrors the package's approved
+// dev:local:coresignal-exact-year-live recipe and needs CORESIGNAL_API_KEY in .env.local.
+const coresignalLive = process.argv.includes("--coresignal-live")
+const origin = coresignalLive ? `http://127.0.0.1:${port}` : `http://localhost:${port}`
 const backend = process.env.CN_DB_BACKEND?.trim() || "postgres"
 if (backend !== "postgres" && backend !== "d1") throw new Error("CN_DB_BACKEND must be either postgres or d1.")
 if (process.env.DATABASE_URL?.trim()) throw new Error("Unset DATABASE_URL. The local launcher never connects to a hosted database.")
@@ -83,6 +87,28 @@ delete environment.DATABASE_URL
 delete environment.DATABASE_URL_UNPOOLED
 delete environment.CN_PG_LOCAL_TEST_ENABLED
 delete environment.CN_PG_LOCAL_TEST_SOCKET
+if (coresignalLive) {
+  // Only the key's presence is checked; its value is never printed or read here.
+  let keyPresent = Boolean(process.env.CORESIGNAL_API_KEY?.trim())
+  try { keyPresent ||= /^CORESIGNAL_API_KEY=\s*\S+/m.test(await readFile(join(root, ".env.local"), "utf8")) } catch { /* no .env.local */ }
+  if (!keyPresent) throw new Error("--coresignal-live needs CORESIGNAL_API_KEY in .env.local (your paid Coresignal key).")
+  Object.assign(environment, {
+    LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: "true",
+    LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
+    CORESIGNAL_LIVE_ENABLED: "true",
+    CORESIGNAL_SEARCH_ENABLED: "true",
+    LOCAL_CORESIGNAL_SEARCH_ENABLED: "true",
+    CORESIGNAL_ES_DSL_PREVIEW_ENABLED: "true",
+    // Account-owner attestation that the paid plan includes Base Employee ES-DSL Preview.
+    CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT: "confirmed",
+    CORESIGNAL_COLLECT_ENABLED: "false",
+    CORESIGNAL_COLLECT_ENTITLEMENT: "unknown",
+    CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: process.env.CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?.trim() || "1",
+    CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
+  })
+  delete environment.CORESIGNAL_API_KEY // taken from .env.local by Vite; never placed on the command line
+  console.warn("LIVE CORESIGNAL ENABLED: each Discover search makes one paid ES-DSL Preview request (about 20 search credits per page by the vendor workbook; the actual debit is unverified). Admin confirmation is required per search; Collect stays off.")
+}
 
 async function run(entry, args) {
   await new Promise((resolve, reject) => {

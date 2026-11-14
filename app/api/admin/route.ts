@@ -226,7 +226,18 @@ export async function POST(request: Request) {
       }
     }
     if (selectedDatabaseBackend() === "postgres" && payload.action === "correct_pre_authorization") {
-      return Response.json({ error: "Pre-authorization correction is pending PostgreSQL concurrency parity review." }, { status: 501 })
+      // Same fall-through as D1 when the ids are not integers.
+      if (!Number.isInteger(payload.userId) || !Number.isInteger(payload.correctUserId)) return Response.json({ error: "Unsupported administration action." }, { status: 400 })
+      const { postgresCorrectPreAuthorization } = await import("@/lib/postgres-admin-preauth-correction")
+      return await postgresCorrectPreAuthorization(payload, context)
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "preview_mock_cleanup") {
+      const { postgresPreviewMockCleanup } = await import("@/lib/postgres-admin-mock-cleanup")
+      return await postgresPreviewMockCleanup()
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "remove_mock_dataset") {
+      const { postgresRemoveMockDataset } = await import("@/lib/postgres-admin-mock-cleanup")
+      return await postgresRemoveMockDataset(payload.confirmation, context)
     }
     if (selectedDatabaseBackend() === "postgres" && payload.action === "anonymize_alumnus") {
       const { postgresAnonymizeAlumnus } = await import("@/lib/postgres-admin-anonymize")

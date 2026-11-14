@@ -357,7 +357,8 @@ export async function POST(request: Request) {
       const { postgresIgnoreDiscoveryResult } = await import("@/lib/postgres-discovery-ignore")
       return await postgresIgnoreDiscoveryResult(payload.resultId!, payload.reason, context)
     }
-    if (payload.action === "keep_separate" && Number.isInteger(payload.resultId) && selectedDatabaseBackend() === "postgres" && process.env.CN_PG_LOCAL_TEST_ENABLED === "true") {
+    // Approved 2026-11-15: a losing concurrent request gets a sanitized 409 (D1 raised a raw 500).
+    if (payload.action === "keep_separate" && Number.isInteger(payload.resultId) && selectedDatabaseBackend() === "postgres") {
       const { getPostgresDb } = await import("@/db/postgres/adapter")
       const { alumni: people, externalDiscoveryCandidateEvidence: evidenceTable, externalDiscoveryResults: results, externalDiscoverySearches: searches, securityAuditEvents: audits } = await import("@/db/postgres/schema")
       return await getPostgresDb().transaction(async tx => {
@@ -376,6 +377,273 @@ export async function POST(request: Request) {
         await tx.insert(audits).values({ actorUserId: context.userId, actorIdentity: context.externalIdentity, actorName: actor, actorRole: context.role, action: "possible_duplicate_kept_separate", entityType: "discovery_result", entityId: String(result.id), metadataJson: safeAuditMetadata({ evidenceId: evidence.id, identityMethod: "NEW_PROVIDER_ID_AND_REVIEWED_LINKEDIN" }), result: "success", source: "application" })
         return Response.json({ alumnusId: created.id }, { status: 201 })
       })
+    }
+    // External Discovery on PostgreSQL (approved 2026-11-15, including live Coresignal). The D1
+    // handle below would fail closed before these actions could answer, so they are dispatched
+    // here. Gates, provider calls, accounting and responses mirror the D1 branches; PostgreSQL
+    // commits each successful run's search, results, history and audit together.
+    if ((payload.action === "search" || payload.action === "continue_search") && selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { writePostgresSecurityAudit } = await import("@/lib/postgres-security")
+      const { postgresProviderCompanyMappingStore } = await import("@/lib/postgres-provider-company-mapping-store")
+      const pgSchema = await import("@/db/postgres/schema")
+      const { alumni: people, externalDiscoveryResults: results, externalDiscoverySearches: searches, providerResponseHistory: history, providerSettings: settingsTable } = pgSchema
+      const pgDb = getPostgresDb()
+      const auditDb = (handle: unknown) => handle as Parameters<typeof writePostgresSecurityAudit>[0]
+      const remainingUnits = async () => {
+        await pgDb.insert(settingsTable).values({ provider: PROFESSIONAL_DATA_PROVIDER, monthlyCreditLimit: DEFAULT_APPLICATION_LIMIT }).onConflictDoNothing()
+        const [settings] = await pgDb.select().from(settingsTable).where(eq(settingsTable.provider, PROFESSIONAL_DATA_PROVIDER)).limit(1)
+        const [usage] = await pgDb.select({ used: sql<number>`coalesce(sum(${history.applicationUnits}), 0)` }).from(history).where(and(eq(history.provider, PROFESSIONAL_DATA_PROVIDER), sql`${history.createdAt} >= ${monthStart()}`))
+        return Math.max(0, (settings?.monthlyCreditLimit ?? DEFAULT_APPLICATION_LIMIT) - Number(usage?.used ?? 0))
+      }
+      const resolveCompany = async (filters: DiscoveryFilters, label: string) => {
+        let companyId: number | undefined; let companyName: string | undefined; let companyIdentityMode: "VERIFIED_ID" | "EXACT_NAME" | undefined; let expectedCompanyUrl: string | undefined
+        if (filters.company) {
+          const mapping = await resolveProviderCompanySelection(filters.company, filters.companySelectionKey, "Coresignal", postgresProviderCompanyMappingStore())
+          if (mapping.state === "CONFLICT" || (filters.companySelectionKey && mapping.state === "MISSING")) return { blocked: Response.json({ error: `${label} blocked: ${mapping.reason}`, blocked: true, reason: "company_mapping_conflict", filters, effectiveLimit: 0, providerCallMade: false, applicationUnits: 0 }, { status: 409 }) }
+          if (mapping.mapping) filters.company = mapping.displayName
+          if (mapping.state === "VERIFIED" && mapping.providerCompanyId !== null) { companyId = mapping.providerCompanyId; companyIdentityMode = "VERIFIED_ID"; expectedCompanyUrl = mapping.mapping?.providerCompanyUrl || undefined }
+          else { companyName = filters.company; companyIdentityMode = "EXACT_NAME" }
+        }
+        return { companyId, companyName, companyIdentityMode, expectedCompanyUrl }
+      }
+
+      if (payload.action === "continue_search") {
+        if (context.role !== "ADMIN") return Response.json({ error: "ES-DSL Preview continuation is Admin-only.", blocked: true, reason: "admin_required", providerCallMade: false }, { status: 403 })
+        if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required for every Preview page request.", blocked: true, reason: "confirmation_required", providerCallMade: false }, { status: 400 })
+        if (!Number.isInteger(payload.searchId) || Number(payload.searchId) <= 0 || !Number.isInteger(payload.page) || Number(payload.page) < 2 || Number(payload.page) > 50) return Response.json({ error: "A valid search ID and next Preview page from 2 to 50 are required.", blocked: true, reason: "invalid_continuation", providerCallMade: false }, { status: 400 })
+        if (!coresignalExactYearPreviewEnabled(providerRuntimeEnvironment) || !providerConfigured("coresignal", providerRuntimeEnvironment)) return Response.json({ error: "Coresignal ES-DSL Preview is not enabled and configured.", blocked: true, reason: "preview_unavailable", providerCallMade: false }, { status: 403 })
+        if (coresignalContinuationInFlight) return Response.json({ error: "Another Preview continuation is already in progress. No provider request was made.", blocked: true, reason: "continuation_in_progress", providerCallMade: false }, { status: 409 })
+        coresignalContinuationInFlight = true
+        try {
+          const [search] = await pgDb.select().from(searches).where(eq(searches.id, Number(payload.searchId))).limit(1)
+          if (!search || search.provider !== PROFESSIONAL_DATA_PROVIDER || search.mode !== "live") return Response.json({ error: "Only a saved live Coresignal discovery run can be continued.", blocked: true, reason: "search_not_continuable", providerCallMade: false }, { status: 409 })
+          const historyRows = await pgDb.select().from(history).where(eq(history.searchId, search.id)).orderBy(history.id)
+          const previewRows = historyRows.filter(item => item.status === "success" && /ES-DSL Preview/.test(item.operation))
+          if (!previewRows.length) return Response.json({ error: "This run has no successful ES-DSL Preview page to continue.", blocked: true, reason: "search_not_continuable", providerCallMade: false }, { status: 409 })
+          const nextPage = Math.max(...previewRows.map(item => Number(item.requestSummary.match(/\bpage=(\d+)\b/)?.[1] ?? 1))) + 1
+          if (Number(payload.page) !== nextPage) return Response.json({ error: `The next manually retrievable page is ${nextPage}.`, blocked: true, reason: "non_sequential_page", providerCallMade: false }, { status: 409 })
+          if ((previewRows.at(-1)?.resultCount ?? 20) < 20) return Response.json({ error: "The preceding Preview page was not full, so no further page is available.", blocked: true, reason: "no_next_page", providerCallMade: false }, { status: 409 })
+          if (await remainingUnits() < 1) return Response.json({ error: "The next Preview page was not requested because the application operation limit has been reached.", blocked: true, reason: "application_limit", providerCallMade: false }, { status: 429 })
+          const filters = storedDiscoveryFilters(search.filtersJson)
+          const company = await resolveCompany(filters, "Preview continuation")
+          if ("blocked" in company) return company.blocked!
+          const [currentPeople, ignoredResults, existingResults] = await Promise.all([
+            pgDb.select().from(people).orderBy(people.name),
+            pgDb.select().from(results).where(eq(results.reviewStatus, "Ignored")),
+            pgDb.select().from(results).where(eq(results.searchId, search.id)).orderBy(results.id),
+          ])
+          const rejected = rejectedEvidence(ignoredResults)
+          let response
+          try { response = await coresignalProvider.searchCandidates(filters, currentPeople, search.requestedCount, { rejectedCandidates: rejected, maximumCollects: 0, exactYearPreview: { ...company, operationContext: `External Discovery continuation · Search #${search.id} · page ${nextPage}`, page: nextPage } }) }
+          catch (error) {
+            const failure = safeCoresignalError(error)
+            await pgDb.insert(history).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: "ES-DSL Preview continuation", mode: "live", status: "error", applicationUnits: failure.successfulOperationCredits, providerReportedCredits: null, usageState: failure.successfulOperationCredits ? "reconciliation_required" : "not_applicable", requestSummary: `${criteriaSummary(filters)} · page=${nextPage} · explicit confirmation`, responseSummary: failure.message, errorMessage: failure.message, requestedBy: actor })
+            return Response.json({ error: failure.message, blocked: true, reason: "provider_error", providerCallMade: true, applicationUnits: failure.successfulOperationCredits }, { status: failure.status === 429 ? 429 : 502 })
+          }
+          const existingKeys = new Set(existingResults.flatMap(result => [result.providerResultId, result.providerPersonId]).filter(Boolean))
+          const uniqueProfiles = response.profiles.filter(profile => {
+            const keys = [profile.providerResultId, profile.providerPersonId].filter(Boolean)
+            if (keys.some(key => existingKeys.has(key))) return false
+            keys.forEach(key => existingKeys.add(key))
+            return true
+          })
+          const executionByKey = new Map((response.execution?.candidates ?? []).map(item => [item.profile.providerResultId || item.profile.providerPersonId, item]))
+          const providerCandidatesReturned = response.execution?.metrics.previewCountReturned ?? response.totalAvailable
+          const executionAudit = response.execution?.metrics ? ` · Selective execution ${JSON.stringify(response.execution.metrics)}` : ""
+          // The paid Preview page has already been requested: persist it (results, counts, history, audit) atomically.
+          const historyRow = await pgDb.transaction(async tx => {
+            for (const profile of uniqueProfiles) {
+              const execution = executionByKey.get(profile.providerResultId || profile.providerPersonId)
+              await tx.insert(results).values(resultValues(search.id, profile, classify(profile, currentPeople, rejected, execution), execution))
+            }
+            const allResults = await tx.select().from(results).where(eq(results.searchId, search.id)).orderBy(results.id)
+            const counts = discoveryClassificationCounts(allResults)
+            await tx.update(searches).set({ resultCount: search.resultCount + providerCandidatesReturned, existingCount: counts.existing, newCount: counts.new, duplicateCount: counts.possibleDuplicate }).where(eq(searches.id, search.id))
+            const [row] = await tx.insert(history).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: search.id, operation: "ES-DSL Preview continuation", mode: "live", status: "success", creditsUsed: 0, applicationUnits: 1, providerReportedCredits: null, usageState: "reconciliation_required", resultCount: providerCandidatesReturned, requestSummary: `${criteriaSummary(filters)} · page=${nextPage} · explicit confirmation · same-row nested education and current-employment constraints · no retry · no automatic pagination · no Collect`, responseSummary: `${response.responseSummary} ${uniqueProfiles.length} new unique candidates persisted; ${response.profiles.length - uniqueProfiles.length} duplicates omitted.${executionAudit}`, requestedBy: actor }).returning()
+            await writePostgresSecurityAudit(auditDb(tx), context, { action: "coresignal_discovery_continuation", entityType: "discovery_search", entityId: search.id, metadata: { page: nextPage, providerCandidatesReturned, uniqueCandidatesPersisted: uniqueProfiles.length, duplicatesOmitted: response.profiles.length - uniqueProfiles.length, applicationUnits: 1, providerCreditsRemaining: response.providerCreditsRemaining ?? null, mode: coresignalProvider.mode() } })
+            return row
+          })
+          return Response.json({ continued: true, searchId: search.id, page: nextPage, returnedCount: providerCandidatesReturned, uniqueCandidatesStored: uniqueProfiles.length, duplicatesOmitted: response.profiles.length - uniqueProfiles.length, applicationUnits: 1, providerReportedCredits: null, providerHistoryId: historyRow.id, automaticPagination: false, automaticRetry: false })
+        } finally {
+          coresignalContinuationInFlight = false
+        }
+      }
+
+      // search
+      if (coresignalProvider.mode() === "mock" && !localIsolatedDiscoveryMockEnabled(providerRuntimeEnvironment)) return Response.json({ error: "Mock discovery requires an isolated local demo database. No search was run.", blocked: true, reason: "isolated_mock_database_required", providerCallMade: false, applicationUnits: 0 }, { status: 403 })
+      const programmeValidation = validateDiscoveryProgrammeSelections(payload.filters && typeof payload.filters === "object" ? (payload.filters as { discoveryProgrammes?: unknown }).discoveryProgrammes ?? [] : [])
+      if (!programmeValidation.ok) return Response.json({ error: programmeValidation.message, blocked: true, reason: "invalid_programme_selection", providerCallMade: false, applicationUnits: 0 }, { status: 400 })
+      const filters = normalizedDiscoveryFilters(payload.filters)
+      const constrainedPreview = coresignalProvider.mode() === "live"
+      const previewOperation = filters.graduationYear ? "Exact-year ES-DSL Preview" : "Constrained ES-DSL Preview"
+      let exactYearPreview: { companyId?: number; companyName?: string; companyIdentityMode?: "VERIFIED_ID" | "EXACT_NAME"; expectedCompanyUrl?: string; operationContext: string } | undefined
+      if (constrainedPreview) {
+        if (context.role !== "ADMIN") return Response.json({ error: "Base Employee ES-DSL Preview is Admin-only.", blocked: true, reason: "admin_required", filters, effectiveLimit: 0 }, { status: 403 })
+        if (payload.confirmed !== true) return Response.json({ error: "Explicit confirmation is required before ES-DSL Preview.", blocked: true, reason: "confirmation_required", filters, effectiveLimit: 0 }, { status: 400 })
+        const entitlement = coresignalExactYearPreviewEntitlement(providerRuntimeEnvironment)
+        if (!coresignalExactYearPreviewEnabled(providerRuntimeEnvironment)) return Response.json({ error: entitlement === "confirmed" ? "Base Employee ES-DSL Preview is disabled by its independent server gate." : "Base Employee ES-DSL Preview is blocked until account access and billing are confirmed.", blocked: true, reason: entitlement === "confirmed" ? "exact_year_preview_gate_disabled" : "exact_year_preview_entitlement_unconfirmed", entitlement, filters, effectiveLimit: 0, providerCallMade: false, applicationUnits: 0 }, { status: 403 })
+        const company = await resolveCompany(filters, "Exact-year Preview")
+        if ("blocked" in company) return company.blocked!
+        exactYearPreview = { ...company, operationContext: `External Discovery · IIM Lucknow${filters.graduationYear ? ` · exact graduation year ${filters.graduationYear}` : ""}${filters.discoveryProgrammes.length ? ` · programmes ${filters.discoveryProgrammes.join(" OR ")}` : ""}${filters.seniorities.length ? ` · seniority ${filters.seniorities.join(" OR ")}` : ""}${filters.company ? ` · current company ${filters.company} (${company.companyIdentityMode === "VERIFIED_ID" ? "verified provider ID" : "exact name; identity unverified"})` : ""}` }
+      }
+      const remaining = await remainingUnits()
+      const searchOperationReserve = coresignalProvider.mode() === "live" && !constrainedPreview ? 1 : 0
+      if (remaining <= searchOperationReserve) return Response.json({ error: constrainedPreview ? "External search was not run because the Coresignal application limit cannot cover one Preview request." : "External search was not run because the Coresignal application limit cannot cover a Search and at least one Collect operation.", blocked: true, reason: "application_limit", filters, effectiveLimit: 0 }, { status: 429 })
+      const validation = validateDiscoveryCount(payload.limit, remaining, coresignalProvider.mode() === "live" ? coresignalLiveSearchMaximum() : 100, searchOperationReserve)
+      if (!validation.ok) return Response.json({ error: validation.message, blocked: true, reason: validation.reason, filters, effectiveLimit: 0, maximumAllowed: validation.maximumAllowed }, { status: 400 })
+      const [currentPeople, ignoredResults] = await Promise.all([
+        pgDb.select().from(people).orderBy(people.name),
+        pgDb.select().from(results).where(eq(results.reviewStatus, "Ignored")),
+      ])
+      const rejected = rejectedEvidence(ignoredResults)
+      let response
+      try { response = await coresignalProvider.searchCandidates(filters, currentPeople, validation.requested, { rejectedCandidates: rejected, maximumCollects: exactYearPreview ? 0 : validation.requested, exactYearPreview }) }
+      catch (error) {
+        const failure = safeCoresignalError(error)
+        await pgDb.insert(history).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", operation: exactYearPreview ? previewOperation : "Education affiliation search", mode: coresignalProvider.mode(), status: "error", applicationUnits: failure.successfulOperationCredits, providerReportedCredits: null, usageState: failure.successfulOperationCredits ? "reconciliation_required" : "not_applicable", requestSummary: `${criteriaSummary(filters)} · Maximum requested: ${validation.requested}`, responseSummary: failure.message, errorMessage: failure.message, requestedBy: actor })
+        return Response.json({ error: failure.message, failureType: failure.kind, blocked: true, reason: "provider_error", filters, effectiveLimit: validation.requested }, { status: failure.status === 429 ? 429 : 502 })
+      }
+      const providerCandidatesReturned = response.execution?.metrics.previewCountReturned ?? response.totalAvailable
+      const executionByKey = new Map((response.execution?.candidates ?? []).map(item => [item.profile.providerResultId || item.profile.providerPersonId, item]))
+      const reconciled = response.profiles.map(profile => {
+        const execution = executionByKey.get(profile.providerResultId || profile.providerPersonId)
+        return { profile, execution, ...classify(profile, currentPeople, rejected, execution) }
+      })
+      const counts = { existing: reconciled.filter(i => i.matchStatus === "Already in database").length, new: reconciled.filter(i => i.matchStatus === "New").length, possibleDuplicate: reconciled.filter(i => i.matchStatus === "Possible duplicate").length, needsReview: reconciled.filter(i => i.matchStatus === "Needs review").length }
+      const executionAudit = response.execution?.metrics ? ` · Selective execution ${JSON.stringify(response.execution.metrics)}` : ""
+      // Search, results, counts, history and audit commit together.
+      const { search, historyRow, storedRows } = await pgDb.transaction(async tx => {
+        const [created] = await tx.insert(searches).values({ provider: PROFESSIONAL_DATA_PROVIDER, filtersJson: JSON.stringify(filters), criteriaSummary: criteriaSummary(filters), requestedCount: validation.requested, resultCount: providerCandidatesReturned, creditsUsed: 0, mode: coresignalProvider.mode(), initiatedBy: actor }).returning()
+        for (const item of reconciled) await tx.insert(results).values(resultValues(created.id, item.profile, item, item.execution))
+        const [updated] = await tx.update(searches).set({ existingCount: counts.existing, newCount: counts.new, duplicateCount: counts.possibleDuplicate }).where(eq(searches.id, created.id)).returning()
+        const [row] = await tx.insert(history).values({ provider: PROFESSIONAL_DATA_PROVIDER, alumnusName: "External alumni discovery", searchId: created.id, operation: exactYearPreview ? previewOperation : "Education affiliation search", mode: coresignalProvider.mode(), status: "success", creditsUsed: response.usage.providerReportedUsage ?? 0, applicationUnits: response.usage.applicationUnits, providerReportedCredits: response.usage.providerReportedUsage, usageState: response.usage.usageState, resultCount: providerCandidatesReturned, requestSummary: `${criteriaSummary(filters)} · Qualified target: ${validation.requested}${exactYearPreview ? ` · page=1 · expected provider cost: 20 search credits per Preview page (vendor workbook); actual account debit unverified · same-row nested education and current-employment constraints · no automatic Collect` : ""}`, responseSummary: `${response.responseSummary}${executionAudit}`, requestedBy: actor }).returning()
+        const stored = await tx.select().from(results).where(eq(results.searchId, created.id)).orderBy(results.id)
+        await writePostgresSecurityAudit(auditDb(tx), context, { action: "coresignal_discovery_run", entityType: "discovery_search", entityId: created.id, metadata: { resultCount: response.totalAvailable, storedResultCount: response.profiles.length, applicationUnits: response.usage.applicationUnits, providerUsageKnown: response.usage.providerReportedUsage !== null, providerCreditsRemaining: exactYearPreview && coresignalProvider.mode() === "live" ? response.providerCreditsRemaining ?? null : null, mode: coresignalProvider.mode(), selectiveExecution: response.execution?.metrics ?? null } })
+        return { search: updated, historyRow: row, storedRows: stored }
+      })
+      const reconciliationByKey = new Map(reconciled.map(item => [item.reconciliation.candidateKey, item.reconciliation]))
+      const storedResults = storedRows.map(result => {
+        const execution = executionByKey.get(storedCandidate(result).candidateKey)
+        return ({ ...presentResult(result, filters, nowDate, search), ...reconciliationPresentation(reconciliationByKey.get(storedCandidate(result).candidateKey)), ...executionPresentation(execution), humanEvidence: [], humanEvidenceAvailable: true, humanQualified: false })
+      })
+      const recentSearches = await pgDb.select().from(searches).orderBy(desc(searches.createdAt), desc(searches.id)).limit(10)
+      const recentSearchIds = recentSearches.map(item => item.id)
+      const recentResults = recentSearchIds.length ? await pgDb.select().from(results).where(inArray(results.searchId, recentSearchIds)) : []
+      const previousSearches = previousDiscoveryRuns(recentSearches, recentResults, search.id)
+      return Response.json({ searchId: search.id, activeSearch: discoveryRunSummary(search, storedRows, [historyRow]), previousSearches, providerHistory: context.role === "ADMIN" ? [historyRow] : [], historyRestricted: context.role !== "ADMIN", results: storedResults, counts, reconciliationSummary: selectiveCollectSummary(reconciled.map(item => item.reconciliation)), executionSummary: response.execution?.metrics ?? null, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, requestedCount: validation.requested, returnedCount: providerCandidatesReturned, storedResultCount: response.profiles.length, creditsUsed: response.usage.providerReportedUsage, applicationUnits: response.usage.applicationUnits, totalAvailable: response.totalAvailable, effectiveLimit: validation.requested, filters })
+    }
+    // Approved 2026-11-15: Discovery review actions on PostgreSQL. Same validation, messages and
+    // responses as D1; each runs in one transaction under a row lock. Identity attachment uses the
+    // intended PostgreSQL store (the D1 store fails SQL compilation). A request that loses a race
+    // is rolled back (no identity, history or success audit) and gets a sanitized 409.
+    if ((payload.action === "link_existing" || payload.action === "apply_updates") && Number.isInteger(payload.resultId) && selectedDatabaseBackend() === "postgres"
+      || payload.action === "approve" && selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { postgresCoresignalIdentityStore } = await import("@/lib/postgres-coresignal-identity-store")
+      const { writePostgresSecurityAudit } = await import("@/lib/postgres-security")
+      const schema = await import("@/db/postgres/schema")
+      const { alumni: people, externalDiscoveryCandidateEvidence: evidenceTable, externalDiscoveryResults: results, externalDiscoverySearches: searches, fieldChangeHistory: history, securityAuditEvents: audits } = schema
+      class RaceLost extends Error { constructor(readonly response: Response) { super("race lost") } }
+      const conflict = (error: string) => Response.json({ error }, { status: 409 })
+      try {
+        return await getPostgresDb().transaction(async tx => {
+          const auditDb = tx as unknown as Parameters<typeof writePostgresSecurityAudit>[0]
+          const latestFor = async (ids: number[]) => ids.length ? tx.select().from(evidenceTable).where(inArray(evidenceTable.resultId, ids)) : []
+
+          if (payload.action === "link_existing") {
+            const [result] = await tx.select().from(results).where(eq(results.id, payload.resultId!)).for("update").limit(1)
+            const [search] = result ? await tx.select().from(searches).where(eq(searches.id, result.searchId)).limit(1) : []
+            if (!result || !search || result.provider !== PROFESSIONAL_DATA_PROVIDER || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending || resultProviderIntegrity(search.provider, result.provider) !== "consistent") return conflict("Only a pending provenance-consistent Coresignal result can be linked.")
+            const evidence = latestEvidence(await latestFor([result.id]), result.id)
+            if (!supportingHumanEvidence(evidence, result, nowDate)) return conflict("Independent evidence must support the selected criteria before identity linking.")
+            await tx.execute(sql`select pg_advisory_xact_lock(7303107)`)
+            const current = await tx.select().from(people).orderBy(people.id)
+            const identity = reconcileDiscoveryCandidate({ ...storedCandidate(result), profileUrl: evidence!.profileUrl, programme: evidence!.programme, graduationYear: evidence!.graduationYear ?? evidence!.educationEndYear ?? 0, educationInstitution: evidence!.observedInstitution }, current, [], CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
+            if (!(["KNOWN_PROVIDER_ID", "KNOWN_PROFILE_URL"].includes(identity.classification) && identity.linkedAlumnusId)) return conflict("Only one exact provider ID or LinkedIn profile match can be linked. Name-only and ambiguous matches remain pending.")
+            const attached = await attachCoresignalIdentity({ coresignalEmployeeId: result.providerPersonId, profileUrl: evidence!.profileUrl, expectedAlumnusId: identity.linkedAlumnusId, source: `external_discovery:${result.searchId}`, actor, discoveryResultId: result.id }, postgresCoresignalIdentityStore(tx, context))
+            if (!["KNOWN_PROVIDER_ID", "ATTACHED_PROVIDER_ID"].includes(attached.outcome)) return conflict(attached.rationale)
+            const [linked] = await tx.update(results).set({ linkedInternalAlumnusId: identity.linkedAlumnusId, matchStatus: "Already in database", reviewedAt: now, reviewedBy: actor })
+              .where(and(eq(results.id, result.id), eq(results.reviewStatus, DISCOVERY_REVIEW_STATUS.pending), sql`${results.linkedInternalAlumnusId} is null`)).returning({ id: results.id })
+            if (!linked) throw new RaceLost(conflict("This discovery result was already linked or changed concurrently."))
+            await tx.insert(audits).values({ actorUserId: context.userId, actorIdentity: context.externalIdentity, actorName: actor, actorRole: context.role, action: "external_candidate_identity_linked", entityType: "discovery_result", entityId: String(result.id), metadataJson: safeAuditMetadata({ alumnusId: identity.linkedAlumnusId, evidenceId: evidence!.id, matchingMethod: identity.classification }), result: "success", source: "application" })
+            return Response.json({ alumnusId: identity.linkedAlumnusId, identityOutcome: attached.outcome })
+          }
+
+          if (payload.action === "approve") {
+            const resultIds = [...new Set(payload.resultIds?.filter(Number.isInteger) ?? [])].slice(0, 25)
+            if (!resultIds.length) return Response.json({ error: "Select at least one confirmed degree alumnus." }, { status: 400 })
+            const selected = await tx.select().from(results).where(inArray(results.id, resultIds)).orderBy(results.id).for("update")
+            if (selected.some(result => result.provider !== PROFESSIONAL_DATA_PROVIDER)) return conflict("Historical provider results cannot be added to the active alumni workflow.")
+            const searchIds = [...new Set(selected.map(result => result.searchId))]
+            const searchesById = new Map((searchIds.length ? await tx.select().from(searches).where(inArray(searches.id, searchIds)) : []).map(search => [search.id, search] as const))
+            const evidenceRows = await latestFor(resultIds)
+            const currentAlumni = await tx.select().from(people).orderBy(people.id)
+            const ignored = await tx.select().from(results).where(eq(results.reviewStatus, "Ignored"))
+            if (selected.length !== resultIds.length || selected.some(result => {
+              const search = searchesById.get(result.searchId)
+              if (!search || resultProviderIntegrity(search.provider, result.provider) !== "consistent" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending || result.linkedInternalAlumnusId) return true
+              const evidence = latestEvidence(evidenceRows, result.id)
+              if (!supportingHumanEvidence(evidence, result, nowDate) || result.matchStatus === "Already in database") return true
+              const identity = reconcileDiscoveryCandidate({ ...storedCandidate(result), profileUrl: evidence!.profileUrl, programme: evidence!.programme, graduationYear: evidence!.graduationYear ?? evidence!.educationEndYear ?? 0, educationInstitution: evidence!.observedInstitution }, currentAlumni, rejectedEvidence(ignored), CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
+              return identity.classification !== "NEW_CANDIDATE"
+            })) return conflict("Approval requires a pending result, independently supported search criteria, a verified LinkedIn profile, and a new stable identity. Existing or ambiguous identities must remain in review.")
+            const added = []
+            for (const result of selected) {
+              const evidence = latestEvidence(evidenceRows, result.id)!
+              const [created] = await tx.insert(people).values(reviewedAlumnusValues(result, evidence, actor, now)).returning({ id: people.id })
+              const [updated] = await tx.update(results).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.added, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor })
+                .where(and(eq(results.id, result.id), eq(results.reviewStatus, DISCOVERY_REVIEW_STATUS.pending))).returning({ id: results.id })
+              if (!updated) throw new Error("Candidate approval did not persist atomically.")
+              await tx.insert(audits).values({ actorUserId: context.userId, actorIdentity: context.externalIdentity, actorName: actor, actorRole: context.role, action: "external_candidate_approved", entityType: "discovery_result", entityId: String(result.id), metadataJson: safeAuditMetadata({ searchId: result.searchId, evidenceId: evidence.id, providerPersonId: result.providerPersonId, identityMethod: "NEW_PROVIDER_ID_AND_REVIEWED_LINKEDIN" }), result: "success", source: "application" })
+              added.push({ resultId: result.id, alumnusId: created.id, identityOutcome: "NEW_VERIFIED_CANDIDATE" })
+            }
+            await writePostgresSecurityAudit(auditDb, context, { action: "coresignal_results_approved", entityType: "alumni_batch", metadata: { addedCount: added.length, resultIds } })
+            return Response.json({ addedCount: added.length, added }, { status: 201 })
+          }
+
+          // apply_updates
+          const [result] = await tx.select().from(results).where(eq(results.id, payload.resultId!)).for("update").limit(1)
+          if (result && result.provider !== PROFESSIONAL_DATA_PROVIDER) return conflict("Historical provider results are read-only.")
+          if (!result?.linkedInternalAlumnusId || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return conflict("Only a pending result linked to an internal alumnus can be compared.")
+          const [search] = await tx.select().from(searches).where(eq(searches.id, result.searchId)).limit(1)
+          if (!search || resultProviderIntegrity(search.provider, result.provider) !== "consistent") return conflict("Discovery result provider provenance does not match its search run.")
+          const [person] = await tx.select().from(people).where(eq(people.id, result.linkedInternalAlumnusId)).for("update").limit(1)
+          if (!person) return Response.json({ error: "The linked internal alumnus could not be found." }, { status: 404 })
+          const label = providerLabel(result.provider)
+          const evidence = latestEvidence(await latestFor([result.id]), result.id)
+          if (!supportingHumanEvidence(evidence, result, nowDate)) return conflict("Current reviewer evidence must support the selected search criteria before applying professional updates.")
+          const candidates: Record<string, string | number | boolean> = { company: result.currentCompany, title: result.role, rawTitle: result.rawTitle, function: result.function, seniority: result.seniority, location: result.location, linkedinUrl: normalizeProfessionalProfileUrl(result.linkedinUrl), graduationYear: result.graduationYear, coresignalEmployeeId: result.providerPersonId, iimlAffiliationStatus: result.affiliationStatus, iimlEducationProgramme: result.educationProgramme, iimlEducationStartDate: result.educationStartDate, iimlEducationEndDate: result.educationEndDate, iimlInstitutionId: result.institutionId, iimlInstitutionUrl: result.institutionUrl, currentCompanyId: result.currentCompanyId, currentCompanyUrl: result.currentCompanyUrl, currentRoleStartDate: result.currentRoleStartDate, currentIndustry: result.currentIndustry, currentRoleAmbiguous: result.currentRoleAmbiguous, providerFreshnessAt: result.providerFreshnessAt }
+          const requested = [...new Set(payload.fields ?? [])].filter(field => field in candidates && !["email", "phone"].includes(field))
+          const verified = JSON.parse(evidence!.decisionsJson) as EvidenceDecisions
+          const fieldDecision: Record<string, keyof EvidenceDecisions> = { company: "company", title: "role", rawTitle: "role", function: "function", seniority: "seniority", location: "location", linkedinUrl: "identity", graduationYear: "graduationYear", coresignalEmployeeId: "identity" }
+          if (requested.some(field => !fieldDecision[field] || verified[fieldDecision[field]] !== "MATCH")) return conflict("Only independently verified selected fields can be applied to an existing alumnus. Provider-only values remain review evidence.")
+          Object.assign(candidates, {
+            company: evidence!.currentCompany, title: evidence!.currentDesignation, rawTitle: evidence!.currentDesignation,
+            function: evidence!.currentDesignation ? normalizeFunction("", evidence!.currentDesignation) : "",
+            seniority: titleSeniority(evidence!.currentDesignation).bucket, location: evidence!.location,
+            linkedinUrl: normalizeProfessionalProfileUrl(evidence!.profileUrl), graduationYear: evidence!.graduationYear ?? evidence!.educationEndYear ?? 0,
+          })
+          await tx.execute(sql`select pg_advisory_xact_lock(7303107)`)
+          const linkedIdentity = await attachCoresignalIdentity({ coresignalEmployeeId: result.providerPersonId, profileUrl: evidence!.profileUrl, expectedAlumnusId: person.id, source: `external_discovery:${result.searchId}`, actor, discoveryResultId: result.id }, postgresCoresignalIdentityStore(tx, context))
+          if (!["KNOWN_PROVIDER_ID", "ATTACHED_PROVIDER_ID"].includes(linkedIdentity.outcome)) return conflict(linkedIdentity.rationale)
+          const changedFields: string[] = linkedIdentity.wroteIdentity ? ["coresignalEmployeeId"] : []
+          const updates: Record<string, unknown> = { lastProfessionalDataRefresh: now, professionalDataProvider: label, source: label, updatedBy: actor, updatedAt: now, verified: `Professional profile refreshed via ${label}` }
+          for (const field of requested.filter(item => item !== "coresignalEmployeeId")) {
+            const oldValue = String(person[field as keyof typeof person] ?? ""); const newValue = String(candidates[field] ?? "")
+            if (!newValue || oldValue === newValue) continue
+            updates[field] = candidates[field]; changedFields.push(field)
+            await tx.insert(history).values({ alumnusId: person.id, field, oldValue, newValue, source: label, providerAction: "Compare & Refresh", initiatedBy: actor })
+          }
+          if (changedFields.length) await tx.update(people).set(updates).where(eq(people.id, person.id))
+          await tx.update(results).set({ reviewStatus: changedFields.length ? "Updates applied" : "Reviewed — kept existing", reviewedAt: now, reviewedBy: actor }).where(eq(results.id, result.id))
+          await writePostgresSecurityAudit(auditDb, context, { action: "professional_profile_update_approved", entityType: "alumnus", entityId: person.id, metadata: { provider: result.provider, changedFields } })
+          return Response.json({ alumnusId: person.id, changedFields })
+        })
+      } catch (error) {
+        if (error instanceof RaceLost) return error.response
+        throw error
+      }
     }
     if (payload.action === "plan" && selectedDatabaseBackend() === "postgres") {
       const { getPostgresDb } = await import("@/db/postgres/adapter")

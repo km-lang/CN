@@ -226,8 +226,13 @@ export async function POST(request: Request) {
       const { postgresLushaContactApprove } = await import("@/lib/postgres-lusha-contact-approve");
       return await postgresLushaContactApprove(payload, context);
     }
-    // Keep the unresolved D1 concurrent-approval response mismatch isolated to disposable local tests.
-    if (selectedDatabaseBackend() === "postgres" && process.env.CN_PG_LOCAL_TEST_ENABLED === "true" && payload.action === "lusha_approve_identity") {
+    // Approved 2026-11-15: intended PostgreSQL identity attachment (D1 store fails SQL compilation).
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "apply_refresh" && Number.isInteger(payload.reviewId)) {
+      const { postgresApplyProfileRefresh } = await import("@/lib/postgres-enrichment-apply-refresh");
+      return await postgresApplyProfileRefresh({ reviewId: payload.reviewId!, fields: payload.fields }, context, () => authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS"));
+    }
+    // Approved 2026-11-15: a losing concurrent approval gets a sanitized 409 (D1 raised a raw 500).
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "lusha_approve_identity") {
       const { postgresLushaIdentityApprove } = await import("@/lib/postgres-lusha-identity-approve");
       return await postgresLushaIdentityApprove(payload.reviewId, payload.confirmed, context);
     }
