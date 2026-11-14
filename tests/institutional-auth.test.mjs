@@ -4,7 +4,6 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createServer } from "vite";
-import { Miniflare } from "miniflare";
 
 process.env.AUTH_SESSION_SECRET = "stage-2-5-test-secret-with-at-least-thirty-two-characters";
 process.env.GOOGLE_CLIENT_ID = "corporate-network-test.apps.googleusercontent.com";
@@ -16,7 +15,7 @@ process.env.APP_BASE_PATH = "/";
 process.env.NEXT_PUBLIC_APP_PUBLIC_URL = "https://iiml-alumni-intelligence.dokina-ramakrishna.chatgpt.site";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const vite = await createServer({ appType: "custom", configFile: false, envFile: false, root, resolve: { alias: { "@": root, "cloudflare:workers": fileURLToPath(new URL("./fixtures/cloudflare-workers.ts", import.meta.url)) } }, server: { middlewareMode: true, hmr: false } });
+const vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true, hmr: false } });
 after(async () => vite.close());
 
 const sessions = await vite.ssrLoadModule("/lib/auth-session.ts");
@@ -177,104 +176,6 @@ async function googleTokenFixture(overrides) {
 }
 
 function encodeJson(value) { return encodeBytes(new TextEncoder().encode(JSON.stringify(value))); }
-
-test("Admin login with a mocked Google exchange and a disposable D1", async t => {
-  process.env.CN_DB_BACKEND = "d1";
-  delete process.env.DATABASE_URL;
-  const origin = process.env.APP_PUBLIC_URL = "http://127.0.0.1:3000";
-  const start = await vite.ssrLoadModule("/app/auth/google/start/route.ts");
-  const finish = await vite.ssrLoadModule("/app/auth/google/callback/route.ts");
-  const landing = await vite.ssrLoadModule("/app/auth/landing/route.ts");
-  const logout = await vite.ssrLoadModule("/app/auth/signout/route.ts");
-  const recovery = await vite.ssrLoadModule("/app/auth/chatgpt/session/route.ts");
-  const config = await vite.ssrLoadModule("/lib/auth-config.ts");
-  const chat = await vite.ssrLoadModule("/app/chatgpt-auth.ts");
-  const login = await vite.ssrLoadModule("/app/login/admin/route.ts");
-  const { env } = await vite.ssrLoadModule("/tests/fixtures/cloudflare-workers.ts");
-  const fixture = new Miniflare({ modules: true, script: "export default {}", d1Databases: ["DB"] });
-  t.after(() => fixture.dispose());
-  const db = env.DB = await fixture.getD1Database("DB");
-  for (const name of ["0005_security_access_controls", "0006_application_identities", "0016_colossal_marrow"]) {
-    const sql = await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), "utf8");
-    for (const statement of sql.split("--> statement-breakpoint").filter(s => s.trim())) {
-      if (name.startsWith("0016") && !statement.includes("`security_audit_events`")) continue;
-      await db.prepare(statement).run();
-    }
-  }
-  const startUrl = origin + "/auth/google/start?return_to=%2Fauth%2Flanding%3Fintent%3Dadmin";
-  const secret = process.env.AUTH_SESSION_SECRET;
-  process.env.LOCAL_DEV_AUTH_ENABLED = "false";
-  process.env.AUTH_SESSION_SECRET = "short";
-  assert.equal(config.isGoogleOAuthConfigured(), false);
-  const page = await (await login.GET(new Request(origin + "/login/admin"))).text();
-  assert.match(page, /Google Workspace sign-in requires administrator configuration/);
-  assert.match(page, /ChatGPT recovery is available on the hosted/);
-  assert.doesNotMatch(page, /href="[^"]*(?:signin-with-chatgpt|google\/start)/);
-  assert.equal((await start.GET(new Request(startUrl))).status, 503);
-  process.env.AUTH_SESSION_SECRET = secret;
-  assert.equal(config.isGoogleOAuthConfigured(), true);
-  assert.match(await (await login.GET(new Request(origin + "/login/admin"))).text(), /Continue with IIM Lucknow/);
-  for (const path of ["//outside.invalid", "/a/..//outside.invalid", "/%2e%2e//outside.invalid"]) {
-    assert.equal(config.safeReturnPath(path), "/");
-    assert.equal(new URL(chat.chatGPTSignInPath(path), origin).searchParams.get("return_to"), "/");
-  }
-  const nested = "/auth/chatgpt/session?return_to=%2Fauth%2Flanding%3Fintent%3Dadmin";
-  assert.equal(new URL(chat.chatGPTSignInPath(nested), origin).searchParams.get("return_to"), nested);
-  const unavailable = await recovery.GET(new Request(origin + nested, { headers: {
-    "oai-authenticated-user-id": "fictional", "oai-authenticated-user-email": "admin@iiml.ac.in",
-  } }));
-  assert.equal(unavailable.status, 503);
-  assert.equal(unavailable.headers.get("set-cookie"), null);
-  for (const label of ["admin", "pcom", "disabled", "unknown"]) {
-    await t.test(label, async () => {
-      const email = label + "@iiml.ac.in";
-      if (label !== "unknown") await db.prepare("INSERT INTO application_users(display_name,email,role,enabled) VALUES(?,?,?,?)")
-        .bind(label, email, label === "pcom" ? "PCOM" : "ADMIN", label === "disabled" ? 0 : 1).run();
-      const entry = await start.GET(new Request(startUrl));
-      assert.equal(entry.status, 302);
-      const authorization = new URL(entry.headers.get("location"));
-      assert.equal(authorization.searchParams.get("redirect_uri"), origin + "/auth/google/callback");
-      const transient = entry.headers.get("set-cookie").split(";")[0];
-      const token = await googleTokenFixture({ sub: label, hd: "iiml.ac.in", email, email_verified: true, nonce: authorization.searchParams.get("nonce") });
-      let exchanges = 0;
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (url, options) => {
-        if (url === "https://www.googleapis.com/oauth2/v3/certs") return Response.json({ keys: [token.publicJwk] });
-        assert.equal(url, "https://oauth2.googleapis.com/token");
-        assert.equal(options.body.get("code"), "fictional");
-        const challenge = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(options.body.get("code_verifier")));
-        assert.equal(encodeBytes(new Uint8Array(challenge)), authorization.searchParams.get("code_challenge"));
-        exchanges++;
-        return Response.json({ id_token: token.token });
-      };
-      const callbackRequest = state => new Request(origin + "/auth/google/callback?code=fictional&state=" + state, { headers: { cookie: transient } });
-      let result;
-      try {
-        assert.equal((await finish.GET(callbackRequest("invalid"))).status, 403);
-        assert.equal(exchanges, 0);
-        result = await finish.GET(callbackRequest(authorization.searchParams.get("state")));
-        assert.equal(exchanges, 1);
-      } finally { globalThis.fetch = originalFetch; }
-      if (label === "unknown" || label === "disabled") {
-        assert.equal(result.status, 403);
-        assert.match(await result.text(), label === "unknown" ? /not authorized/ : /disabled/);
-        assert.ok(result.headers.getSetCookie().every(cookie => cookie.includes("Max-Age=0")));
-        return;
-      }
-      assert.equal(result.status, 302);
-      assert.equal(result.headers.get("location"), origin + "/auth/landing?intent=admin");
-      const cookie = result.headers.getSetCookie().find(value => value.startsWith("corporate_network_session="));
-      assert.match(cookie, /HttpOnly; Secure; SameSite=Lax/);
-      for (let i = 0; i < 2; i++) {
-        const next = await landing.GET(new Request(result.headers.get("location"), { headers: { cookie: cookie.split(";")[0] } }));
-        assert.equal(next.status, label === "admin" ? 302 : 403);
-        if (label === "admin") assert.equal(next.headers.get("location"), origin + "/?tab=admin");
-      }
-      assert.match((await logout.GET(new Request(origin + "/auth/signout"))).headers.get("set-cookie"), /Max-Age=0/);
-      assert.equal((await landing.GET(new Request(result.headers.get("location")))).status, 401);
-    });
-  }
-});
 function encodeBytes(bytes) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);

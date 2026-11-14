@@ -30,7 +30,7 @@ export function googleOAuthConfiguration() {
 
 export function isGoogleOAuthConfigured() {
   const config = googleOAuthConfiguration()
-  return Boolean(config.clientId && config.clientSecret && (process.env.AUTH_SESSION_SECRET?.trim().length ?? 0) >= 32)
+  return Boolean(config.clientId && config.clientSecret && process.env.AUTH_SESSION_SECRET?.trim())
 }
 
 export function safeReturnPath(value: string | null | undefined) {
@@ -38,7 +38,7 @@ export function safeReturnPath(value: string | null | undefined) {
   if (!value || !value.startsWith("/") || value.startsWith("//")) return fallback
   try {
     const url = new URL(value, "https://app.local")
-    if (url.pathname.startsWith("//") || url.origin !== "https://app.local") return fallback
+    if (url.origin !== "https://app.local") return fallback
     const reserved = ["/signin-with-chatgpt", "/signout-with-chatgpt", "/callback"]
     if (reserved.includes(url.pathname)) return fallback
     return `${url.pathname}${url.search}${url.hash}`

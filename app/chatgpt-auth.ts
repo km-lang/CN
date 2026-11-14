@@ -1,6 +1,5 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { isLoopbackHost } from "@/lib/local-development";
 
 export type ChatGPTUser = {
   userId: string;
@@ -19,16 +18,7 @@ const SIGN_IN_PATH = "/signin-with-chatgpt";
 const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
 
-// Dispatch owns recovery and authenticates the injected headers on hosted Sites.
-export function hostedRecoveryAvailable(requestUrl: string): boolean {
-  const url = new URL(requestUrl);
-  if (process.env.NODE_ENV !== "production" || url.protocol !== "https:" || isLoopbackHost(url.host)) return false;
-  // Custom Sites domains use the canonical origin registered by the operator.
-  return url.hostname.endsWith(".chatgpt.site") || url.origin === process.env.APP_PUBLIC_URL?.replace(/\/$/, "");
-}
-
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
-  if (process.env.NODE_ENV !== "production") return null;
   const requestHeaders = await headers();
   const userId = requestHeaders.get(USER_ID_HEADER);
   const email = requestHeaders.get(USER_EMAIL_HEADER);
@@ -77,7 +67,7 @@ function safeRelativeReturnPath(value: string): string {
   } catch {
     return "/";
   }
-  if (url.pathname.startsWith("//") || url.origin !== "https://app.local") return "/";
+  if (url.origin !== "https://app.local") return "/";
   if (isReservedAuthPath(url.pathname)) return "/";
 
   return `${url.pathname}${url.search}${url.hash}`;
