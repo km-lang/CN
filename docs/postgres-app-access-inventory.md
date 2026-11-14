@@ -42,32 +42,40 @@ This inventory covers all 35 `app/api/**/route.ts` files in the supplied applica
 
 ## Current checkpoint (2026-11-15, Windows laptop)
 
-**PostgreSQL is now the default backend.** An unset `CN_DB_BACKEND` selects
-PostgreSQL, and D1 requires `CN_DB_BACKEND=d1`. Every D1-only branch listed below
-therefore returns a sanitized error in the default configuration (fail closed, no
-D1 fallback) until it is migrated. Method and action coverage is unchanged:
-**47 full / 9 partial / 1 D1-only of 57 methods; 61/84 named actions select
-PostgreSQL**. Disposable PostgreSQL/D1 HTTP acceptance passed **82/82** on Windows
-after the test-isolation fixes recorded in the README. That includes Lusha
-`validate_lusha` (credential-free 409, no provider request) and Bright Data
-`attest_human_trial` (one-time audit key, replay 409, `providerCallMade: false`).
+**PostgreSQL is the default backend.** An unset `CN_DB_BACKEND` selects PostgreSQL, and D1 requires
+`CN_DB_BACKEND=d1`. Every branch still listed below as D1-only returns a sanitized error in the default
+configuration (fail closed, no D1 fallback).
 
-The 23 remaining branches, grouped by what blocks them:
+**Coverage: 49 full / 7 partial / 1 D1-only of 57 methods; 73/84 named actions select PostgreSQL**
+(previously 47/9/1 and 61/84). `POST /api/admin` (14/14) and `POST /api/admin/coresignal-collect-review`
+(2/2) are now fully routed.
 
-| Blocker | Branches | Next step |
+Selected in this checkpoint under the compatibility decisions approved on 2026-11-15:
+
+| Action | Contract | Evidence (disposable PostgreSQL/D1 HTTP acceptance) |
 | --- | --- | --- |
-| None; ordinary local delete | `remove_mock_dataset` | Implement with HTTP/audit parity |
-| Response contract | `preview_mock_cleanup` | Returns SQLite `PRAGMA quick_check`/`foreign_key_check` rows; a PostgreSQL integrity payload needs approval |
-| Shared D1 identity-store defect (`coresignalIdentityStore`: SQLite `INSERT … SELECT` with `changes() = 1` fails to compile) | `link_existing`, `approve`, `apply_updates`, `apply_refresh` (identity change), confirmed Collect association | One decision on intended identity-attachment behaviour unblocks all five |
-| Concurrency decision | `lusha_approve_identity` (D1 200/500 vs PostgreSQL 200/409), `keep_separate` (201/500 vs 201/409), `correct_pre_authorization` (D1 200/200 or 200/404) | Approve the sanitized 409s and define the preauthorization contract |
-| Provider execution and accounting | Bright Data `trigger`/`status`/`retrieve`/`recover_evidence`; live Collect `execute`; Provider Credits `refresh`; Discovery `search`/`regular_search`/`continue_search`; Lusha `search_contact`/`reveal_email`/`reveal_phone`; `refresh_profiles` | Provider-specific claim, reservation, settlement and recovery acceptance with mocks |
-| Signals policy | `POST /api/signals` (whole method) | Approved pre-request claim and ambiguous-outcome policy |
+| Admin `correct_pre_authorization` | D1 validation and messages; concurrent loser gets a sanitized 409 and writes no audit; sequential replay keeps 404 | Single winner [200, 409], one audit per correction |
+| Admin `preview_mock_cleanup` | D1 inventory over one read-only snapshot; SQLite PRAGMA fields reported as `integrity_check: "ok"` and `foreignKeys: []` (PostgreSQL enforces FKs) | 200 with D1 shape |
+| Admin `remove_mock_dataset` | D1 confirmation, ambiguity stop, delete order and audit, in one transaction | Atomic. The D1 inventory predates 17 FKs from newer tables, so referenced data blocks removal on both backends; PostgreSQL rolls back with a sanitized 500 (decision pending: extend the cleanup scope?) |
+| Collect review, confirmed association | Intended identity attachment (D1 store fails SQL compilation) | Attach once, history and approval audit, replay without a second write |
+| Discovery `keep_separate`, Enrichment `lusha_approve_identity` | Sanitized 409 for the concurrent loser | [201, 409] / [200, 409] |
+| Discovery `link_existing`, `approve`, `apply_updates` | D1 validation; row locks; identity via the PostgreSQL store; race loser rolled back | [200/201, 409] with single history and audit |
+| Enrichment `apply_refresh` | D1 checks including stale-evidence 409 and the identity-change permission | Forced audit failure rolls back; [200, 409] |
+| Workspace bulk import collision | Atomic rollback with D1's 400 status and a sanitized message | No rows, run, activity or audit written |
+| Discovery `search` | Mock (isolated local demo) and live ES-DSL Preview with D1's gates, budget, company mapping, history and audit; successful runs commit atomically | Mock: stored results, rollback on audit failure, D1 parity of counts and response fields. Live: gates verified up to the provider call with no Coresignal request |
+| Discovery `continue_search` | Live Preview continuation with D1's gates, page checks and accounting | Gate responses verified; the paid continuation is the account owner's first live action |
 
-Inactive prototypes kept out of production paths: PostgreSQL
-`correct_pre_authorization` returns 501; `keep_separate` and Lusha identity approval
-run only behind `CN_PG_LOCAL_TEST_ENABLED`; `lib/postgres-collect-review-confirm.ts`
-is unreferenced and deliberately left uncommitted. Legacy workspace bulk import
-still differs (D1 partial write with 400 vs PostgreSQL rollback with 500).
+Live Coresignal discovery is opt-in: `node scripts/dev-local-windows.mjs --coresignal-live` (see README).
+
+Still D1-only (11), all provider execution:
+
+| Group | Branches | Next step |
+| --- | --- | --- |
+| Bright Data | `trigger`, `status`, `retrieve`, `recover_evidence` | Attempt-ledger lifecycle acceptance with mocks |
+| Coresignal | normal/live Collect `execute`, Discovery `regular_search`, Enrichment `refresh_profiles` | Claim/settlement acceptance (mock Collect already accepted) |
+| Lusha | `lusha_search_contact`, `lusha_reveal_email`, `lusha_reveal_phone` | Reservation/settlement acceptance |
+| Provider Credits | `refresh` | Read-only balance call; needs a live-request decision |
+| Signals | `POST /api/signals` (whole method) | Approved pre-request claim and ambiguous-outcome policy |
 
 ## Current tracked action routing
 

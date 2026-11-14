@@ -413,7 +413,8 @@ regression suite keeps exercising D1 unless a test selects PostgreSQL.
 
 | Check | Result |
 | --- | --- |
-| Disposable PostgreSQL/D1 HTTP acceptance | **82/82 passed**, no `.env` secrets loaded, no residual processes |
+| Disposable PostgreSQL/D1 HTTP acceptance | **85/85 passed** after the Step 3 decisions and the Discover More Alumni port (82/82 at the first checkpoint); no `.env` secrets loaded, no residual processes |
+| D1→PostgreSQL migration rehearsal | 6/6 (44/44 tables reconciled) |
 | Foundation, core reads, provider claims | 25/25 passed. The 20-way one-use-connection stress subtest timed out once (Windows starts one process per connection) and passed on rerun, so it is recorded as timing-sensitive. |
 | Local-mode gate unit tests | 29/29 passed |
 | TypeScript (`tsc --noEmit`) | Passed |
@@ -428,10 +429,26 @@ Use `npm.cmd`, or run the same tools through `bash scripts/sites-env.sh -- node
 node_modules/<tool>/…` as recorded above. ESLint needs
 `--max-old-space-size=8192` and `--ignore-pattern .sites-runtime`.
 
-**Coverage is unchanged by this checkpoint:** 57 methods (47 fully routed, 9
-partially, 1 D1-only) and 61/84 named actions selecting PostgreSQL. Stage 3 is
-**PARTIAL**. See [the access inventory](docs/postgres-app-access-inventory.md) for
-remaining actions and the decisions that block them.
+**Coverage after the approved compatibility decisions (2026-11-15):** 57 methods (49 fully
+routed, 7 partially, 1 D1-only) and **73/84** named actions selecting PostgreSQL, up from
+47/9/1 and 61/84. The approved contracts are: a sanitized 409 for the concurrent loser in Lusha
+identity approval, Discovery `keep_separate` and Admin pre-authorization correction; the intended
+PostgreSQL identity attachment for the Collect confirmed association and Discovery
+`link_existing`/`approve`/`apply_updates` and Enrichment `apply_refresh`; and atomic rollback with
+D1's 400 status for a colliding workspace import. Admin mock cleanup and Discovery mock and live
+`search`/`continue_search` (opt-in live mode) were also ported. The 11 remaining branches are
+all provider execution (Bright Data ×4, Coresignal Collect/regular search/profile refresh, Lusha
+search/reveal ×3, credits refresh) plus `POST /api/signals`. Stage 3 is **PARTIAL**. See
+[the access inventory](docs/postgres-app-access-inventory.md).
+
+**Steps 4–6 (local rehearsal only, as authorized):** `scripts/migrate-d1-to-postgres.mjs`
+migrates a D1 copy into an empty loopback PostgreSQL database in one transaction and reconciles
+every table by row count and SHA-256. `tests/postgres-d1-migration-rehearsal.test.mjs` passed 6/6
+(44/44 tables matched). Local browser acceptance on PostgreSQL passed: sign-in, Administration,
+Directory, upload, and Discover More Alumni from search through review, intake preflight and
+evidence. The runbook and the steps still requiring authorization are in
+[docs/stage4-6-migration-runbook.md](docs/stage4-6-migration-runbook.md). Real-data transfer
+remains **not authorized**; production cutover **NO-GO**.
 
 ### Step 3F: Admin stability and Provider Credits checkpoint
 
@@ -1243,6 +1260,25 @@ data and rebuilds the cluster. Use `--port=NNNN` when port 3000 is busy. It need
 portable binaries in `.sites-runtime/postgresql17/pgsql/bin` (or `PG_LOCAL_BIN`).
 Unmigrated D1-only actions return a sanitized error under PostgreSQL; see
 [the access inventory](docs/postgres-app-access-inventory.md).
+
+**Live Coresignal External Discovery (paid, opt-in, approved 2026-11-15).** By default "Discover More
+Alumni" uses the built-in fictional mock data ("Demo Degree Alumnus", placeholder LinkedIn URL). To
+search real alumni with real LinkedIn profiles on PostgreSQL:
+
+```powershell
+node scripts/dev-local-windows.mjs --coresignal-live
+```
+
+The flag needs `CORESIGNAL_API_KEY` in `.env.local`. It applies the package's
+`dev:local:coresignal-exact-year-live` recipe: ES-DSL Preview on and the entitlement attested as
+`confirmed` by the account owner; Collect, Lusha, Bright Data and mail off; loopback only; at most
+`CORESIGNAL_LIVE_SEARCH_MAX_RESULTS` (default 1) results per search. Open
+`http://127.0.0.1:3000/login/admin`. Every search and every further page needs an Admin and an
+explicit confirmation. **Each confirmed search makes one paid Preview request**, about 20 search
+credits per page by the vendor workbook; the actual account debit is unverified and should be
+reconciled in Admin Provider Credits. The PostgreSQL live path has the same gates, accounting rows
+and responses as D1, and was verified up to the provider call without spending credits. The first
+paid request is the account owner's action.
 
 To use the original disposable D1 instead, set `CN_DB_BACKEND=d1` before launching
 (PowerShell: `$env:CN_DB_BACKEND="d1"; npm run dev:local:windows`). That mode is unchanged:
