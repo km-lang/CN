@@ -1,18 +1,24 @@
 import { and, eq } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, alumniEmploymentEvidence, providerResponseHistory } from "@/db/schema"
 import { CORESIGNAL_COLLECT_OPERATION, deserializeCollectEvidence } from "@/lib/coresignal-collect-only"
 import { attachCoresignalIdentity, reconcileCoresignalIdentity } from "@/lib/coresignal-identity"
 import { coresignalIdentityStore } from "@/lib/coresignal-identity-store"
 import { linkedinProfileIdentifier } from "@/lib/professional-profile"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
     const input = await request.json() as { collectHistoryId?: number; alumnusId?: number; confirmed?: boolean; identityReviewed?: boolean; educationReviewed?: boolean }
     if (!Number.isSafeInteger(input.collectHistoryId) || !Number.isSafeInteger(input.alumnusId) || input.collectHistoryId! < 1 || input.alumnusId! < 1) return Response.json({ error: "A saved Collect response and alumnus are required." }, { status: 400 })
+    if (selectedDatabaseBackend() === "postgres" && input.confirmed !== true) {
+      const { postgresCollectReviewPreflight } = await import("@/lib/postgres-collect-review-preflight")
+      return await postgresCollectReviewPreflight(input.collectHistoryId!, input.alumnusId!)
+    }
     const db = getDb()
     const [history] = await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.id, input.collectHistoryId!)).limit(1)
     const [person] = await db.select({ id: alumni.id, linkedinUrl: alumni.linkedinUrl, coresignalEmployeeId: alumni.coresignalEmployeeId, intakeStatus: alumni.intakeStatus, profileMatch: alumni.profileMatch }).from(alumni).where(eq(alumni.id, input.alumnusId!)).limit(1)
@@ -36,6 +42,7 @@ export async function POST(request: Request) {
     return Response.json({ decision: attached, associatedAlumnusId: person.id, providerCalls: 0 })
   } catch (error) {
     const denied = accessErrorResponse(error); if (denied) return denied
+    const databaseFailure = postgresDatabaseErrorResponse(error, true); if (databaseFailure) return databaseFailure
     return Response.json({ error: error instanceof Error ? error.message : "Collect review failed." }, { status: 500 })
   }
 }

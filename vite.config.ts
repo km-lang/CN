@@ -5,7 +5,7 @@ import { sites } from "./build/sites-vite-plugin";
 import { isAbsolute, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { realpathSync as fsRealpathSync } from "node:fs";
-import { localBrightDataLiveDemoEnabled, localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
+import { localBrightDataLiveDemoEnabled,localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
 
 // Native realpath expands Windows 8.3 short names (C:\Users\ABCDEF~1) so the
 // temp root and the launcher's persist path are compared in the same form.
@@ -59,6 +59,13 @@ export default defineConfig(async ({ command, mode }) => {
     && process.env.NODE_ENV === "development"
     && process.env.LOCAL_DEV_AUTH_ENABLED === "true"
     && (configuredLocalRole === "ADMIN" || configuredLocalRole === "PCOM");
+  const localPgSocket = localEnvironment.CN_PG_LOCAL_TEST_SOCKET?.trim() ?? "";
+  const localPgTest = localDevelopment
+    && localEnvironment.CN_DB_BACKEND === "postgres"
+    && localEnvironment.CN_PG_LOCAL_TEST_ENABLED === "true"
+    && !localEnvironment.DATABASE_URL?.trim()
+    && /^\/private\/tmp\/cn-step3c-postgres-[A-Za-z0-9]+\/socket$/.test(localPgSocket)
+    && (() => { try { return realpathSync(localPgSocket) === localPgSocket; } catch { return false; } })();
   const localCoresignalKey = localEnvironment.CORESIGNAL_API_KEY?.trim() ?? "";
   const localAuthRole = configuredLocalRole;
   const localPersistPath = localDevelopment
@@ -75,13 +82,17 @@ export default defineConfig(async ({ command, mode }) => {
     && absolutePersistPath !== projectRoot;
   const localWebhookMock = localIsolatedD1
     && localEnvironment.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true";
+  const localPgWebhookMock = localPgTest && localAuthRole === "ADMIN"
+    && localEnvironment.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true";
+  const localPgWebhookReceiver = localPgTest && localAuthRole === "ADMIN"
+    && localEnvironment.CORESIGNAL_WEBHOOK_RECEIVE_ENABLED === "true";
   const localLushaLive = localIsolatedD1
     && localEnvironment.LOCAL_LUSHA_LIVE_DEMO_ENABLED === "true"
     && localEnvironment.LUSHA_LIVE_ENABLED === "true";
   const localLushaMock = localIsolatedD1
     && localEnvironment.LOCAL_LUSHA_V3_MOCK_TRANSPORT === "true"
     && localEnvironment.LUSHA_LIVE_ENABLED !== "true";
-  const localWebhookSecret = localWebhookMock ? localEnvironment.CORESIGNAL_WEBHOOK_CALLBACK_SECRET?.trim() ?? "" : "";
+  const localWebhookSecret = localWebhookMock || localPgWebhookReceiver ? localEnvironment.CORESIGNAL_WEBHOOK_CALLBACK_SECRET?.trim() ?? "" : "";
   const localCoresignalDemo = localDevelopment
     && localCoresignalLiveDemoEnabled(localEnvironment);
   const localCollectMock = localDevelopment
@@ -95,6 +106,9 @@ export default defineConfig(async ({ command, mode }) => {
   const localRuntimeVariables: Record<string, string> = localDevelopment
     ? {
         NODE_ENV: "development",
+        CN_DB_BACKEND: localEnvironment.CN_DB_BACKEND?.trim() || "d1",
+        CN_PG_LOCAL_TEST_ENABLED: localPgTest ? "true" : "false",
+        CN_PG_LOCAL_TEST_SOCKET: localPgTest ? localPgSocket : "",
         LOCAL_DEV_AUTH_ENABLED: "true",
         LOCAL_DEV_AUTH_ROLE: localAuthRole,
         AUTH_SESSION_SECRET: localEnvironment.AUTH_SESSION_SECRET?.trim() || "local-development-only-session-signing-key",
@@ -116,8 +130,8 @@ export default defineConfig(async ({ command, mode }) => {
           : "unknown",
         CORESIGNAL_COLLECT_MOCK_TRANSPORT: localCollectMock ? "true" : "false",
         LOCAL_DEV_D1_PERSIST_PATH: localIsolatedD1 ? absolutePersistPath : "",
-        CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: localWebhookMock ? "true" : "false",
-        CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: localWebhookMock && localWebhookSecret.length >= 32 && localEnvironment.CORESIGNAL_WEBHOOK_RECEIVE_ENABLED === "true" ? "true" : "false",
+        CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: localWebhookMock || localPgWebhookMock ? "true" : "false",
+        CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: (localWebhookMock || localPgWebhookReceiver) && localWebhookSecret.length >= 32 && localEnvironment.CORESIGNAL_WEBHOOK_RECEIVE_ENABLED === "true" ? "true" : "false",
         CORESIGNAL_WEBHOOK_CALLBACK_SECRET: localWebhookSecret.length >= 32 ? localWebhookSecret : "",
         CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "1",
         CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
@@ -153,7 +167,7 @@ export default defineConfig(async ({ command, mode }) => {
         MAIL_MODE: "mock",
         MAIL_LIVE_ENABLED: "false",
         GMAIL_SEND_SCOPE_CONFIRMED: "false",
-        APP_PUBLIC_URL: "http://localhost:3000",
+        APP_PUBLIC_URL: localPgTest ? "http://localhost:3103" : "http://localhost:3000",
         APP_BASE_PATH: "/",
         ...(localEnvironment.INTELLIGENCE_SERVICE_URL?.trim()
           ? { INTELLIGENCE_SERVICE_URL: localEnvironment.INTELLIGENCE_SERVICE_URL.trim() }
@@ -166,7 +180,7 @@ export default defineConfig(async ({ command, mode }) => {
 
   return {
     server: {
-      host: localCoresignalDemo || localBrightDataDemo || localWebhookMock || localLushaLive || localLushaMock ? "127.0.0.1" : "0.0.0.0",
+      host: localCoresignalDemo || localBrightDataDemo || localWebhookMock || localLushaLive || localLushaMock ? "127.0.0.1" : localPgTest ? "127.0.0.1" : "0.0.0.0",
       allowedHosts: ["terminal.local"],
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }
@@ -177,7 +191,7 @@ export default defineConfig(async ({ command, mode }) => {
       sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        persistState: localPersistPath ? { path: localPersistPath } : true,
+        persistState: localPgTest ? { path: resolve(localPgSocket, "../cf-state") } : localPersistPath ? { path: localPersistPath } : true,
         inspectorPort: false,
         config: { ...localBindingConfig, vars: localRuntimeVariables },
       }),

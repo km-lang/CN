@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers"
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, coresignalWebhookEvents, externalDiscoveryResults, externalDiscoverySearches, providerResponseHistory, providerSettings } from "@/db/schema"
 import { CoresignalProviderError, collectCoresignalEmployeeWithMetadata, safeCoresignalError } from "@/lib/coresignal-client"
 import {
@@ -26,7 +27,8 @@ import {
 } from "@/lib/coresignal-collect-only"
 import { coresignalCollectEnabled, coresignalCollectEntitlement, coresignalCollectMockTransportEnabled, providerConfigured, providerMode } from "@/lib/provider-runtime"
 import { deserializeCoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
-import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
+import { AccessError, accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { classifyCurrentTitle } from "@/lib/seniority-classifier"
 import { CORESIGNAL_COLLECT_ESTIMATED_CREDITS, webhookMockEnabled } from "@/lib/coresignal-webhooks"
 
@@ -46,6 +48,9 @@ function monthStart() { const date = new Date(); return new Date(Date.UTC(date.g
 function confirmationSecret() { return process.env.AUTH_SESSION_SECRET?.trim() ?? "" }
 function requestSummary(candidate: RetainedSearchCandidate) { return candidate.sourceWebhookEventId ? `Webhook event #${candidate.sourceWebhookEventId} Collect-only · Employee ID ${candidate.employeeId}` : `${REQUEST_SUMMARY_PREFIX} · Employee ID ${candidate.employeeId}` }
 function mockCollectEvidence(employeeId: string) {
+  if (coresignalCollectMockTransportEnabled() && employeeId === "99914001") {
+    throw new CoresignalProviderError("Fictional mock Collect rejection.", "insufficient_credits", 402, 0, "upstream_http", 402)
+  }
   return {
     body: {
       id: Number(employeeId), full_name: "Synthetic Collect Review Candidate", profile_url: "https://www.linkedin.com/in/synthetic-collect-review-candidate",
@@ -181,17 +186,36 @@ const claimStore: CollectClaimStore = {
 export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresCoresignalCollectOverview } = await import("@/lib/postgres-coresignal-collect-read")
+      return Response.json(await postgresCoresignalCollectOverview())
+    }
     return Response.json({ candidates: await eligibleCandidates(), runtime: await runtimeState() })
   } catch (error) {
     const denied = accessErrorResponse(error); if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load retained Coresignal candidates." }, { status: 500 })
   }
 }
 
 export async function POST(request: Request) {
+  let requestedAction: string | undefined
   try {
     const context = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
     const payload = await request.json() as { action?: "preflight" | "selection_preflight" | "execute"; searchHistoryId?: number; alumnusId?: number; employeeId?: string; webhookEventId?: number; confirmed?: boolean; confirmationToken?: string; selections?: Array<{ searchHistoryId: number; employeeId: string }> }
+    requestedAction = payload.action
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "selection_preflight") {
+      const { postgresCollectSelectionPreflight } = await import("@/lib/postgres-collect-selection-preflight")
+      return await postgresCollectSelectionPreflight(payload.selections)
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "preflight") {
+      const { postgresCollectSinglePreflight } = await import("@/lib/postgres-collect-selection-preflight")
+      return await postgresCollectSinglePreflight(payload)
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "execute") {
+      const { postgresExecuteMockCollect } = await import("@/lib/postgres-collect-execute")
+      return await postgresExecuteMockCollect(payload, context, async employeeId => mockCollectEvidence(employeeId))
+    }
     if (payload.action === "selection_preflight") {
       const selections = payload.selections
       if (!Array.isArray(selections) || selections.length < 1 || selections.length > 25 || selections.some(item => !item || !Number.isSafeInteger(item.searchHistoryId) || item.searchHistoryId < 1 || typeof item.employeeId !== "string")) {
@@ -257,7 +281,7 @@ export async function POST(request: Request) {
     await writeSecurityAudit(context, { action: "coresignal_collect_only_executed", entityType: "provider_response_history", entityId: result.claimId, metadata: { sourceSearchHistoryId: resolved.candidate.searchHistoryId, sourceAlumnusId: resolved.candidate.sourceAlumnusId ?? null, sourceWebhookEventId: resolved.candidate.sourceWebhookEventId ?? null, employeeId: resolved.candidate.employeeId, comparisonOutcome, providerCalls: coresignalCollectMockTransportEnabled() ? 0 : 1, canonicalMutations: 0, identityAttachments: 0 } })
     return Response.json({ state: comparisonOutcome === "NO_CHANGE" ? "EVIDENCE_STORED" : result.state, comparisonOutcome, evidence: result.evidence })
   } catch (error) {
-    const denied = accessErrorResponse(error); if (denied) return denied
+    if (error instanceof AccessError) return accessErrorResponse(error)!
     const failure = safeCoresignalError(error)
     const safeWorkflowMessage = error instanceof Error && /^(The Collect execution confirmation is invalid or expired\.|Collect preflight is blocked\.|A Collect attempt already exists|This notification is not eligible for profile collection\.|Identity review is required before collecting this notification\.|The application budget cannot cover this full-record Collect\.|Coresignal server authentication is not configured\.|Coresignal live mode is disabled\.|The independent Collect execution gate is disabled\.|The account-specific Base Employee Collect entitlement is unknown\.|The configured account is not entitled to Base Employee Collect\.|The Coresignal application allowance has fewer than)/.test(error.message)
       ? error.message
@@ -265,6 +289,13 @@ export async function POST(request: Request) {
     const diagnostic = error instanceof CoresignalProviderError
       ? { failureOrigin: error.origin, upstreamHttpStatus: error.upstreamHttpStatus, providerRequestId: error.providerRequestId }
       : { failureOrigin: "local_processing", upstreamHttpStatus: null, providerRequestId: null }
+    if (selectedDatabaseBackend() === "postgres") {
+      if (safeWorkflowMessage) return Response.json({ error: safeWorkflowMessage, ...diagnostic }, { status: 409 })
+      if (requestedAction === "execute" && process.env.CN_PG_LOCAL_TEST_ENABLED === "true" && coresignalCollectMockTransportEnabled()) {
+        return Response.json({ error: failure.message, ...diagnostic }, { status: failure.status || 409 })
+      }
+      return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
+    }
     return Response.json({ error: safeWorkflowMessage ?? failure.message, ...diagnostic }, { status: safeWorkflowMessage ? 409 : failure.status || 409 })
   }
 }

@@ -1,6 +1,8 @@
 import { normalizeDirectoryQuery } from "@/lib/directory-query"
 import { runDirectoryQuery } from "@/lib/directory-data"
 import { accessErrorResponse, authorizeRequest } from "@/lib/security"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 
 function requestQuery(request: Request) {
   const url = new URL(request.url)
@@ -21,11 +23,19 @@ export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "VIEW_ALUMNI")
     const query = requestQuery(request)
-    const result = await runDirectoryQuery(query)
+    const result = selectedDatabaseBackend() === "postgres"
+      ? await (async () => {
+        const { getPostgresDb } = await import("@/db/postgres/adapter")
+        const { runPostgresDirectoryQuery } = await import("@/lib/postgres-directory-data")
+        return runPostgresDirectoryQuery(getPostgresDb(), query)
+      })()
+      : await runDirectoryQuery(query)
     return Response.json({ items: result.items, total: result.total, page: result.page, pageSize: result.pageSize, pageCount: result.pageCount, filters: query.filters, sort: query.sort }, { headers: { "cache-control": "private, no-store" } })
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    const databaseFailure = postgresDatabaseErrorResponse(error)
+    if (databaseFailure) return databaseFailure
     return Response.json({ error: error instanceof Error ? error.message : "Unable to query the Alumni Directory." }, { status: 400 })
   }
 }

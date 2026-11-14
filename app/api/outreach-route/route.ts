@@ -1,9 +1,11 @@
 import { and, eq } from "drizzle-orm";
 
 import { getDb } from "@/db";
+import { selectedDatabaseBackend } from "@/db/backend";
 import { activityLog, alumni, alumniRelationships, engagementEvents } from "@/db/schema";
 import { appConfig } from "@/lib/app-config";
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security";
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error";
 
 function relationshipStrength(value: string) {
   return ["Very strong", "Strong"].includes(value);
@@ -19,6 +21,10 @@ export async function POST(request: Request) {
     const payload = await request.json() as { targetAlumnusId?: number };
     if (!Number.isInteger(payload.targetAlumnusId)) {
       return Response.json({ error: "Select a target alumnus before requesting a route." }, { status: 400 });
+    }
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresOutreachRoute } = await import("@/lib/postgres-outreach-route");
+      return await postgresOutreachRoute(payload.targetAlumnusId, context);
     }
     const db = getDb();
     const actor = context.displayName;
@@ -90,6 +96,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 });
     return Response.json({ error: error instanceof Error ? error.message : "Unable to recommend an outreach route." }, { status: 500 });
   }
 }

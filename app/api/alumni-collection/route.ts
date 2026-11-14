@@ -1,6 +1,8 @@
 import { inArray } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { alumni, alumniDataLifecycle, alumniPrivacyControls } from "@/db/schema"
 import { normalizeDirectoryQuery } from "@/lib/directory-query"
 import { runDirectoryQuery } from "@/lib/directory-data"
@@ -19,6 +21,11 @@ function requestQuery(request: Request) {
 export async function GET(request: Request) {
   try {
     const context = await authorizeRequest(request, "VIEW_ALUMNI")
+    if (selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { postgresAlumniCollectionResponse } = await import("@/lib/postgres-alumni-collection")
+      return postgresAlumniCollectionResponse(getPostgresDb(), context, requestQuery(request))
+    }
     const result = await runDirectoryQuery(requestQuery(request), true)
     const ids = result.items.map(item => item.id)
     if (!ids.length) return Response.json({ ...result, items: [] }, { headers: { "cache-control": "private, no-store" } })
@@ -53,6 +60,8 @@ export async function GET(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    const databaseFailure = postgresDatabaseErrorResponse(error)
+    if (databaseFailure) return databaseFailure
     return Response.json({ error: error instanceof Error ? error.message : "Unable to query alumni." }, { status: 400 })
   }
 }

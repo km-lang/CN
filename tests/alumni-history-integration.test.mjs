@@ -67,7 +67,7 @@ test("exact D1 observation IDs carry the predecessor across a 20-row page bounda
     db.exec("INSERT INTO alumni (id,profile_key,name,initials,batch,programme,company,title,\"function\",seniority,location) VALUES (1,'synthetic:history','Synthetic History','SH',2024,'PGP','Example','Director','Finance','Director','Delhi')")
     const insert = db.prepare("INSERT INTO alumni_source_observations (alumnus_id,mutation_request_key,source_row_key,filename,source_system,observed_json,imported_by,created_at) VALUES (1,?,?,?,?,?,?,?)")
     for (let i = 1; i <= 25; i += 1) insert.run(`request-${i}`, `row-${i}`, "synthetic.xlsx", "synthetic", JSON.stringify({ company: `Company ${i}` }), "Admin", `2027-01-01T00:${String(i).padStart(2, "0")}:00Z`)
-    const extracted = route.match(/db\.all<IndexRow>\(sql`([\s\S]*?)`\)/)?.[1]
+    const extracted = route.match(/(?:getDb\(\)|db)\.all<IndexRow>\(sql`([\s\S]*?)`\)/)?.[1]
     assert.ok(extracted)
     const query = (offset) => extracted.replaceAll("${alumnusId}", "1").replaceAll("${pageSize + 1}", "21").replaceAll("${offset}", String(offset))
     const first = db.prepare(query(0)).all().slice(0, 20)
@@ -98,7 +98,7 @@ test("retained webhook signal appears in exact alumnus history without invented 
     db.exec("INSERT INTO alumni (id,profile_key,name,initials,batch,programme,company,title,\"function\",seniority,location) VALUES (1,'synthetic:webhook-history','Synthetic History','SH',2024,'PGP','Canonical Co','Director','Finance','Director','Delhi')")
     db.exec("INSERT INTO coresignal_webhook_subscriptions (id,name,cohort_type,selection_json,selection_version,membership_json,created_by) VALUES (1,'Synthetic','FIXED_IDS','[1]','fixed-cn-ids-v1','[]','Admin')")
     db.exec("INSERT INTO coresignal_webhook_events (subscription_id,alumnus_id,employee_id,change_type,changed_fields_json,received_at,payload_digest,dedupe_window,status) VALUES (1,1,'111','changed','[\"experience\"]','2027-01-01T00:00:00Z','synthetic-digest','provider-event-id','AWAITING_PROFILE_COLLECTION')")
-    const extracted = route.match(/db\.all<IndexRow>\(sql`([\s\S]*?)`\)/)?.[1]
+    const extracted = route.match(/(?:getDb\(\)|db)\.all<IndexRow>\(sql`([\s\S]*?)`\)/)?.[1]
     assert.ok(extracted)
     const query = extracted.replaceAll("${alumnusId}", "1").replaceAll("${pageSize + 1}", "21").replaceAll("${offset}", "0")
     const indexed = db.prepare(query).all()

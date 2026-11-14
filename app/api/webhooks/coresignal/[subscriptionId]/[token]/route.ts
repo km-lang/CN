@@ -3,6 +3,7 @@ import { getDb } from "@/db"
 import { alumni, coresignalWebhookCoverage, coresignalWebhookEvents, coresignalWebhookIdentities, coresignalWebhookSubscriptions } from "@/db/schema"
 import { and, desc, eq } from "drizzle-orm"
 import { WEBHOOK_BODY_LIMIT, callbackAuthorized, parseWebhookNotices, sha256 } from "@/lib/coresignal-webhooks"
+import { selectedDatabaseBackend } from "@/db/backend"
 
 async function boundedBody(request: Request) {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new Error("JSON content type is required.")
@@ -34,6 +35,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ sub
   const id = Number(path.subscriptionId)
   if (!Number.isSafeInteger(id) || id < 1 || !(await callbackAuthorized(id, path.token, configuredSecret))) return Response.json({ error: "Webhook authentication failed." }, { status: 401 })
   try {
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresReceiveCoresignalWebhook } = await import("@/lib/postgres-coresignal-webhook-receiver")
+      let parsed: unknown
+      try {
+        parsed = await boundedBody(request)
+        parseWebhookNotices(parsed)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid webhook body."
+        const safe = /^(JSON content type is required\.|Webhook body is too large\.|Webhook body is required\.|Webhook batch size is invalid\.|Webhook event must be an object\.|Unsupported webhook event identity or type\.|Invalid changed_fields list\.)$/.test(message)
+        return Response.json({ error: safe ? message : "Invalid webhook body." }, { status: 400 })
+      }
+      return await postgresReceiveCoresignalWebhook(id, async () => parsed)
+    }
     const [plan] = await getDb().select().from(coresignalWebhookSubscriptions).where(eq(coresignalWebhookSubscriptions.id, id)).limit(1)
     if (!plan || !plan.providerSubscriptionId || !["ACTIVE", "RENEWAL_DUE", "EXPIRED"].includes(plan.status)) return Response.json({ error: "Unknown or stopped subscription." }, { status: 404 })
     const parsed = await boundedBody(request)
@@ -74,6 +88,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ sub
     const stored = (results as Array<{ meta?: { changes?: number } }>).reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0)
     return Response.json({ stored, duplicates: notices.length - stored, providerRequests: 0, canonicalMutations: 0 }, { status: 202, headers: { "cache-control": "no-store" } })
   } catch (error) {
+    if (selectedDatabaseBackend() === "postgres") return Response.json({ error: "Webhook receipt could not be persisted." }, { status: 503 })
     const message = error instanceof Error ? error.message : "Webhook receipt failed."
     const invalid = /JSON|body|event|changed_fields|content type|batch size/i.test(message)
     return Response.json({ error: invalid ? message : "Webhook receipt could not be persisted." }, { status: invalid ? 400 : 503 })

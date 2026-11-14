@@ -1,15 +1,12 @@
 import { and, desc, eq, sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, coresignalWebhookEvents, fieldChangeHistory, mutationCommitGuards, mutationRequests, securityAuditEvents } from "@/db/schema"
 import { planProfileUpdate } from "@/lib/alumni-profile-update"
-import { effectiveIntakeStatus } from "@/lib/intake-status"
+import { alumnusResponse } from "@/lib/alumnus-response"
 import { existingMutation, mutationConflictResponse, mutationIdentity, mutationPendingResponse, mutationRequestInsert, replayMutationResponse } from "@/lib/mutation-idempotency"
-import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, safeAuditMetadata } from "@/lib/security"
-
-function alumnusResponse(row: typeof alumni.$inferSelect, role: "ADMIN" | "PCOM" | "DEVELOPER") {
-  const contacts = hasPermission(role, "VIEW_CONTACTS")
-  return { ...row, intakeStatus: effectiveIntakeStatus(row), email: contacts ? row.email : maskEmail(row.email), phone: contacts ? row.phone : maskPhone(row.phone), batch: row.graduationYear || row.batch, assessment: { hiringInfluence: row.hiringInfluence, iimlRelationship: row.iimlRelationship, warmIntroPotential: row.warmIntroPotential }, verification: { profileMatch: row.profileMatch, currentCompany: row.currentCompanyVerification, designation: row.designationVerification, email: row.emailVerification, phone: row.phoneVerification, location: row.locationVerification } }
-}
+import { accessErrorResponse, authorizeRequest, safeAuditMetadata } from "@/lib/security"
 
 async function alumnusId(params: Promise<{ id: string }>) {
   const id = Number((await params).id)
@@ -21,6 +18,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   try {
     const context = await authorizeRequest(request, "VIEW_ALUMNI")
     const id = await alumnusId(params)
+    if (selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { postgresAlumnusProfileResponse } = await import("@/lib/postgres-alumnus-profile")
+      return postgresAlumnusProfileResponse(getPostgresDb(), id, context, alumnusResponse)
+    }
     const db = getDb()
     const [person] = await db.select().from(alumni).where(eq(alumni.id, id)).limit(1)
     if (!person) return Response.json({ error: "Alumnus not found." }, { status: 404 })
@@ -30,7 +32,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       db.select().from(fieldChangeHistory).where(eq(fieldChangeHistory.alumnusId, id)).orderBy(desc(fieldChangeHistory.createdAt), desc(fieldChangeHistory.id)).limit(30),
     ])
     return Response.json({ alumnus: alumnusResponse(person, context.role), employmentHistory, proposals, fieldHistory: history })
-  } catch (error) { return accessErrorResponse(error) ?? Response.json({ error: error instanceof Error ? error.message : "Unable to load the alumnus profile." }, { status: 400 }) }
+  } catch (error) { return accessErrorResponse(error) ?? postgresDatabaseErrorResponse(error) ?? Response.json({ error: error instanceof Error ? error.message : "Unable to load the alumnus profile." }, { status: 400 }) }
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -39,6 +41,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const id = await alumnusId(params)
     const payload = await request.json() as { expectedVersion?: number; fields?: Record<string, unknown>; clearFields?: string[]; source?: string }
     if (!Number.isInteger(payload.expectedVersion) || !payload.fields || typeof payload.fields !== "object") return Response.json({ error: "Record version and profile fields are required." }, { status: 400 })
+    if (selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { postgresProfilePatch } = await import("@/lib/postgres-profile-mutations")
+      return await postgresProfilePatch(getPostgresDb(), request, id, context, payload, alumnusResponse)
+    }
     const identity = await mutationIdentity(request, context, "alumnus_profile_patch", String(id), payload)
     const prior = await existingMutation(identity, context.userId)
     if (prior?.kind === "conflict") return mutationConflictResponse()
@@ -79,7 +86,16 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       throw error
     }
     return Response.json(responseBody)
-  } catch (error) { return accessErrorResponse(error) ?? Response.json({ error: error instanceof Error ? error.message : "Unable to update the alumnus profile." }, { status: 400 }) }
+  } catch (error) {
+    const denied = accessErrorResponse(error)
+    if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") {
+      if (error instanceof Error && (error.message === "Invalid alumnus ID." || error.message.startsWith("Idempotency-Key cannot exceed"))) return Response.json({ error: error.message }, { status: 400 })
+      const { profileMutationErrorResponse } = await import("@/lib/postgres-profile-mutations")
+      return profileMutationErrorResponse(error)
+    }
+    return Response.json({ error: error instanceof Error ? error.message : "Unable to update the alumnus profile." }, { status: 400 })
+  }
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -88,6 +104,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const id = await alumnusId(params)
     const payload = await request.json() as { action?: "accept_proposal" | "reject_proposal"; proposalId?: number; note?: string }
     if (!Number.isInteger(payload.proposalId) || !["accept_proposal", "reject_proposal"].includes(String(payload.action))) return Response.json({ error: "A valid proposal decision is required." }, { status: 400 })
+    if (selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { postgresProfileProposalDecision } = await import("@/lib/postgres-profile-mutations")
+      return await postgresProfileProposalDecision(getPostgresDb(), request, id, context, payload)
+    }
     const identity = await mutationIdentity(request, context, "alumnus_profile_proposal_decision", `${id}:${payload.proposalId}`, payload)
     const prior = await existingMutation(identity, context.userId)
     if (prior?.kind === "conflict") return mutationConflictResponse()
@@ -146,5 +167,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       throw error
     }
     return Response.json(responseBody)
-  } catch (error) { return accessErrorResponse(error) ?? Response.json({ error: error instanceof Error ? error.message : "Unable to decide the profile proposal." }, { status: 400 }) }
+  } catch (error) {
+    const denied = accessErrorResponse(error)
+    if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") {
+      if (error instanceof Error && (error.message === "Invalid alumnus ID." || error.message.startsWith("Idempotency-Key cannot exceed"))) return Response.json({ error: error.message }, { status: 400 })
+      const { profileMutationErrorResponse } = await import("@/lib/postgres-profile-mutations")
+      return profileMutationErrorResponse(error)
+    }
+    return Response.json({ error: error instanceof Error ? error.message : "Unable to decide the profile proposal." }, { status: 400 })
+  }
 }

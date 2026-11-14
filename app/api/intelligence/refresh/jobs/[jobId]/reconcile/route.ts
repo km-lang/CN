@@ -1,6 +1,7 @@
 import { evaluateCnSelection } from "@/lib/intelligence-selection.server"
 import type { RefreshJobRecord } from "@/lib/intelligence-contracts"
 import { intelligenceErrorResponse, intelligenceRequest } from "@/lib/intelligence-service.server"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { accessErrorResponse, authorizeRequest } from "@/lib/security"
 
 async function currentSelection(request: Request, id: string, permission: "VIEW_ALUMNI" | "OPERATE_PCOM") {
@@ -19,7 +20,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ jobI
     const page = Number(new URL(request.url).searchParams.get("page") ?? 1)
     if (!Number.isSafeInteger(page) || page < 1 || page > 400) return Response.json({ error: "Page must be between 1 and 400." }, { status: 400 })
     return Response.json({ jobId: outcome.job.id, monitoringState: "INACTIVE_POLICY", ...outcome.selection, members: outcome.selection.members.slice((page - 1) * 50, page * 50), page, pageSize: 50, hasMore: page * 50 < outcome.selection.selectedCount, providerCalls: 0 })
-  } catch (error) { return accessErrorResponse(error) ?? intelligenceErrorResponse(error) }
+  } catch (error) { return accessErrorResponse(error) ?? postgresDatabaseErrorResponse(error) ?? intelligenceErrorResponse(error) }
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ jobId: string }> }) {
@@ -28,5 +29,5 @@ export async function POST(request: Request, { params }: { params: Promise<{ job
     if (outcome instanceof Response) return outcome
     const recorded = await intelligenceRequest(outcome.actor, `/v1/refresh/jobs/${outcome.job.id}/reconcile`, { method: "POST", body: JSON.stringify({ selectedCnAlumniIds: outcome.selection.members.map(item => item.cnAlumniId), identityReady: outcome.selection.identityReady, pendingProviderMapping: outcome.selection.pendingProviderMapping }) })
     return Response.json({ jobId: outcome.job.id, monitoringState: "INACTIVE_POLICY", selection: { ...outcome.selection, members: outcome.selection.members.slice(0, 50), hasMore: outcome.selection.members.length > 50 }, recorded, providerCalls: 0 })
-  } catch (error) { return accessErrorResponse(error) ?? intelligenceErrorResponse(error) }
+  } catch (error) { return accessErrorResponse(error) ?? postgresDatabaseErrorResponse(error) ?? intelligenceErrorResponse(error) }
 }

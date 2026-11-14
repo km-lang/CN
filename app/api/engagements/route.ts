@@ -1,6 +1,8 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db";
+import { selectedDatabaseBackend } from "@/db/backend";
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error";
 import {
   alumni,
   alumniPrivacyControls,
@@ -22,6 +24,7 @@ import { accessErrorResponse, authorizeRequest, type SecurityContext, writeSecur
 
 const terminalStatuses = new Set(["Action Taken", "Response Received", "Closed", "Completed", "Skipped"]);
 const actionableBirthdayStates = new Set(["Confirmed internally", "Manually confirmed", "Coresignal sourced"]);
+const postgresLocalActions = new Set(["view", "acknowledge", "assign_to", "assign", "plan", "manual_action", "skip", "incorrect", "response", "follow_up", "close", "correct_birthday"]);
 
 async function audit(eventId: number, context: SecurityContext, action: string, details = "") {
   await getDb().insert(engagementAuditLog).values({ eventId, actor: context.displayName, action, details });
@@ -29,8 +32,9 @@ async function audit(eventId: number, context: SecurityContext, action: string, 
 }
 
 async function loadWorkspace() {
-  const db = getDb();
-  const [events, people, birthdays, preferences, templates, actions, responses, views, audits, privacyControls, assignees] = await Promise.all([
+  const [events, people, birthdays, preferences, templates, actions, responses, views, audits, privacyControls, assignees] = selectedDatabaseBackend() === "postgres"
+    ? await (await import("@/lib/postgres-engagement-workspace")).postgresEngagementWorkspaceRows()
+    : await (async () => { const db = getDb(); return Promise.all([
     db.select().from(engagementEvents).orderBy(desc(engagementEvents.eventDate), desc(engagementEvents.id)),
     db.select().from(alumni),
     db.select().from(birthdayData),
@@ -42,7 +46,7 @@ async function loadWorkspace() {
     db.select().from(engagementAuditLog).orderBy(desc(engagementAuditLog.createdAt), desc(engagementAuditLog.id)),
     db.select().from(alumniPrivacyControls),
     db.select({ id: applicationUsers.id, displayName: applicationUsers.displayName, email: applicationUsers.email, enabled: applicationUsers.enabled, role: applicationUsers.role }).from(applicationUsers),
-  ]);
+  ] as const) })();
   const peopleById = new Map(people.map(person => [person.id, person]));
   const birthdayByAlumnus = new Map(birthdays.map(item => [item.alumnusId, item]));
   const preferenceByAlumnus = new Map(preferences.filter(item => item.engagementType === "Birthday").map(item => [item.alumnusId, item]));
@@ -237,6 +241,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 });
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load the shared engagement workspace." }, { status: 500 });
   }
 }
@@ -262,6 +267,26 @@ export async function POST(request: Request) {
       birthMonthDay?: string;
       approved?: boolean;
     };
+    if (selectedDatabaseBackend() === "postgres" && postgresLocalActions.has(payload.action ?? "")) {
+      const { postgresEngagementLocalAction } = await import("@/lib/postgres-engagement-local-actions");
+      return await postgresEngagementLocalAction(payload, context, loadWorkspace);
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "bulk_preview") {
+      const { postgresEngagementBulkPreview } = await import("@/lib/postgres-engagement-bulk-preview");
+      return Response.json(await postgresEngagementBulkPreview(payload.eventIds, payload.templateId, context.displayName));
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "preview") {
+      const { postgresEngagementPreview } = await import("@/lib/postgres-engagement-preview");
+      return await postgresEngagementPreview(Number(payload.eventId), payload.templateId, context);
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "prepare_manual_email") {
+      const { postgresPrepareManualEmail } = await import("@/lib/postgres-engagement-manual-email");
+      return await postgresPrepareManualEmail(Number(payload.alumnusId), context);
+    }
+    if (selectedDatabaseBackend() === "postgres" && (payload.action === "send" || payload.action === "bulk_send")) {
+      const { postgresEngagementSend } = await import("@/lib/postgres-engagement-send");
+      return await postgresEngagementSend(payload, context);
+    }
     const actor = context.displayName;
     const db = getDb();
     const now = new Date().toISOString();
@@ -443,6 +468,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 });
     const message = error instanceof Error ? error.message : "Unable to update the engagement event.";
     const status = /Already engaged|assigned to|already completed/i.test(message) ? 409 : 400;
     return Response.json({ error: message }, { status });

@@ -1,9 +1,11 @@
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, externalDiscoveryCandidateEvidence, externalDiscoveryResults, externalDiscoverySearches, provisionalAlumniIntakes, securityAuditEvents } from "@/db/schema"
 import { resultProviderIntegrity } from "@/lib/discovery-runs"
 import { assessProvisionalIntake, provisionalAlumnusValues, type IntakeCandidate } from "@/lib/provisional-intake"
 import { accessErrorResponse, authorizeRequest, safeAuditMetadata } from "@/lib/security"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 
 function selectedIds(value: unknown) {
   if (!Array.isArray(value) || !value.length || value.length > 25 || value.some(id => !Number.isSafeInteger(id) || id <= 0)) return null
@@ -23,6 +25,11 @@ export async function POST(request: Request) {
     const resultIds = selectedIds(payload.resultIds)
     if (!resultIds) return Response.json({ error: "Select 1–25 discovery results for provisional intake." }, { status: 400 })
     if (payload.action === "execute" && payload.confirmed !== true) return Response.json({ error: "Confirm provisional intake after reviewing eligible and excluded counts." }, { status: 400 })
+
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresProvisionalIntake } = await import("@/lib/postgres-provisional-intake")
+      return await postgresProvisionalIntake(context, payload.action, resultIds)
+    }
 
     const db = getDb()
     const [results, knownAlumni, evidence] = await Promise.all([
@@ -105,6 +112,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
     return Response.json({ error: error instanceof Error ? error.message : "Provisional intake failed." }, { status: 500 })
   }
 }

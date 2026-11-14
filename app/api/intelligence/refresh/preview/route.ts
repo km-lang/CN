@@ -2,6 +2,7 @@ import type { RefreshJobInput, RefreshPreview } from "@/lib/intelligence-contrac
 import { resolveFixedIntelligenceCohort } from "@/lib/intelligence-cohort.server"
 import { evaluateCnSelection } from "@/lib/intelligence-selection.server"
 import { intelligenceErrorResponse, intelligenceRequest } from "@/lib/intelligence-service.server"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { accessErrorResponse, authorizeRequest } from "@/lib/security"
 import { ZodError } from "zod"
 
@@ -25,5 +26,5 @@ export async function POST(request: Request) {
     }
     const preview = await intelligenceRequest<RefreshPreview>(context, "/v1/refresh/preview", { method: "POST", body: JSON.stringify(job) })
     return Response.json({ preview, cohort })
-  } catch (error) { return accessErrorResponse(error) ?? (error instanceof ZodError ? Response.json({ error: "Invalid CN selection contract.", issues: error.issues }, { status: 400 }) : intelligenceErrorResponse(error)) }
+  } catch (error) { return accessErrorResponse(error) ?? (error instanceof ZodError ? Response.json({ error: "Invalid CN selection contract.", issues: error.issues }, { status: 400 }) : postgresDatabaseErrorResponse(error) ?? intelligenceErrorResponse(error)) }
 }

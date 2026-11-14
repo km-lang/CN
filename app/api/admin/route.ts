@@ -1,6 +1,8 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import {
   activityLog,
   alumni,
@@ -127,6 +129,36 @@ async function mockCleanupInventory() {
 export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_USERS")
+    if (selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const pg = await import("@/db/postgres/schema")
+      const db = getPostgresDb()
+      // A single short checkout bounds pool demand during concurrent page loads.
+      const { users, identities, audit, lifecycle, providerLimits, mailValidationRows, programmes, companyMappings, companyAliases } = await db.transaction(async tx => ({
+        users: await tx.select().from(pg.applicationUsers).orderBy(pg.applicationUsers.displayName),
+        identities: await tx.select({ id: pg.applicationIdentities.id, applicationUserId: pg.applicationIdentities.applicationUserId, provider: pg.applicationIdentities.provider, verifiedEmail: pg.applicationIdentities.verifiedEmail, providerDomain: pg.applicationIdentities.providerDomain, lastAuthenticatedAt: pg.applicationIdentities.lastAuthenticatedAt }).from(pg.applicationIdentities).orderBy(pg.applicationIdentities.provider),
+        audit: await tx.select().from(pg.securityAuditEvents).orderBy(desc(pg.securityAuditEvents.createdAt), desc(pg.securityAuditEvents.id)).limit(200),
+        lifecycle: await tx.select().from(pg.alumniDataLifecycle).orderBy(desc(pg.alumniDataLifecycle.updatedAt)),
+        providerLimits: await tx.select().from(pg.providerSettings).orderBy(pg.providerSettings.provider),
+        mailValidationRows: await tx.select().from(pg.securityAuditEvents).where(eq(pg.securityAuditEvents.action, "gmail_connectivity_validated")).orderBy(desc(pg.securityAuditEvents.createdAt), desc(pg.securityAuditEvents.id)).limit(1),
+        programmes: await tx.select().from(pg.programmeOptions).orderBy(pg.programmeOptions.sortOrder, pg.programmeOptions.name),
+        companyMappings: await tx.select().from(pg.providerCompanyMappings).orderBy(pg.providerCompanyMappings.displayName, pg.providerCompanyMappings.provider),
+        companyAliases: await tx.select().from(pg.providerCompanyAliases).orderBy(pg.providerCompanyAliases.displayAlias),
+      }))
+      return Response.json({
+        users: users.map(user => ({ ...user, identities: identities.filter(identity => identity.applicationUserId === user.id) })),
+        audit, lifecycle, providerLimits,
+        programmeOptions: programmes,
+        providerCompanyMappings: companyMappings,
+        providerCompanyAliases: companyAliases,
+        operationalReadiness: {
+          coresignal: { mode: providerMode("coresignal"), configured: providerConfigured("coresignal"), searchMaximum: coresignalLiveSearchMaximum(), refreshMaximum: coresignalLiveRefreshMaximum() },
+          lushaContacts: { mode: providerMode("lusha"), configured: providerConfigured("lusha") },
+          signals: signalsRuntimeStatus(),
+          mail: { ...mailRuntimeStatus(), ...mailConfiguration(), ...mailValidationReadiness(mailValidationRows[0]) },
+        },
+      })
+    }
     const db = getDb()
     const [users, identities, audit, lifecycle, providerLimits, mailValidationRows, programmes, companyMappings] = await Promise.all([
       db.select().from(applicationUsers).orderBy(applicationUsers.displayName),
@@ -161,6 +193,8 @@ export async function GET(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    const databaseFailure = postgresDatabaseErrorResponse(error, true)
+    if (databaseFailure) return databaseFailure
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load administration data." }, { status: 500 })
   }
 }
@@ -169,6 +203,68 @@ export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_USERS")
     const payload = await request.json() as { action?: string; userId?: number; correctUserId?: number; email?: string; displayName?: string; role?: string; enabled?: boolean; alumnusId?: number; status?: string; notes?: string; confirmation?: string; confirmSimilarEmail?: boolean; programmeId?: number; code?: string; name?: string; active?: boolean; mappingId?: number; provider?: string; providerCompanyId?: string; mappingSource?: string; evidenceReference?: string; providerSourceId?: string; providerCompanyUrl?: string; aliases?: string[] }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "add_programme") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { addPostgresProgrammeOption, ProgrammeOptionError } = await import("@/db/postgres/programme-options")
+      try {
+        const programme = await addPostgresProgrammeOption(getPostgresDb(), context, payload)
+        return Response.json({ programme }, { status: 201 })
+      } catch (error) {
+        if (error instanceof ProgrammeOptionError) return Response.json({ error: error.message }, { status: error.status })
+        throw error
+      }
+    }
+    if (selectedDatabaseBackend() === "postgres" && (payload.action === "rename_programme" || payload.action === "set_programme_status")) {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { updatePostgresProgrammeOption, ProgrammeOptionError } = await import("@/db/postgres/programme-options")
+      try {
+        const programme = await updatePostgresProgrammeOption(getPostgresDb(), context, payload)
+        return Response.json({ programme })
+      } catch (error) {
+        if (error instanceof ProgrammeOptionError) return Response.json({ error: error.message }, { status: error.status })
+        throw error
+      }
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "correct_pre_authorization") {
+      return Response.json({ error: "Pre-authorization correction is pending PostgreSQL concurrency parity review." }, { status: 501 })
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "anonymize_alumnus") {
+      const { postgresAnonymizeAlumnus } = await import("@/lib/postgres-admin-anonymize")
+      return await postgresAnonymizeAlumnus(payload, context)
+    }
+    if (selectedDatabaseBackend() === "postgres" && ["authorize_user", "change_role", "set_user_status", "update_lifecycle", "upsert_provider_company_mapping"].includes(payload.action ?? "")) {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { postgresAdminLocalAction } = await import("@/db/postgres/admin-local-operations")
+      return await postgresAdminLocalAction(getPostgresDb(), context, payload)
+    }
+    if (payload.action === "validate_signals_entitlement") {
+      const result = await validateLushaSignalsEntitlement()
+      await writeSecurityAudit(context, {
+        action: "lusha_signals_entitlement_validated", entityType: "provider", entityId: "lusha_signals",
+        result: result.entitlement,
+        metadata: {
+          checkedAt: result.checkedAt, entitlement: result.entitlement, outcome: result.outcome,
+          httpStatus: result.httpStatus, promotionAvailable: result.promotionAvailable,
+          companyChangeAvailable: result.companyChangeAvailable, providerReportedCredits: result.providerReportedCredits,
+        },
+      })
+      return Response.json({ validation: result })
+    }
+
+    if (payload.action === "validate_gmail_connectivity") {
+      const validation = await validateGmailConnectivity()
+      await writeSecurityAudit(context, {
+        action: "gmail_connectivity_validated", entityType: "provider", entityId: "gmail",
+        result: validation.status,
+        metadata: {
+          checkedAt: validation.checkedAt,
+          outcome: validation.outcome,
+          reason: validation.reason,
+          scopeVerified: validation.scopeVerified,
+        },
+      })
+      return Response.json({ validation })
+    }
     const db = getDb()
     const now = new Date().toISOString()
 
@@ -231,35 +327,6 @@ export async function POST(request: Request) {
         await db.insert(providerCompanyAliases).values({ mappingId: mapping.id, displayAlias, normalizedAlias, status: "VERIFIED", verifiedBy: context.displayName, verifiedAt: now }).onConflictDoUpdate({ target: providerCompanyAliases.normalizedAlias, set: { mappingId: mapping.id, displayAlias, status: "VERIFIED", verifiedBy: context.displayName, verifiedAt: now } })
       }
       return Response.json({ mapping }, { status: existing ? 200 : 201 })
-    }
-
-    if (payload.action === "validate_signals_entitlement") {
-      const result = await validateLushaSignalsEntitlement()
-      await writeSecurityAudit(context, {
-        action: "lusha_signals_entitlement_validated", entityType: "provider", entityId: "lusha_signals",
-        result: result.entitlement,
-        metadata: {
-          checkedAt: result.checkedAt, entitlement: result.entitlement, outcome: result.outcome,
-          httpStatus: result.httpStatus, promotionAvailable: result.promotionAvailable,
-          companyChangeAvailable: result.companyChangeAvailable, providerReportedCredits: result.providerReportedCredits,
-        },
-      })
-      return Response.json({ validation: result })
-    }
-
-    if (payload.action === "validate_gmail_connectivity") {
-      const validation = await validateGmailConnectivity()
-      await writeSecurityAudit(context, {
-        action: "gmail_connectivity_validated", entityType: "provider", entityId: "gmail",
-        result: validation.status,
-        metadata: {
-          checkedAt: validation.checkedAt,
-          outcome: validation.outcome,
-          reason: validation.reason,
-          scopeVerified: validation.scopeVerified,
-        },
-      })
-      return Response.json({ validation })
     }
 
     if (payload.action === "preview_mock_cleanup") {
@@ -529,6 +596,8 @@ export async function POST(request: Request) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
     if (error instanceof InvalidEmailError) return Response.json({ error: error.message }, { status: 400 })
+    const databaseFailure = postgresDatabaseErrorResponse(error, true)
+    if (databaseFailure) return databaseFailure
     if (error instanceof Error && /UNIQUE constraint failed: provider_company_mappings/i.test(error.message)) {
       return Response.json({ error: "That company/provider identity is already mapped. Resolve the existing mapping instead of creating a duplicate." }, { status: 409 })
     }

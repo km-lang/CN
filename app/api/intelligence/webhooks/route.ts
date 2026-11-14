@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers"
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { alumni, coresignalWebhookCoverage, coresignalWebhookEvents, coresignalWebhookIdentities, coresignalWebhookOperations, coresignalWebhookSubscriptions } from "@/db/schema"
 import { parseCnSelectionContract } from "@/lib/cn-selection-contract"
 import { callbackToken, classifyWebhookMembers, coverageReconciliation, effectiveSubscriptionStatus, renewalDue, webhookMockEnabled } from "@/lib/coresignal-webhooks"
@@ -53,19 +55,20 @@ async function readPlan(id: number) {
 export async function GET(request: Request) {
   try {
     const actor = await authorizeRequest(request, "OPERATE_PCOM")
-    const db = getDb()
     const page = Number(new URL(request.url).searchParams.get("page") ?? "1")
     if (!Number.isSafeInteger(page) || page < 1 || page > 1000) return Response.json({ error: "Invalid page." }, { status: 400 })
-    const [plans, events, coverageCounts] = await Promise.all([
+    const [plans, events, coverageCounts] = selectedDatabaseBackend() === "postgres"
+      ? await (await import("@/lib/postgres-webhook-overview")).postgresWebhookOverviewRows(page)
+      : await (async () => { const db = getDb(); return Promise.all([
       db.select().from(coresignalWebhookSubscriptions).orderBy(desc(coresignalWebhookSubscriptions.id)).limit(20).offset((page - 1) * 20),
       db.select({ id: coresignalWebhookEvents.id, subscriptionId: coresignalWebhookEvents.subscriptionId, alumnusId: coresignalWebhookEvents.alumnusId, employeeId: coresignalWebhookEvents.employeeId, changeType: coresignalWebhookEvents.changeType, changedFieldsJson: coresignalWebhookEvents.changedFieldsJson, providerAt: coresignalWebhookEvents.providerAt, receivedAt: coresignalWebhookEvents.receivedAt, status: coresignalWebhookEvents.status, errorState: coresignalWebhookEvents.errorState, reviewOutcome: coresignalWebhookEvents.reviewOutcome, collectHistoryId: coresignalWebhookEvents.collectHistoryId, name: alumni.name, company: alumni.company, title: alumni.title }).from(coresignalWebhookEvents).leftJoin(alumni, eq(coresignalWebhookEvents.alumnusId, alumni.id)).orderBy(desc(coresignalWebhookEvents.id)).limit(20).offset((page - 1) * 20),
       db.select({ subscriptionId: coresignalWebhookCoverage.subscriptionId, count: sql<number>`count(*)` }).from(coresignalWebhookCoverage).where(eq(coresignalWebhookCoverage.status, "ACTIVE")).groupBy(coresignalWebhookCoverage.subscriptionId),
-    ])
+    ] as const) })()
     const countByPlan = new Map(coverageCounts.map(item => [item.subscriptionId, Number(item.count)]))
     return Response.json({ providerMode: "mock-only", liveActivationAvailable: false, collectionCreditEstimate: 10, autoCollect: false,
       plans: plans.map(plan => ({ ...plan, status: effectiveSubscriptionStatus(plan.status, plan.activatedAt, plan.expiresAt), coveredCount: countByPlan.get(plan.id) ?? 0, membershipJson: actor.role === "ADMIN" ? plan.membershipJson : "[redacted]" })),
       events: events.map(event => ({ ...event, employeeId: actor.role === "ADMIN" ? event.employeeId : "[redacted]" })), page })
-  } catch (error) { return responseError(error) }
+  } catch (error) { return accessErrorResponse(error) ?? (selectedDatabaseBackend() === "postgres" ? postgresDatabaseErrorResponse(error, true) : null) ?? responseError(error) }
 }
 
 export async function POST(request: Request) {
@@ -74,6 +77,38 @@ export async function POST(request: Request) {
     if (bodyText.length > 512_000) return Response.json({ error: "Monitoring request is too large." }, { status: 413 })
     const body = JSON.parse(bodyText) as SelectionInput & { action?: string; subscriptionId?: number; alumnusId?: number; evidenceReference?: string; confirmation?: string; eventId?: number; outcome?: string }
     const actor = await authorizeRequest(request, body.action === "preview" ? "OPERATE_PCOM" : "MANAGE_PROVIDER_SETTINGS")
+    if (selectedDatabaseBackend() === "postgres" && body.action === "preview") {
+      const { postgresWebhookSelectionPreview } = await import("@/lib/postgres-webhook-selection")
+      return Response.json(await postgresWebhookSelectionPreview(body, actor.role === "ADMIN"))
+    }
+    if (selectedDatabaseBackend() === "postgres" && body.action === "review") {
+      const { postgresWebhookReview } = await import("@/lib/postgres-webhook-review")
+      return await postgresWebhookReview(body, actor)
+    }
+    if (selectedDatabaseBackend() === "postgres" && body.action === "attest") {
+      const { postgresWebhookAttest } = await import("@/lib/postgres-webhook-setup")
+      return await postgresWebhookAttest(body, actor)
+    }
+    if (selectedDatabaseBackend() === "postgres" && body.action === "prepare") {
+      const { postgresWebhookPrepare } = await import("@/lib/postgres-webhook-setup")
+      return await postgresWebhookPrepare(body, actor)
+    }
+    if (selectedDatabaseBackend() === "postgres" && body.action === "reconcile") {
+      const { postgresWebhookReconcile } = await import("@/lib/postgres-webhook-reconcile")
+      return await postgresWebhookReconcile(body.subscriptionId, actor)
+    }
+    if (selectedDatabaseBackend() === "postgres" && (body.action === "renew" || body.action === "stop")) {
+      const { postgresWebhookLifecycle } = await import("@/lib/postgres-webhook-lifecycle")
+      return await postgresWebhookLifecycle(body, actor)
+    }
+    if (selectedDatabaseBackend() === "postgres" && body.action === "simulate") {
+      const { postgresWebhookSimulate } = await import("@/lib/postgres-webhook-simulate")
+      return await postgresWebhookSimulate(body, actor)
+    }
+    if (selectedDatabaseBackend() === "postgres" && body.action === "activate") {
+      const { postgresWebhookActivate } = await import("@/lib/postgres-webhook-activate")
+      return await postgresWebhookActivate(body, actor)
+    }
     const db = getDb()
     if (body.action === "preview" || body.action === "prepare") {
       const preview = await selectionPreview(body)
@@ -166,5 +201,9 @@ export async function POST(request: Request) {
       return Response.json({ eventId, status: body.outcome, canonicalMutations: 0 })
     }
     throw new Error("Unsupported monitoring action.")
-  } catch (error) { return responseError(error) }
+  } catch (error) {
+    const denied = accessErrorResponse(error)
+    if (denied) return denied
+    return selectedDatabaseBackend() === "postgres" ? postgresDatabaseErrorResponse(error) ?? responseError(error) : responseError(error)
+  }
 }

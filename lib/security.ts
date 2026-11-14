@@ -1,6 +1,9 @@
 import { and, eq, or } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
+import { AccessError } from "@/lib/access-error"
 import { applicationIdentities, applicationUsers, securityAuditEvents } from "@/db/schema"
 import { type AccessSession, type ApplicationRole } from "@/lib/access-types"
 import type { IdentityProvider } from "@/lib/auth-config"
@@ -9,6 +12,7 @@ import { tryNormalizeEmail } from "@/lib/email-identity"
 import { hasPermission, isApplicationRole, safeAuditMetadata, type Permission } from "@/lib/security-policy"
 
 export { hasPermission, isApplicationRole, maskEmail, maskPhone, safeAuditMetadata } from "@/lib/security-policy"
+export { AccessError } from "@/lib/access-error"
 
 export type RequestIdentity = {
   provider?: IdentityProvider
@@ -30,12 +34,6 @@ export type SecurityContext = {
   role: ApplicationRole
 }
 
-export class AccessError extends Error {
-  constructor(message: string, public readonly status: 401 | 403, public readonly code: string) {
-    super(message)
-  }
-}
-
 export function identityFromRequest(request: Request): RequestIdentity | null {
   const externalIdentity = request.headers.get("oai-authenticated-user-id")?.trim() ?? ""
   const email = tryNormalizeEmail(request.headers.get("oai-authenticated-user-email"))
@@ -55,6 +53,11 @@ function bootstrapAdminEmails() {
 }
 
 export async function resolveAuthorizedIdentity(identity: RequestIdentity): Promise<SecurityContext> {
+  if (selectedDatabaseBackend() === "postgres") {
+    const { getPostgresDb } = await import("@/db/postgres/adapter")
+    const { resolvePostgresAuthorizedIdentity } = await import("@/lib/postgres-security")
+    return resolvePostgresAuthorizedIdentity(getPostgresDb(), identity)
+  }
   const db = getDb()
   const now = new Date().toISOString()
   const provider = identity.provider ?? "chatgpt"
@@ -159,6 +162,11 @@ export async function resolveAuthorizedIdentity(identity: RequestIdentity): Prom
 }
 
 export async function resolveSessionIdentity(claims: AppSessionClaims): Promise<SecurityContext> {
+  if (selectedDatabaseBackend() === "postgres") {
+    const { getPostgresDb } = await import("@/db/postgres/adapter")
+    const { resolvePostgresSessionIdentity } = await import("@/lib/postgres-security")
+    return resolvePostgresSessionIdentity(getPostgresDb(), claims)
+  }
   const db = getDb()
   const [identity] = await db.select().from(applicationIdentities).where(eq(applicationIdentities.id, claims.applicationIdentityId)).limit(1)
   if (!identity || identity.applicationUserId !== claims.applicationUserId || identity.provider !== claims.provider) {
@@ -216,7 +224,7 @@ export function toAccessSession(context: SecurityContext, signOutPath = "/auth/s
 
 export function accessErrorResponse(error: unknown) {
   if (error instanceof AccessError) return Response.json({ error: error.message, code: error.code }, { status: error.status })
-  return null
+  return postgresDatabaseErrorResponse(error)
 }
 
 export async function writeSecurityAudit(context: SecurityContext | null, event: {
@@ -227,6 +235,11 @@ export async function writeSecurityAudit(context: SecurityContext | null, event:
   result?: string
   source?: string
 }) {
+  if (selectedDatabaseBackend() === "postgres") {
+    const { getPostgresDb } = await import("@/db/postgres/adapter")
+    const { writePostgresSecurityAudit } = await import("@/lib/postgres-security")
+    return writePostgresSecurityAudit(getPostgresDb(), context, event)
+  }
   await getDb().insert(securityAuditEvents).values({
     actorUserId: context?.userId,
     actorIdentity: context?.externalIdentity ?? "System",

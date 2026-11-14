@@ -1,6 +1,8 @@
 import { and, asc, desc, eq, inArray, like, notExists, or, sql, type SQL } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import {
   alumni,
   applicationUsers,
@@ -136,6 +138,10 @@ async function opportunitySummary(currentUserId: number) {
 export async function GET(request: Request) {
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM")
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresOpportunitiesRead } = await import("@/lib/postgres-opportunities-read")
+      return await postgresOpportunitiesRead(request, context.userId)
+    }
     const url = new URL(request.url)
     const page = Math.max(1, Number(url.searchParams.get("page")) || 1)
     const requestedPageSize = Number(url.searchParams.get("pageSize")) || 10
@@ -169,6 +175,10 @@ export async function GET(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") {
+      if (error instanceof Error && /^(Opportunity ID|Alumnus ID|Owner ID) is invalid\.$/.test(error.message)) return Response.json({ error: error.message }, { status: 400 })
+      return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
+    }
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load Corporate Opportunities." }, { status: 400 })
   }
 }
@@ -177,6 +187,10 @@ export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM")
     const payload = await request.json() as Record<string, unknown>
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresCreateOpportunity } = await import("@/lib/postgres-opportunities-mutations")
+      return await postgresCreateOpportunity(payload, context)
+    }
     const opportunityKey = cleanOpportunityText(payload.idempotencyKey, "Idempotency key", 100, true)
     const company = await canonicalCompany(payload.company)
     const ownerUserId = positiveInteger(payload.ownerUserId, "Owner")!
@@ -232,6 +246,16 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") {
+      const databaseFailure = postgresDatabaseErrorResponse(error)
+      if (databaseFailure) return databaseFailure
+      const message = error instanceof Error ? error.message : ""
+      if (/^(Idempotency key|Company|Owner|Opportunity title|Alumnus|Engagement|Follow-up date) (is required|is invalid|must be)/.test(message)
+        || /^(Choose an active PCOM or Admin opportunity owner|The selected (alumnus|engagement)|Provisional profiles|The duplicate opportunity)/.test(message)) {
+        return Response.json({ error: message }, { status: /required|invalid|does not exist|another company|another alumnus/i.test(message) ? 400 : 409 })
+      }
+      return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
+    }
     const message = error instanceof Error ? error.message : "Unable to create the opportunity."
     return Response.json({ error: message }, { status: /required|invalid|does not exist|another company|another alumnus/i.test(message) ? 400 : 409 })
   }
@@ -241,6 +265,10 @@ export async function PATCH(request: Request) {
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM")
     const payload = await request.json() as Record<string, unknown>
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresUpdateOpportunity } = await import("@/lib/postgres-opportunities-mutations")
+      return await postgresUpdateOpportunity(payload, context)
+    }
     const id = positiveInteger(payload.id, "Opportunity ID")!
     const version = positiveInteger(payload.version, "Opportunity version")!
     const db = getDb()
@@ -291,6 +319,16 @@ export async function PATCH(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") {
+      const databaseFailure = postgresDatabaseErrorResponse(error)
+      if (databaseFailure) return databaseFailure
+      const message = error instanceof Error ? error.message : ""
+      if (/^(Opportunity ID|Opportunity version|Owner|Alumnus|Engagement|Opportunity title|Follow-up date) (is required|is invalid|must be)/.test(message)
+        || /^(Opportunity stage cannot move|Choose an active PCOM or Admin opportunity owner|The selected (alumnus|engagement)|Provisional profiles)/.test(message)) {
+        return Response.json({ error: message }, { status: /cannot move|required|invalid|does not exist|another company|another alumnus/i.test(message) ? 400 : 409 })
+      }
+      return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
+    }
     const message = error instanceof Error ? error.message : "Unable to update the opportunity."
     return Response.json({ error: message }, { status: /cannot move|required|invalid|does not exist|another company|another alumnus/i.test(message) ? 400 : 409 })
   }

@@ -1,5 +1,6 @@
 import { eq, inArray } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, alumniDataLifecycle } from "@/db/schema"
 import { evaluateBrightEligibility } from "@/lib/bright-eligibility"
 import type { IdentityResolution, IntelligenceCohortResolution } from "@/lib/intelligence-contracts"
@@ -9,13 +10,17 @@ import type { SecurityContext } from "@/lib/security"
 export async function resolveFixedIntelligenceCohort(context: SecurityContext, cnAlumniIds: number[]) {
   const ids = [...new Set(cnAlumniIds)].filter(id => Number.isInteger(id) && id > 0).slice(0, 1000)
   if (!ids.length) throw new Error("Select at least one alumnus.")
-  const people = await getDb().select({
-    id: alumni.id,
-    linkedinUrl: alumni.linkedinUrl,
-    profileMatch: alumni.profileMatch,
-    professionalDataStatus: alumni.professionalDataStatus,
-    lifecycleStatus: alumniDataLifecycle.status,
-  }).from(alumni).leftJoin(alumniDataLifecycle, eq(alumniDataLifecycle.alumnusId, alumni.id)).where(inArray(alumni.id, ids))
+  const people = selectedDatabaseBackend() === "postgres"
+    ? await (async () => {
+        const { getPostgresDb } = await import("@/db/postgres/adapter")
+        const { alumni: people, alumniDataLifecycle: lifecycle } = await import("@/db/postgres/schema")
+        return getPostgresDb().select({ id: people.id, linkedinUrl: people.linkedinUrl, profileMatch: people.profileMatch,
+          professionalDataStatus: people.professionalDataStatus, lifecycleStatus: lifecycle.status })
+          .from(people).leftJoin(lifecycle, eq(lifecycle.alumnusId, people.id)).where(inArray(people.id, ids))
+      })()
+    : await getDb().select({ id: alumni.id, linkedinUrl: alumni.linkedinUrl, profileMatch: alumni.profileMatch,
+        professionalDataStatus: alumni.professionalDataStatus, lifecycleStatus: alumniDataLifecycle.status })
+        .from(alumni).leftJoin(alumniDataLifecycle, eq(alumniDataLifecycle.alumnusId, alumni.id)).where(inArray(alumni.id, ids))
   const resolved = await Promise.all(people.map(async person => {
     const resolution = await intelligenceRequest<IdentityResolution>(context, "/v1/alumni/resolve", { method: "POST", body: JSON.stringify({ cnAlumniId: person.id, linkedinUrl: person.linkedinUrl || undefined }) })
     const summary = resolution.status === "MAPPED" && resolution.intelligenceAlumniId

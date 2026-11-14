@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers"
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, externalDiscoveryCandidateEvidence, externalDiscoveryResults, externalDiscoverySearches, fieldChangeHistory, providerResponseHistory, providerSettings, securityAuditEvents } from "@/db/schema"
 import { FIXED_ALUMNI_SCHOOL, criteriaSummary, defaultDiscoveryFilters, matchesDiscoverySeniorities, normalizeDiscoveryFiltersInput, normalizeFunction, normalized, type DiscoveryFilters, type DiscoveryProfile, type MatchStatus } from "@/lib/alumni-search"
 import { coresignalProvider } from "@/lib/coresignal-adapter"
@@ -29,6 +30,7 @@ import { candidateEvidenceDecisions, candidateEvidenceOutcome, normalizeCandidat
 import { sha256Text, stableMutationPayload } from "@/lib/mutation-fingerprint"
 import { savedHistoryFailure } from "@/lib/saved-history-diagnostics"
 import { localIsolatedDiscoveryMockEnabled } from "@/lib/local-development"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 
 const DEFAULT_APPLICATION_LIMIT = 25
 const providerRuntimeEnvironment = env as unknown as ProviderRuntimeEnvironment
@@ -273,28 +275,42 @@ export async function GET(request: Request) {
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM")
     stage = "search_and_result_lookup"
-    const db = getDb(); const url = new URL(request.url); const view = url.searchParams.get("view") === "pending" ? "pending" : "summary"
+    const pg = selectedDatabaseBackend() === "postgres" ? { db: (await import("@/db/postgres/adapter")).getPostgresDb(), tables: await import("@/db/postgres/schema") } : null
+    const db = pg ? null : getDb(); const url = new URL(request.url); const view = url.searchParams.get("view") === "pending" ? "pending" : "summary"
     const requestedSearchIdValue = url.searchParams.get("searchId")
     const requestedSearchId = requestedSearchIdValue === null ? null : Number(requestedSearchIdValue)
     if (requestedSearchIdValue !== null && (!Number.isInteger(requestedSearchId) || requestedSearchId! <= 0)) return Response.json({ error: "A valid discovery search ID is required." }, { status: 400 })
-    const recentSearches = await db.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10)
-    const pendingResults = await db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.reviewStatus, DISCOVERY_REVIEW_STATUS.pending)).orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id)
+    const recentSearches = pg
+      ? await pg.db.select().from(pg.tables.externalDiscoverySearches).orderBy(desc(pg.tables.externalDiscoverySearches.createdAt), desc(pg.tables.externalDiscoverySearches.id)).limit(10)
+      : await db!.select().from(externalDiscoverySearches).orderBy(desc(externalDiscoverySearches.createdAt), desc(externalDiscoverySearches.id)).limit(10)
+    const pendingResults = pg
+      ? await pg.db.select().from(pg.tables.externalDiscoveryResults).where(eq(pg.tables.externalDiscoveryResults.reviewStatus, DISCOVERY_REVIEW_STATUS.pending)).orderBy(desc(pg.tables.externalDiscoveryResults.searchId), pg.tables.externalDiscoveryResults.id)
+      : await db!.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.reviewStatus, DISCOVERY_REVIEW_STATUS.pending)).orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id)
     const actionablePendingResults = pendingResults.filter(isActionableDiscoveryReview)
     const candidateSearchId = requestedSearchId ?? actionablePendingResults[0]?.searchId ?? recentSearches[0]?.id ?? null
     const candidateOutsideRecent = candidateSearchId !== null && !recentSearches.some(search => search.id === candidateSearchId)
-      ? await db.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, candidateSearchId)).limit(1)
+      ? pg ? await pg.db.select().from(pg.tables.externalDiscoverySearches).where(eq(pg.tables.externalDiscoverySearches.id, candidateSearchId)).limit(1)
+        : await db!.select().from(externalDiscoverySearches).where(eq(externalDiscoverySearches.id, candidateSearchId)).limit(1)
       : []
     const searchPool = [...candidateOutsideRecent, ...recentSearches]
     const activeSearch = selectActiveDiscoveryRun(searchPool, pendingResults, requestedSearchId)
     if (requestedSearchId && !activeSearch) return Response.json({ error: "The requested discovery search was not found." }, { status: 404 })
     const historySearchIds = [...new Set(searchPool.map(search => search.id))]
-    const historyResults = historySearchIds.length ? await db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, historySearchIds)).orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id) : []
+    const historyResults = historySearchIds.length
+      ? pg ? await pg.db.select().from(pg.tables.externalDiscoveryResults).where(inArray(pg.tables.externalDiscoveryResults.searchId, historySearchIds)).orderBy(desc(pg.tables.externalDiscoveryResults.searchId), pg.tables.externalDiscoveryResults.id)
+        : await db!.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.searchId, historySearchIds)).orderBy(desc(externalDiscoveryResults.searchId), externalDiscoveryResults.id)
+      : []
     const activeResults = activeSearch ? historyResults.filter(result => result.searchId === activeSearch.id) : []
     stage = "candidate_evidence_lookup"
-    const candidateEvidence = await evidenceForResults(db, activeResults.map(result => result.id))
+    const candidateEvidence = pg
+      ? { rows: activeResults.length ? await pg.db.select().from(pg.tables.externalDiscoveryCandidateEvidence).where(inArray(pg.tables.externalDiscoveryCandidateEvidence.resultId, activeResults.map(result => result.id))).orderBy(pg.tables.externalDiscoveryCandidateEvidence.id) : [], available: true }
+      : await evidenceForResults(db!, activeResults.map(result => result.id))
     const evidenceByResult = new Map<number, (typeof candidateEvidence.rows)>()
     for (const row of candidateEvidence.rows) evidenceByResult.set(row.resultId, [...(evidenceByResult.get(row.resultId) ?? []), row])
-    const activeProviderHistoryRows = activeSearch ? await db.select().from(providerResponseHistory).where(eq(providerResponseHistory.searchId, activeSearch.id)).orderBy(providerResponseHistory.id) : []
+    const activeProviderHistoryRows = activeSearch
+      ? pg ? await pg.db.select().from(pg.tables.providerResponseHistory).where(eq(pg.tables.providerResponseHistory.searchId, activeSearch.id)).orderBy(pg.tables.providerResponseHistory.id)
+        : await db!.select().from(providerResponseHistory).where(eq(providerResponseHistory.searchId, activeSearch.id)).orderBy(providerResponseHistory.id)
+      : []
     const activeProviderHistory = activeProviderHistoryRows.map(presentProviderHistorySearchEvidence)
     const activeSearchSummary = activeSearch ? discoveryRunSummary(activeSearch, activeResults, activeProviderHistory) : null
     const previousSearches = previousDiscoveryRuns(recentSearches, historyResults, activeSearch?.id ?? null)
@@ -304,8 +320,8 @@ export async function GET(request: Request) {
     if (!activeSearch) return Response.json({ ...common, activeSearch: null, results: [], counts: discoveryClassificationCounts([]), filters: defaultDiscoveryFilters(), providerHistory: [], retrieval: "stored", source: null })
     const filters = storedDiscoveryFilters(activeSearch.filtersJson)
     const [people, ignoredResults] = activeSearch.provider === PROFESSIONAL_DATA_PROVIDER ? await Promise.all([
-      db.select().from(alumni).orderBy(alumni.id),
-      db.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.reviewStatus, "Ignored")),
+      pg ? pg.db.select().from(pg.tables.alumni).orderBy(pg.tables.alumni.id) : db!.select().from(alumni).orderBy(alumni.id),
+      pg ? pg.db.select().from(pg.tables.externalDiscoveryResults).where(eq(pg.tables.externalDiscoveryResults.reviewStatus, "Ignored")) : db!.select().from(externalDiscoveryResults).where(eq(externalDiscoveryResults.reviewStatus, "Ignored")),
     ]) : [[], []]
     const reconciliations = activeSearch.provider === PROFESSIONAL_DATA_PROVIDER
       ? reconcileDiscoveryCandidates(activeResults.map(storedCandidate), people, rejectedEvidence(ignoredResults), CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES)
@@ -332,7 +348,73 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const payload = await request.json() as { action?: string; filters?: Partial<DiscoveryFilters>; graduationYears?: number[]; limit?: number; confirmed?: boolean; searchId?: number; page?: number; resultIds?: number[]; resultId?: number; fields?: string[]; reason?: string; affiliationStatus?: string; observation?: unknown; decisions?: unknown }
-    const context = await authorizeRequest(request, "OPERATE_PCOM"); const db = getDb(); const actor = context.displayName; const nowDate = new Date(); const now = nowDate.toISOString()
+    const context = await authorizeRequest(request, "OPERATE_PCOM"); const actor = context.displayName; const nowDate = new Date(); const now = nowDate.toISOString()
+    if (payload.action === "record_evidence" && selectedDatabaseBackend() === "postgres") {
+      const { recordPostgresDiscoveryEvidence } = await import("@/lib/postgres-discovery-evidence")
+      return await recordPostgresDiscoveryEvidence(payload, context, nowDate)
+    }
+    if (payload.action === "ignore" && Number.isInteger(payload.resultId) && selectedDatabaseBackend() === "postgres") {
+      const { postgresIgnoreDiscoveryResult } = await import("@/lib/postgres-discovery-ignore")
+      return await postgresIgnoreDiscoveryResult(payload.resultId!, payload.reason, context)
+    }
+    if (payload.action === "keep_separate" && Number.isInteger(payload.resultId) && selectedDatabaseBackend() === "postgres" && process.env.CN_PG_LOCAL_TEST_ENABLED === "true") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { alumni: people, externalDiscoveryCandidateEvidence: evidenceTable, externalDiscoveryResults: results, externalDiscoverySearches: searches, securityAuditEvents: audits } = await import("@/db/postgres/schema")
+      return await getPostgresDb().transaction(async tx => {
+        const [result] = await tx.select().from(results).where(eq(results.id, payload.resultId!)).for("update").limit(1)
+        if (result && result.provider !== PROFESSIONAL_DATA_PROVIDER) return Response.json({ error: "Historical provider results are read-only." }, { status: 409 })
+        const [search] = result ? await tx.select().from(searches).where(eq(searches.id, result.searchId)).limit(1) : []
+        if (!result || !search || resultProviderIntegrity(search.provider, result.provider) !== "consistent" || result.matchStatus !== "Possible duplicate" || result.reviewStatus !== DISCOVERY_REVIEW_STATUS.pending) return Response.json({ error: "Only a pending provenance-consistent possible duplicate can be kept separate." }, { status: 409 })
+        const [evidence] = await tx.select().from(evidenceTable).where(eq(evidenceTable.resultId, result.id)).orderBy(desc(evidenceTable.id)).limit(1)
+        if (!supportingHumanEvidence(evidence ?? null, result, nowDate)) return Response.json({ error: "Independent reviewer evidence must qualify the candidate before keeping a same-name profile separate." }, { status: 409 })
+        const current = await tx.select({ id: people.id, coresignalEmployeeId: people.coresignalEmployeeId, linkedinUrl: people.linkedinUrl }).from(people).orderBy(people.id)
+        const identity = reconcileCoresignalIdentity({ coresignalEmployeeId: result.providerPersonId, profileUrl: evidence.profileUrl }, current)
+        if (identity.outcome !== "NEW_CANDIDATE") return Response.json({ error: `${identity.rationale} Keep the result pending for identity resolution.` }, { status: 409 })
+        const [created] = await tx.insert(people).values(reviewedAlumnusValues(result, evidence, actor, now)).returning({ id: people.id })
+        const [updated] = await tx.update(results).set({ reviewStatus: DISCOVERY_REVIEW_STATUS.addedSeparate, linkedInternalAlumnusId: created.id, reviewedAt: now, reviewedBy: actor }).where(and(eq(results.id, result.id), eq(results.reviewStatus, DISCOVERY_REVIEW_STATUS.pending))).returning({ id: results.id })
+        if (!updated) throw new Error("Separate candidate approval did not persist atomically.")
+        await tx.insert(audits).values({ actorUserId: context.userId, actorIdentity: context.externalIdentity, actorName: actor, actorRole: context.role, action: "possible_duplicate_kept_separate", entityType: "discovery_result", entityId: String(result.id), metadataJson: safeAuditMetadata({ evidenceId: evidence.id, identityMethod: "NEW_PROVIDER_ID_AND_REVIEWED_LINKEDIN" }), result: "success", source: "application" })
+        return Response.json({ alumnusId: created.id }, { status: 201 })
+      })
+    }
+    if (payload.action === "plan" && selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter")
+      const { externalDiscoverySearches: searches } = await import("@/db/postgres/schema")
+      const filters = normalizedDiscoveryFilters(payload.filters)
+      const history = await getPostgresDb().select().from(searches).where(eq(searches.provider, PROFESSIONAL_DATA_PROVIDER)).orderBy(desc(searches.createdAt), desc(searches.id))
+      const coverage = discoveryCoveragePlan(filters, history, { now: nowDate, provider: PROFESSIONAL_DATA_PROVIDER, mode: coresignalProvider.mode(), graduationYears: payload.graduationYears })
+      return Response.json({ provider: PROFESSIONAL_DATA_PROVIDER, mode: coresignalProvider.mode(), coverage, previewCapabilities: CORESIGNAL_BASE_SEARCH_PREVIEW_CAPABILITIES, providerCallMade: false, applicationUnits: 0 })
+    }
+    if (payload.action === "regular_search_preflight" && selectedDatabaseBackend() === "postgres") {
+      const rawGraduationYear = payload.filters && Object.prototype.hasOwnProperty.call(payload.filters, "graduationYear")
+        ? payload.filters.graduationYear : undefined
+      try { coresignalEmployeeEsDslGraduationYear(rawGraduationYear) } catch {
+        return Response.json({ error: "When supplied, graduation year must be an exact four-digit year.", blocked: true, reason: "invalid_graduation_year" }, { status: 400 })
+      }
+      const filters = normalizedDiscoveryFilters(payload.filters)
+      const staticValidation = validateDiscoveryCount(payload.limit, Number.MAX_SAFE_INTEGER, coresignalLiveSearchMaximum(), 0)
+      if (!staticValidation.ok) return Response.json({ error: staticValidation.message, blocked: true, reason: staticValidation.reason, maximumAllowed: staticValidation.maximumAllowed }, { status: 400 })
+      let preparation
+      try {
+        const { postgresProviderCompanyMappingStore } = await import("@/lib/postgres-provider-company-mapping-store")
+        preparation = await prepareCoresignalRegularSearch({ filters, itemsPerPage: staticValidation.requested }, { companyMappingStore: postgresProviderCompanyMappingStore() })
+      } catch (error) {
+        const databaseFailure = postgresDatabaseErrorResponse(error)
+        if (databaseFailure) return databaseFailure
+        return Response.json({ error: error instanceof Error ? error.message : "Company Search is blocked.", blocked: true, reason: "company_mapping_blocked", providerCallMade: false, applicationUnits: 0 }, { status: 409 })
+      }
+      if (preparation.companyMappingRequired) filters.company = preparation.companyMapping.displayName
+      const preparationSummary = {
+        provider: PROFESSIONAL_DATA_PROVIDER_LABEL, operation: "Base Employee ES-DSL Search", institution: FIXED_ALUMNI_SCHOOL,
+        company: preparation.companyMappingRequired ? preparation.companyMapping.displayName : "Not constrained",
+        companyMapping: preparation.companyMappingRequired ? preparation.companyIdentityMode === "VERIFIED_ID" ? "Verified provider ID" : "Unverified exact-name fallback" : "Not required",
+        graduationYear: filters.graduationYear || "All years", seniority: "Not constrained by provider Search; applied locally later",
+        pageSize: staticValidation.requested, maximumSearchRequests: 1, automaticPagination: false, automaticCollect: false,
+        automaticCanonicalUpdate: false, searchMode: preparation.contract.searchMode,
+      }
+      return Response.json({ allowed: true, providerCallMade: false, applicationUnits: 0, filters, preparation: preparationSummary })
+    }
+    const db = getDb()
 
     if (payload.action === "record_evidence") {
       if (!Number.isInteger(payload.resultId) || Number(payload.resultId) <= 0) return Response.json({ error: "A discovery result ID is required." }, { status: 400 })
@@ -803,5 +885,5 @@ export async function POST(request: Request) {
       return Response.json({ ignored: true, reason })
     }
     return Response.json({ error: "Unsupported discovery action." }, { status: 400 })
-  } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; return Response.json({ error: error instanceof Error ? error.message : "Unable to complete external alumni discovery." }, { status: 500 }) }
+  } catch (error) { const denied = accessErrorResponse(error); if (denied) return denied; if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 }); return Response.json({ error: error instanceof Error ? error.message : "Unable to complete external alumni discovery." }, { status: 500 }) }
 }

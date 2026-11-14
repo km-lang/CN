@@ -1,4 +1,5 @@
 import { runDirectoryQuery } from "@/lib/directory-data"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { normalizeDirectoryQuery } from "@/lib/directory-query"
 import { parseCnSelectionContract, type CnSelectionContract } from "@/lib/cn-selection-contract"
 
@@ -15,6 +16,11 @@ async function allPages(input: Record<string, unknown>, query: typeof runDirecto
 
 export async function evaluateCnSelection(value: unknown, query: typeof runDirectoryQuery = runDirectoryQuery) {
   const contract: CnSelectionContract = parseCnSelectionContract(value)
+  if (query === runDirectoryQuery && selectedDatabaseBackend() === "postgres") {
+    const { getPostgresDb } = await import("@/db/postgres/adapter")
+    const { runPostgresDirectoryQuery } = await import("@/lib/postgres-directory-data")
+    query = (normalized, includeFacets) => runPostgresDirectoryQuery(getPostgresDb(), normalized, includeFacets)
+  }
   const c = contract.criteria
   const filters: Record<string, unknown> = {
     excludeProvisional: c.minPlacementRelevance !== undefined || c.minDataConfidence !== undefined,

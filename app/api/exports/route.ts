@@ -1,11 +1,15 @@
 import { sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, companyPriorities, corporateOpportunities, corporateOpportunityHistory, engagementEvents, programmeOptions, providerCompanyMappings, providerRefreshReviews } from "@/db/schema"
 import { normalizeDirectoryQuery } from "@/lib/directory-query"
 import { effectiveIntakeStatus } from "@/lib/intake-status"
 import { runDirectoryExportQuery } from "@/lib/directory-data"
 import { datasetCsv, datasetsCsvZip, datasetsXlsx, type ExportDataset } from "@/lib/export-files"
 import { accessErrorResponse, authorizeRequest, writeSecurityAudit } from "@/lib/security"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
+
+class PostgresExportDbError extends Error { constructor(readonly cause: unknown) { super("PostgreSQL export query failed.") } }
 
 const MAX_EXPORT_ROWS = 10_000
 const DIRECTORY_COLUMNS = [
@@ -82,17 +86,29 @@ export async function POST(request: Request) {
     const format = payload.format === "xlsx" ? "xlsx" : "csv"
     let datasets: ExportDataset[]
     if (payload.scope === "admin") {
-      datasets = await adminDatasets(Array.isArray(payload.datasets) ? payload.datasets.map(String) : [])
+      if (selectedDatabaseBackend() === "postgres") {
+        const { postgresAdminDatasets, PostgresExportInputError } = await import("@/lib/postgres-exports")
+        try { datasets = await postgresAdminDatasets(Array.isArray(payload.datasets) ? payload.datasets.map(String) : [], directoryDataset) }
+        catch (error) { if (error instanceof PostgresExportInputError) throw error; throw new PostgresExportDbError(error) }
+      } else datasets = await adminDatasets(Array.isArray(payload.datasets) ? payload.datasets.map(String) : [])
     } else {
       const query = normalizeDirectoryQuery({ ...(payload.filters && typeof payload.filters === "object" ? payload.filters as object : {}), page: 1, pageSize: 50, sort: "relevance" })
-      const result = await runDirectoryExportQuery(query, MAX_EXPORT_ROWS)
+      const result = selectedDatabaseBackend() === "postgres"
+        ? await (async () => {
+          const { getPostgresDb } = await import("@/db/postgres/adapter")
+          const { runPostgresDirectoryExportQuery } = await import("@/lib/postgres-directory-data")
+          try { return await runPostgresDirectoryExportQuery(getPostgresDb(), query, MAX_EXPORT_ROWS) }
+          catch (error) { throw new PostgresExportDbError(error) }
+        })()
+        : await runDirectoryExportQuery(query, MAX_EXPORT_ROWS)
       if (result.total > MAX_EXPORT_ROWS) throw new Error(`This export has ${result.total.toLocaleString()} rows; narrow the filters to ${MAX_EXPORT_ROWS.toLocaleString()} or fewer.`)
       datasets = [directoryDataset(result.all as unknown as Record<string, unknown>[], Boolean(payload.importCompatible))]
     }
     const rowCount = datasets.reduce((total, dataset) => total + dataset.rows.length, 0)
     const generatedAt = new Date().toISOString()
     const info = { "Generated UTC": generatedAt, "Export type": payload.scope === "admin" ? "Approved business data" : payload.importCompatible ? "Import-compatible alumni" : "Filtered Directory report", "Datasets": datasets.map(dataset => dataset.id).join(", "), "Row count": rowCount, "Schema version": 1, "Excluded": "Credentials, sessions, raw provider payloads, technical security logs", "Consent warning": "This export does not grant consent for outreach." }
-    await writeSecurityAudit(context, { action: "business_data_exported", entityType: "export", metadata: { scope: payload.scope === "admin" ? "admin" : "directory", format, datasets: datasets.map(dataset => dataset.id), rowCount } })
+    try { await writeSecurityAudit(context, { action: "business_data_exported", entityType: "export", metadata: { scope: payload.scope === "admin" ? "admin" : "directory", format, datasets: datasets.map(dataset => dataset.id), rowCount } }) }
+    catch (error) { if (selectedDatabaseBackend() === "postgres") throw new PostgresExportDbError(error); throw error }
     const stamp = generatedAt.slice(0, 10)
     if (format === "xlsx") return download(datasetsXlsx(datasets, info, { dataFirst: payload.scope === "directory" && Boolean(payload.importCompatible) }), `corporate-network-${payload.scope === "admin" ? "business-data" : "alumni"}-${stamp}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if (datasets.length === 1) return download(datasetCsv(datasets[0]), `corporate-network-${datasets[0].id}-${stamp}.csv`, "text/csv; charset=utf-8")
@@ -100,6 +116,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (error instanceof PostgresExportDbError) return postgresDatabaseErrorResponse(error.cause, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
     return Response.json({ error: error instanceof Error ? error.message : "Unable to export business data." }, { status: 400, headers: { "cache-control": "private, no-store" } })
   }
 }

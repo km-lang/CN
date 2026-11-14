@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers"
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, brightdataSnapshotEvidence, providerCollectionAttempts, providerResponseHistory, securityAuditEvents } from "@/db/schema"
 import { BrightDataClient, BrightDataProviderError } from "@/lib/brightdata-client"
 import { BRIGHTDATA_HUMAN_TRIAL_AUDIT_ACTION, BRIGHTDATA_HUMAN_TRIAL_AUDIT_KEY, BRIGHTDATA_OPERATION, brightProfileChanges, createBrightConfirmation, humanTrialRequestKey, normalizeBrightLinkedinUrl, normalizeBrightProfile, prepareBrightRawEvidence, sanitizedBrightEvidence, targetFingerprint, verifyBrightConfirmation, type NormalizedBrightProfile } from "@/lib/brightdata-collection"
@@ -134,6 +136,7 @@ async function persistEvidence(attempt: AttemptRow, profile: NormalizedBrightPro
 export async function GET(request: Request) {
   try {
     await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
+    if (selectedDatabaseBackend() === "postgres") return (await import("@/lib/postgres-bright-read")).postgresBrightRead(publicAttempt)
     const attempts = await getDb().select().from(providerCollectionAttempts).where(eq(providerCollectionAttempts.provider, "brightdata")).orderBy(desc(providerCollectionAttempts.id)).limit(25)
     const metadata = attempts.length ? await getDb().select({ attemptId: brightdataSnapshotEvidence.attemptId, returnedUrl: brightdataSnapshotEvidence.returnedUrl, canonicalReturnedUrl: brightdataSnapshotEvidence.canonicalReturnedUrl,
       identityUrlStatus: brightdataSnapshotEvidence.identityUrlStatus, requestedAt: brightdataSnapshotEvidence.requestedAt, retrievedAt: brightdataSnapshotEvidence.retrievedAt,
@@ -141,13 +144,25 @@ export async function GET(request: Request) {
       .from(brightdataSnapshotEvidence).where(inArray(brightdataSnapshotEvidence.attemptId, attempts.map(row => row.id))) : []
     const byAttempt = new Map(metadata.map(item => [item.attemptId, item]))
     return Response.json({ runtime: await runtimeState(), attempts: attempts.map(row => publicAttempt(row, byAttempt.get(row.id))) })
-  } catch (error) { return accessErrorResponse(error) ?? Response.json({ error: "Unable to load Bright Data readiness." }, { status: 500 }) }
+  } catch (error) { return accessErrorResponse(error) ?? postgresDatabaseErrorResponse(error) ?? Response.json({ error: "Unable to load Bright Data readiness." }, { status: 500 }) }
 }
 
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
     const payload = await request.json() as { action?: "attest_human_trial" | "preflight" | "trigger" | "status" | "retrieve" | "recover_evidence" | "purge_expired_raw_evidence"; profileUrl?: string; alumnusId?: number | null; datasetId?: string; attestationSource?: string; requestQuantity?: number; billingUncertaintyAcknowledged?: boolean; humanTrial?: boolean; confirmationToken?: string; confirmed?: boolean; attemptId?: number; snapshotId?: string }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "preflight") {
+      const { postgresBrightPreflight } = await import("@/lib/postgres-bright-preflight")
+      return await postgresBrightPreflight(context, payload)
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "attest_human_trial") {
+      const { postgresBrightHumanTrialAttestation } = await import("@/lib/postgres-bright-human-trial")
+      return await postgresBrightHumanTrialAttestation(context, payload)
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "purge_expired_raw_evidence") {
+      const { postgresBrightPurge } = await import("@/lib/postgres-bright-purge")
+      return await postgresBrightPurge(context, payload.confirmed)
+    }
     if (payload.action === "attest_human_trial") {
       if (!payload.confirmed || !payload.billingUncertaintyAcknowledged || payload.attestationSource !== "dashboard" || payload.requestQuantity !== 1 || payload.alumnusId !== null || payload.datasetId !== brightDataDatasetId()) return Response.json({ error: "Explicit one-profile dashboard attestation and billing-uncertainty acknowledgement are required." }, { status: 400 })
       const profileUrl = normalizeBrightLinkedinUrl(payload.profileUrl ?? "")
@@ -278,6 +293,8 @@ export async function POST(request: Request) {
     return Response.json({ error: "Unsupported Bright Data action." }, { status: 400 })
   } catch (error) {
     const denied = accessErrorResponse(error); if (denied) return denied
+    const databaseFailure = postgresDatabaseErrorResponse(error)
+    if (databaseFailure) return databaseFailure
     const message = error instanceof Error ? error.message : "Bright Data operation failed."
     return Response.json({ error: message.includes("Bearer") ? "Bright Data authentication failed." : message }, { status: error instanceof BrightDataProviderError ? error.status : 400 })
   }

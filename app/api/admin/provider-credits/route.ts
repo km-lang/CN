@@ -1,5 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 import { providerResponseHistory, providerSettings, securityAuditEvents } from "@/db/schema"
 import { deserializeCoresignalSearchEvidence } from "@/lib/coresignal-search-evidence"
 import { deserializeCollectEvidence } from "@/lib/coresignal-collect-only"
@@ -17,13 +19,10 @@ function auditTimestamp(value: string) {
   return new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`).toISOString()
 }
 
-async function observations() {
-  const db = getDb()
-  const [audits, searchHistory] = await Promise.all([
-    db.select({ action: securityAuditEvents.action, metadataJson: securityAuditEvents.metadataJson, createdAt: securityAuditEvents.createdAt }).from(securityAuditEvents).where(inArray(securityAuditEvents.action, [PROVIDER_CREDIT_AUDIT_ACTION, "coresignal_discovery_run", "coresignal_discovery_continuation"])).orderBy(desc(securityAuditEvents.id)).limit(500),
-    db.select({ operation: providerResponseHistory.operation, responseSummary: providerResponseHistory.responseSummary, createdAt: providerResponseHistory.createdAt })
-      .from(providerResponseHistory).where(and(eq(providerResponseHistory.provider, "coresignal"), eq(providerResponseHistory.mode, "live"), eq(providerResponseHistory.status, "success"))).orderBy(desc(providerResponseHistory.id)).limit(100),
-  ])
+type AuditObservationRow = { action: string; metadataJson: string; createdAt: string }
+type HistoryObservationRow = { operation: string; responseSummary: string; createdAt: string }
+
+function observationHistory(audits: AuditObservationRow[], searchHistory: HistoryObservationRow[]) {
   const found: ProviderCreditObservation[] = []
   for (const audit of audits) {
     try {
@@ -43,6 +42,16 @@ async function observations() {
   return creditObservationHistory(found).map(item => ({ ...item, state: creditObservationState(item) }))
 }
 
+async function observations() {
+  const db = getDb()
+  const [audits, searchHistory] = await Promise.all([
+    db.select({ action: securityAuditEvents.action, metadataJson: securityAuditEvents.metadataJson, createdAt: securityAuditEvents.createdAt }).from(securityAuditEvents).where(inArray(securityAuditEvents.action, [PROVIDER_CREDIT_AUDIT_ACTION, "coresignal_discovery_run", "coresignal_discovery_continuation"])).orderBy(desc(securityAuditEvents.id)).limit(500),
+    db.select({ operation: providerResponseHistory.operation, responseSummary: providerResponseHistory.responseSummary, createdAt: providerResponseHistory.createdAt })
+      .from(providerResponseHistory).where(and(eq(providerResponseHistory.provider, "coresignal"), eq(providerResponseHistory.mode, "live"), eq(providerResponseHistory.status, "success"))).orderBy(desc(providerResponseHistory.id)).limit(100),
+  ])
+  return observationHistory(audits, searchHistory)
+}
+
 async function snapshot() {
   const db = getDb()
   const [settings, usage, balances, operations] = await Promise.all([
@@ -52,6 +61,15 @@ async function snapshot() {
     db.select({ provider: providerResponseHistory.provider, createdAt: providerResponseHistory.createdAt }).from(providerResponseHistory)
       .where(and(eq(providerResponseHistory.status, "success"), eq(providerResponseHistory.mode, "live"))).orderBy(desc(providerResponseHistory.id)).limit(100),
   ])
+  return formatSnapshot(settings, usage, balances, operations)
+}
+
+function formatSnapshot(
+  settings: Array<{ provider: string; monthlyCreditLimit: number }>,
+  usage: Array<{ provider: string; applicationUnits: number; lushaBudgetUnits: number }>,
+  balances: Awaited<ReturnType<typeof observations>>,
+  operations: Array<{ provider: string; createdAt: string }>,
+) {
   const latest = latestCreditObservations(balances)
   const perProvider = (provider: CreditProvider) => {
     const entries = latest.filter(item => item.provider === provider).map(item => ({ ...item, state: creditObservationState(item) }))
@@ -80,9 +98,27 @@ async function snapshot() {
   }
 }
 
+async function postgresSnapshot() {
+  const { getPostgresDb } = await import("@/db/postgres/adapter")
+  const { providerResponseHistory: history, providerSettings: settingsTable, securityAuditEvents: auditsTable } = await import("@/db/postgres/schema")
+  const db = getPostgresDb()
+  // D1 datetime() treats bare stored timestamps as UTC and ignores invalid dates.
+  const candidate = sql<string>`case when ${history.createdAt} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' then case when length(${history.createdAt}) = 10 then ${history.createdAt} || 'T00:00:00Z' when ${history.createdAt} ~* '(z|[+-][0-9]{2}:[0-9]{2})$' then ${history.createdAt} else ${history.createdAt} || 'Z' end else null end`
+  const timestamp = sql`case when pg_input_is_valid(${candidate}, 'timestamp with time zone') then (${candidate})::timestamptz else null end`
+  const { settings, usage, balances, operations } = await db.transaction(async tx => {
+    const settings = await tx.select().from(settingsTable)
+    const usage = await tx.select({ provider: history.provider, applicationUnits: sql<number>`coalesce(sum(${history.applicationUnits}),0)`, recordedCredits: sql<number>`coalesce(sum(${history.creditsUsed}),0)`, lushaBudgetUnits: sql<number>`coalesce(sum(case when ${history.mode}='live' then case when ${history.applicationUnits}>0 then ${history.applicationUnits} else ${history.creditsUsed} end else 0 end),0)` }).from(history).where(sql`${timestamp} >= ${monthStart()}::timestamptz`).groupBy(history.provider)
+    const audits = await tx.select({ action: auditsTable.action, metadataJson: auditsTable.metadataJson, createdAt: auditsTable.createdAt }).from(auditsTable).where(inArray(auditsTable.action, [PROVIDER_CREDIT_AUDIT_ACTION, "coresignal_discovery_run", "coresignal_discovery_continuation"])).orderBy(desc(auditsTable.id)).limit(500)
+    const searchHistory = await tx.select({ operation: history.operation, responseSummary: history.responseSummary, createdAt: history.createdAt }).from(history).where(and(eq(history.provider, "coresignal"), eq(history.mode, "live"), eq(history.status, "success"))).orderBy(desc(history.id)).limit(100)
+    const operations = await tx.select({ provider: history.provider, createdAt: history.createdAt }).from(history).where(and(eq(history.status, "success"), eq(history.mode, "live"))).orderBy(desc(history.id)).limit(100)
+    return { settings, usage, balances: observationHistory(audits, searchHistory), operations }
+  })
+  return formatSnapshot(settings, usage, balances, operations)
+}
+
 export async function GET(request: Request) {
-  try { await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS"); return Response.json(await snapshot(), { headers: { "cache-control": "no-store" } }) }
-  catch (error) { return accessErrorResponse(error) ?? Response.json({ error: "Unable to load provider balances." }, { status: 500 }) }
+  try { await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS"); return Response.json(await (selectedDatabaseBackend() === "postgres" ? postgresSnapshot() : snapshot()), { headers: { "cache-control": "no-store" } }) }
+  catch (error) { return accessErrorResponse(error) ?? postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Unable to load provider balances." }, { status: 500 }) }
 }
 
 export async function POST(request: Request) {
@@ -91,13 +127,15 @@ export async function POST(request: Request) {
   try {
     const actor = await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
     const body = await request.json() as { action?: string; provider?: CreditProvider; observation?: unknown; confirmed?: boolean }
+    const backend = selectedDatabaseBackend()
+    if (backend === "postgres" && body.action !== "attest") return Response.json({ error: "Provider balance verification is unavailable." , code: "unavailable" }, { status: 501 })
     if (body.action === "attest") {
       if (!body.confirmed) return Response.json({ error: "Explicit Admin attestation is required." }, { status: 400 })
       let observation: ProviderCreditObservation
       try { observation = parseProviderCreditObservation({ ...(body.observation && typeof body.observation === "object" && !Array.isArray(body.observation) ? body.observation : {}), source: "admin_dashboard_attestation" }) }
       catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Balance observation is invalid." }, { status: 400 }) }
       await writeSecurityAudit(actor, { action: PROVIDER_CREDIT_AUDIT_ACTION, entityType: "provider_balance", entityId: observation.provider, metadata: observation, result: "admin_attested", source: "authenticated_dashboard_observation" })
-      return Response.json(await snapshot())
+      return Response.json(await (backend === "postgres" ? postgresSnapshot() : snapshot()))
     }
     if (body.action !== "refresh" || !["brightdata", "lusha"].includes(body.provider ?? "")) return Response.json({ error: "Only supported read-only balance APIs can be refreshed." }, { status: 400 })
     refreshActor = actor

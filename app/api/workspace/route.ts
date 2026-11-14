@@ -1,5 +1,7 @@
 import { asc, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
+import { selectedDatabaseBackend } from "@/db/backend";
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error";
 import { activityLog, alumni, alumniDataLifecycle, alumniPrivacyControls, companyPriorities, fieldChangeHistory, importRuns, programmeOptions, providerCompanyAliases, providerCompanyMappings } from "@/db/schema";
 import type { ApplicationRole } from "@/lib/access-types";
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile";
@@ -9,6 +11,7 @@ import { runDirectoryQuery } from "@/lib/directory-data";
 import { buildCompanyDirectory } from "@/lib/company-directory";
 import { effectiveIntakeStatus, effectiveIntakeStatusSql } from "@/lib/intake-status";
 import { accessErrorResponse, authorizeRequest, hasPermission, maskEmail, maskPhone, writeSecurityAudit } from "@/lib/security";
+import type { alumni as postgresAlumni } from "@/db/postgres/schema";
 
 const allowedStatuses = new Set(["Not contacted", "Contacted", "Responded", "Meeting set"]);
 const allowedVerification = new Set(["Confirmed", "Verified", "Likely", "Unverified", "Possibly outdated", "Mismatch"]);
@@ -264,6 +267,11 @@ function normaliseRecord(record: ImportedRecord, filename: string, actor: string
 export async function GET(request: Request) {
   try {
     const context = await authorizeRequest(request, "VIEW_ALUMNI");
+    if (selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter");
+      const { postgresWorkspaceResponse } = await import("@/lib/postgres-workspace-read");
+      return postgresWorkspaceResponse(getPostgresDb(), request, context, toApiAlumnus);
+    }
     const db = getDb();
     const url = new URL(request.url);
     const includeAlumni = url.searchParams.get("includeAlumni") === "true";
@@ -303,6 +311,8 @@ export async function GET(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    const databaseFailure = postgresDatabaseErrorResponse(error);
+    if (databaseFailure) return databaseFailure;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load the shared workspace." }, { status: 500 });
   }
 }
@@ -311,6 +321,16 @@ export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM");
     const payload = await request.json() as { action?: string; filename?: string; records?: ImportedRecord[]; record?: ImportedRecord; continueAsNew?: boolean; approvedUpdateKeys?: string[] };
+    if (selectedDatabaseBackend() === "postgres") {
+      const { getPostgresDb } = await import("@/db/postgres/adapter");
+      const { postgresWorkspacePost } = await import("@/lib/postgres-workspace-mutations");
+      return await postgresWorkspacePost(getPostgresDb(), context, payload, {
+        normalise: (record, actor, continueAsNew) => normaliseManualRecord(record, actor, continueAsNew) as typeof postgresAlumni.$inferInsert,
+        bulkNormalise: (record, filename, actor) => normaliseRecord(record, filename, actor) as typeof postgresAlumni.$inferInsert,
+        matches: (record, people) => possibleManualMatches(record, people as unknown as (typeof alumni.$inferSelect)[]),
+        map: (row, role) => toApiAlumnus(row as unknown as typeof alumni.$inferSelect, role),
+      });
+    }
     const db = getDb();
     const actor = context.displayName;
 
@@ -396,6 +416,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return Response.json({ error: "Database operation failed." }, { status: 500 });
     return Response.json({ error: error instanceof Error ? error.message : "Unable to import alumni records." }, { status: 400 });
   }
 }
@@ -413,6 +434,19 @@ export async function PATCH(request: Request) {
       professionalDataStatus?: string;
       professionalDataNote?: string;
     };
+    if (selectedDatabaseBackend() === "postgres") {
+      const context = payload.action === "update_priority" && text(payload.company) && text(payload.priority)
+        ? await authorizeRequest(request, "MANAGE_PROVIDER_SETTINGS")
+        : payload.action === "update_privacy" && Number.isInteger(payload.id) && payload.privacy
+          ? await authorizeRequest(request, "MANAGE_PRIVACY")
+          : (payload.action === "update_alumnus" || payload.action === "update_data_quality") && Number.isInteger(payload.id)
+            ? await authorizeRequest(request, "OPERATE_PCOM") : null;
+      if (!context) return Response.json({ error: "Unsupported workspace update." }, { status: 400 });
+      const { getPostgresDb } = await import("@/db/postgres/adapter");
+      const { postgresWorkspacePatch } = await import("@/lib/postgres-workspace-mutations");
+      return await postgresWorkspacePatch(getPostgresDb(), context, payload,
+        (row, role) => toApiAlumnus(row as unknown as typeof alumni.$inferSelect, role));
+    }
     const db = getDb();
     const now = new Date().toISOString();
 
@@ -488,6 +522,7 @@ export async function PATCH(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return Response.json({ error: "Database operation failed." }, { status: 500 });
     return Response.json({ error: error instanceof Error ? error.message : "Unable to save the update." }, { status: 500 });
   }
 }

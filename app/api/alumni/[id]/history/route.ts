@@ -1,5 +1,6 @@
 import { inArray, sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, alumniEmploymentEvidence, alumniProfileChangeProposals, alumniSourceObservations, coresignalWebhookEvents, externalDiscoveryCandidateEvidence, externalDiscoveryResults, fieldChangeHistory, providerCollectionAttempts, providerRefreshReviews, providerResponseHistory, provisionalAlumniIntakes } from "@/db/schema"
 import { compareRetainedObservations, intelligenceSnapshotEntry, retainedProfessionalFields, type AlumniHistoryEntry, type RetainedIntelligenceSnapshotPage } from "@/lib/alumni-history"
 import { presentProviderHistoryCollectEvidence } from "@/lib/coresignal-collect-only"
@@ -45,8 +46,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (source !== "corporate-network" && source !== "intelligence") return Response.json({ error: "Unsupported history source." }, { status: 400 })
     if (!Number.isSafeInteger(alumnusId) || alumnusId < 1 || !page) return Response.json({ error: "A valid alumnus ID and history page are required." }, { status: 400 })
     stage = "alumnus_lookup"
-    const db = getDb()
-    const person = await db.select({ id: alumni.id, createdAt: alumni.createdAt, source: alumni.source, discoverySource: alumni.discoverySource,
+    const postgres = selectedDatabaseBackend() === "postgres"
+    const person = postgres ? await (await import("@/lib/postgres-alumni-history")).postgresHistoryPerson(alumnusId)
+      : await getDb().select({ id: alumni.id, createdAt: alumni.createdAt, source: alumni.source, discoverySource: alumni.discoverySource,
       company: alumni.company, title: alumni.title, location: alumni.location, programme: alumni.programme, graduationYear: alumni.graduationYear, seniority: alumni.seniority }).from(alumni).where(sql`${alumni.id} = ${alumnusId}`).limit(1)
     if (!person.length) return Response.json({ error: "Alumnus not found." }, { status: 404 })
     if (source === "intelligence") {
@@ -72,7 +74,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const pageSize = 20
     const offset = (page - 1) * pageSize
     stage = "history_index_lookup"
-    const indexed = await db.all<IndexRow>(sql`
+    const indexed: IndexRow[] = postgres ? await (await import("@/lib/postgres-alumni-history")).postgresHistoryIndex(alumnusId, pageSize + 1, offset)
+      : await getDb().all<IndexRow>(sql`
       with source_kinds(row_kind) as (values ('SOURCE_BASELINE'), ('SOURCE_OBSERVATION')),
       primary_history as (
         select k.row_kind,
@@ -115,19 +118,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     for (const row of selected) if (row.previous_kind && row.previous_id && row.previous_at && !hydrationRows.some(item => item.row_kind === row.previous_kind && item.row_id === row.previous_id)) hydrationRows.push({ row_kind: row.previous_kind, row_id: row.previous_id, occurred_at: row.previous_at })
     const ids = (kind: string) => hydrationRows.filter(row => row.row_kind === kind).map(row => row.row_id)
     stage = "history_hydration"
-    const [sources, discoveries, intakes, attempts, reviews, careers, brightSnapshots, changes, proposals, evidence, webhookEvents] = await Promise.all([
-      ids("SOURCE_OBSERVATION").length ? db.select().from(alumniSourceObservations).where(inArray(alumniSourceObservations.id, ids("SOURCE_OBSERVATION"))) : [],
-      ids("DISCOVERY_OBSERVATION").length ? db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.id, ids("DISCOVERY_OBSERVATION"))) : [],
-      ids("PROVISIONAL_INTAKE").length ? db.select().from(provisionalAlumniIntakes).where(inArray(provisionalAlumniIntakes.id, ids("PROVISIONAL_INTAKE"))) : [],
-      ids("PROVIDER_ATTEMPT").length ? db.select().from(providerResponseHistory).where(inArray(providerResponseHistory.id, ids("PROVIDER_ATTEMPT"))) : [],
-      ids("PROVIDER_REVIEW").length ? db.select().from(providerRefreshReviews).where(inArray(providerRefreshReviews.id, ids("PROVIDER_REVIEW"))) : [],
-      ids("CAREER_OBSERVATION").length ? db.select().from(alumniEmploymentEvidence).where(inArray(alumniEmploymentEvidence.id, ids("CAREER_OBSERVATION"))) : [],
-      ids("BRIGHT_SNAPSHOT").length ? db.select().from(providerCollectionAttempts).where(inArray(providerCollectionAttempts.id, ids("BRIGHT_SNAPSHOT"))) : [],
-      ids("CANONICAL_CHANGE").length ? db.select().from(fieldChangeHistory).where(inArray(fieldChangeHistory.id, ids("CANONICAL_CHANGE"))) : [],
-      ids("REVIEW_DECISION").length ? db.select().from(alumniProfileChangeProposals).where(inArray(alumniProfileChangeProposals.id, ids("REVIEW_DECISION"))) : [],
-      ids("DISCOVERY_REVIEW").length ? db.select().from(externalDiscoveryCandidateEvidence).where(inArray(externalDiscoveryCandidateEvidence.id, ids("DISCOVERY_REVIEW"))) : [],
-      ids("WEBHOOK_NOTIFICATION").length ? db.select().from(coresignalWebhookEvents).where(inArray(coresignalWebhookEvents.id, ids("WEBHOOK_NOTIFICATION"))) : [],
-    ])
+    const [sources, discoveries, intakes, attempts, reviews, careers, brightSnapshots, changes, proposals, evidence, webhookEvents] = postgres
+      ? await (await import("@/lib/postgres-alumni-history")).postgresHistoryHydration(ids)
+      : await (async () => { const db = getDb(); return Promise.all([
+        ids("SOURCE_OBSERVATION").length ? db.select().from(alumniSourceObservations).where(inArray(alumniSourceObservations.id, ids("SOURCE_OBSERVATION"))) : [],
+        ids("DISCOVERY_OBSERVATION").length ? db.select().from(externalDiscoveryResults).where(inArray(externalDiscoveryResults.id, ids("DISCOVERY_OBSERVATION"))) : [],
+        ids("PROVISIONAL_INTAKE").length ? db.select().from(provisionalAlumniIntakes).where(inArray(provisionalAlumniIntakes.id, ids("PROVISIONAL_INTAKE"))) : [],
+        ids("PROVIDER_ATTEMPT").length ? db.select().from(providerResponseHistory).where(inArray(providerResponseHistory.id, ids("PROVIDER_ATTEMPT"))) : [],
+        ids("PROVIDER_REVIEW").length ? db.select().from(providerRefreshReviews).where(inArray(providerRefreshReviews.id, ids("PROVIDER_REVIEW"))) : [],
+        ids("CAREER_OBSERVATION").length ? db.select().from(alumniEmploymentEvidence).where(inArray(alumniEmploymentEvidence.id, ids("CAREER_OBSERVATION"))) : [],
+        ids("BRIGHT_SNAPSHOT").length ? db.select().from(providerCollectionAttempts).where(inArray(providerCollectionAttempts.id, ids("BRIGHT_SNAPSHOT"))) : [],
+        ids("CANONICAL_CHANGE").length ? db.select().from(fieldChangeHistory).where(inArray(fieldChangeHistory.id, ids("CANONICAL_CHANGE"))) : [],
+        ids("REVIEW_DECISION").length ? db.select().from(alumniProfileChangeProposals).where(inArray(alumniProfileChangeProposals.id, ids("REVIEW_DECISION"))) : [],
+        ids("DISCOVERY_REVIEW").length ? db.select().from(externalDiscoveryCandidateEvidence).where(inArray(externalDiscoveryCandidateEvidence.id, ids("DISCOVERY_REVIEW"))) : [],
+        ids("WEBHOOK_NOTIFICATION").length ? db.select().from(coresignalWebhookEvents).where(inArray(coresignalWebhookEvents.id, ids("WEBHOOK_NOTIFICATION"))) : [],
+      ] as const) })()
     const byId = <T extends { id: number }>(items: T[]) => new Map(items.map(item => [item.id, item]))
     const sourceById = byId(sources), discoveryById = byId(discoveries), intakeById = byId(intakes), attemptById = byId(attempts), reviewById = byId(reviews)
     const careerById = byId(careers), brightById = byId(brightSnapshots), changeById = byId(changes), proposalById = byId(proposals), evidenceById = byId(evidence), webhookById = byId(webhookEvents)

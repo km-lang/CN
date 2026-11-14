@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm"
 
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { alumni, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, securityAuditEvents } from "@/db/schema"
 import {
   PROFESSIONAL_VERIFICATION_LABELS,
@@ -8,6 +9,7 @@ import {
   validateProfessionalVerificationRequest,
 } from "@/lib/professional-verification"
 import { accessErrorResponse, authorizeRequest, safeAuditMetadata } from "@/lib/security"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 
 const historyFields = [
   "profile_match",
@@ -35,6 +37,10 @@ export async function GET(request: Request) {
     await authorizeRequest(request, "OPERATE_PCOM")
     const alumnusId = Number(new URL(request.url).searchParams.get("alumnusId"))
     if (!Number.isInteger(alumnusId) || alumnusId < 1) return Response.json({ error: "Choose a valid alumnus." }, { status: 400 })
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresProfessionalVerificationGet } = await import("@/lib/postgres-professional-verification")
+      return await postgresProfessionalVerificationGet(alumnusId)
+    }
     const db = getDb()
     const [person] = await db.select().from(alumni).where(eq(alumni.id, alumnusId)).limit(1)
     if (!person) return Response.json({ error: "Alumnus not found." }, { status: 404 })
@@ -113,6 +119,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load verification evidence." }, { status: 500 })
   }
 }
@@ -125,6 +132,11 @@ export async function POST(request: Request) {
     let payload
     try { payload = validateProfessionalVerificationRequest(input) } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "Invalid verification request." }, { status: 400 })
+    }
+
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresProfessionalVerificationPost } = await import("@/lib/postgres-professional-verification")
+      return await postgresProfessionalVerificationPost(context, payload)
     }
 
     const db = getDb()
@@ -182,6 +194,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error)
     if (denied) return denied
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
     return Response.json({ error: error instanceof Error ? error.message : "Unable to save professional verification." }, { status: 500 })
   }
 }

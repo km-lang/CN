@@ -1,13 +1,19 @@
 import { and, eq, sql } from "drizzle-orm"
 import { getDb } from "@/db"
+import { selectedDatabaseBackend } from "@/db/backend"
 import { activityLog, alumni, alumniPrivacyControls, alumniProfileChangeProposals, alumniSourceObservations, fieldChangeHistory, importRuns, mutationCommitGuards, mutationRequestItems, mutationRequests, programmeOptions, securityAuditEvents } from "@/db/schema"
-import { importPreviewDigest, institutionalProfileKey, MAX_IMPORT_ROWS, validateImport, type ImportExisting, type ImportRecord } from "@/lib/alumni-import"
+import { importPreviewDigest, institutionalProfileKey, MAX_IMPORT_ROWS, validateImport, type ImportExisting, type ImportRecord, type ImportReviewRow } from "@/lib/alumni-import"
 import { existingMutation, mutationConflictResponse, mutationIdentity, mutationPendingResponse, replayMutationResponse } from "@/lib/mutation-idempotency"
 import { normalizeProfessionalProfileUrl } from "@/lib/professional-profile"
 import { effectiveIntakeStatus } from "@/lib/intake-status"
-import { accessErrorResponse, authorizeRequest, safeAuditMetadata } from "@/lib/security"
+import { accessErrorResponse, authorizeRequest, safeAuditMetadata, type SecurityContext } from "@/lib/security"
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error"
 
 type ImportPayload = { action?: "preview" | "execute"; mode?: "upsert" | "update_only"; filename?: string; records?: ImportRecord[]; previewId?: string; approvedUpdateKeys?: string[]; confirmed?: boolean }
+class PostgresImportReadError extends Error {
+  constructor(readonly cause: unknown) { super("PostgreSQL import preview read failed.") }
+}
+class PostgresImportValidationError extends Error {}
 
 function text(value: unknown, fallback = "") { const result = String(value ?? "").trim(); return result || fallback }
 function number(value: unknown, fallback = 0) { const result = Number(value); return Number.isFinite(result) ? Math.round(result) : fallback }
@@ -99,6 +105,210 @@ async function loadReview(records: ImportRecord[], mode: "upsert" | "update_only
   return { db, people, review, previewId }
 }
 
+async function loadPostgresReview(records: ImportRecord[], mode: "upsert" | "update_only") {
+  const { getPostgresDb } = await import("@/db/postgres/adapter")
+  const { alumni: pgAlumni, programmeOptions: pgProgrammes } = await import("@/db/postgres/schema")
+  const db = getPostgresDb()
+  let people: (typeof pgAlumni.$inferSelect)[]
+  let programmes: (typeof pgProgrammes.$inferSelect)[]
+  try { [people, programmes] = await Promise.all([db.select().from(pgAlumni), db.select().from(pgProgrammes)]) }
+  catch (error) { throw new PostgresImportReadError(error) }
+  const activeProgrammes = programmes.filter(item => item.active).flatMap(item => [item.code, item.name])
+  const review = validateImport(records, people.map(person => existingRecord(person as typeof alumni.$inferSelect)), activeProgrammes, { maxRows: MAX_IMPORT_ROWS, mode })
+  const previewId = await sha256(importPreviewDigest(review))
+  return { db, people, review, previewId }
+}
+
+async function executePostgresImport(request: Request, context: SecurityContext, payload: ImportPayload, mode: "upsert" | "update_only", filename: string) {
+  const { getPostgresDb } = await import("@/db/postgres/adapter")
+  const pg = await import("@/db/postgres/schema")
+  const db = getPostgresDb()
+  const identity = await mutationIdentity(request, context, "alumni_import_execute", payload.previewId || "missing-preview", payload)
+    .catch(error => { throw new PostgresImportValidationError(error instanceof Error ? error.message : "Invalid import identity.") })
+  const scope = and(eq(pg.mutationRequests.actorUserId, context.userId), eq(pg.mutationRequests.operationType, identity.operationType),
+    eq(pg.mutationRequests.targetKey, identity.targetKey), eq(pg.mutationRequests.clientKeyHash, identity.clientKeyHash))
+  const findPrior = async () => (await db.select().from(pg.mutationRequests).where(scope).limit(1))[0]
+  const prior = await findPrior()
+  if (prior?.payloadHash !== undefined && prior.payloadHash !== identity.payloadHash) return mutationConflictResponse()
+  if (prior?.status === "COMPLETED" && prior.responseJson) return replayMutationResponse(prior as typeof mutationRequests.$inferSelect)
+  if (prior?.status === "IN_PROGRESS" && prior.leaseExpiresAt > new Date().toISOString()) return mutationPendingResponse()
+
+  const { people, review, previewId } = await loadPostgresReview(payload.records!, mode)
+  if (payload.confirmed !== true) return Response.json({ error: "Explicit import confirmation is required." }, { status: 400 })
+  if (!prior && (!payload.previewId || payload.previewId !== previewId)) return Response.json({ error: "The import preview is stale. Preview the file again before executing." }, { status: 409 })
+  if (review.blocking) return Response.json({ error: "No valid records are available to import." }, { status: 400 })
+  const approved = new Set(payload.approvedUpdateKeys ?? [])
+  const now = new Date().toISOString()
+  const leaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString()
+  const attemptCount = prior ? prior.attemptCount + 1 : 1
+
+  if (!prior) {
+    const [claimed] = await db.insert(pg.mutationRequests).values({ ...identity, actorUserId: context.userId, status: "IN_PROGRESS", leaseExpiresAt,
+      metadataJson: JSON.stringify({ originalPreviewId: previewId, counts: review.counts }), createdAt: now, updatedAt: now }).onConflictDoNothing().returning()
+    if (!claimed) {
+      const raced = await findPrior()
+      if (raced?.payloadHash !== undefined && raced.payloadHash !== identity.payloadHash) return mutationConflictResponse()
+      if (raced?.status === "COMPLETED" && raced.responseJson) return replayMutationResponse(raced as typeof mutationRequests.$inferSelect)
+      return mutationPendingResponse()
+    }
+  } else {
+    const reclaim = and(eq(pg.mutationRequests.requestKey, identity.requestKey), eq(pg.mutationRequests.status, prior.status),
+      eq(pg.mutationRequests.attemptCount, prior.attemptCount),
+      prior.status === "IN_PROGRESS" ? sql`${pg.mutationRequests.leaseExpiresAt} < ${now}` : sql`true`)
+    const reclaimed = await db.update(pg.mutationRequests).set({ status: "IN_PROGRESS", attemptCount, leaseExpiresAt, updatedAt: now }).where(reclaim).returning({ requestKey: pg.mutationRequests.requestKey })
+    if (reclaimed.length !== 1) return mutationPendingResponse()
+  }
+
+  const originalCounts = (() => {
+    try { const parsed = prior ? JSON.parse(prior.metadataJson) as { counts?: typeof review.counts } : null; return parsed?.counts ?? review.counts }
+    catch { return review.counts }
+  })()
+  try {
+    const completed = new Set((await db.select({ itemKey: pg.mutationRequestItems.itemKey }).from(pg.mutationRequestItems)
+      .where(eq(pg.mutationRequestItems.requestKey, identity.requestKey))).map(item => item.itemKey))
+    type Work = { kind: "new" | "existing"; row: ImportReviewRow; current?: typeof pg.alumni.$inferSelect;
+      plan?: ReturnType<typeof safeUpdates>; actions: number }
+    let queued: Work[] = []
+    let queuedActions = 0
+
+    const flush = async () => {
+      if (!queued.length) return
+      const batch = queued
+      queued = []
+      queuedActions = 0
+      await db.transaction(async tx => {
+        const [owner] = await tx.select().from(pg.mutationRequests).where(eq(pg.mutationRequests.requestKey, identity.requestKey)).for("update").limit(1)
+        if (!owner || owner.status !== "IN_PROGRESS" || owner.attemptCount !== attemptCount || owner.leaseExpiresAt < new Date().toISOString()) {
+          throw new Error("Import ownership was lost before the next batch.")
+        }
+        const guard = (alumnusId: number, operation: string) => tx.insert(pg.mutationCommitGuards).values({ requestKey: identity.requestKey,
+          alumnusId, operation: `${operation}:attempt:${attemptCount}`, valid: 1 })
+        for (const work of batch) {
+          const row = work.row
+          const itemMutationKey = `${identity.requestKey}:${row.key}`
+          if (work.kind === "new") {
+            const record = newAlumnus(row.record, context.displayName)
+            const [created] = await tx.insert(pg.alumni).values({ ...record, lastMutationRequestKey: itemMutationKey })
+              .onConflictDoNothing({ target: pg.alumni.profileKey }).returning()
+            if (!created || created.lastMutationRequestKey !== itemMutationKey) throw new Error("Import ownership was lost for a new alumnus.")
+            await guard(created.id, `import_create_ownership:${row.key}`)
+            await guard(created.id, `import_create:${row.key}`)
+            if (record.linkedinUrl) {
+              const [count] = await tx.select({ n: sql<number>`count(*)::integer` }).from(pg.alumni)
+                .where(sql`rtrim(lower(${pg.alumni.linkedinUrl}), '/') = rtrim(lower(${record.linkedinUrl}), '/')`)
+              if (count.n !== 1) throw new Error("Import LinkedIn identity is no longer unique.")
+              await guard(created.id, `import_linkedin_identity:${row.key}`)
+            }
+            await tx.insert(pg.alumniSourceObservations).values({ alumnusId: created.id, mutationRequestKey: identity.requestKey,
+              sourceRowKey: row.key, filename, sourceSystem: text(row.record.source_system), sourceDate: text(row.record.source_date),
+              observedJson: retainedImportObservation(row.record), importedBy: context.displayName }).onConflictDoNothing()
+            const privacy = { generalContactStatus: text(row.record.general_contact_status, "Unknown"),
+              professionalEngagementStatus: text(row.record.professional_engagement_status, "Unknown"),
+              birthdayEngagementStatus: text(row.record.birthday_engagement_status, "Unknown"), consentSource: text(row.record.consent_source, "Unknown") }
+            if (Object.values(privacy).some(value => value !== "Unknown")) await tx.insert(pg.alumniPrivacyControls).values({ alumnusId: created.id,
+              ...privacy, notes: "Imported explicit restrictions/consent status; no consent inferred.", updatedBy: context.displayName }).onConflictDoNothing()
+            await tx.insert(pg.mutationRequestItems).values({ requestKey: identity.requestKey, itemKey: row.key,
+              outcomeJson: JSON.stringify({ imported: 1, updated: 0, unchanged: 0, protectedFields: 0 }) })
+          } else {
+            const current = work.current!
+            const plan = work.plan!
+            const proposalRecordVersion = current.recordVersion + (plan.history.length ? 1 : 0)
+            if (plan.history.length || plan.proposals.length) {
+              const [updated] = await tx.update(pg.alumni).set({ ...plan.changes, lastMutationRequestKey: itemMutationKey } as Partial<typeof pg.alumni.$inferInsert>)
+                .where(and(eq(pg.alumni.id, current.id), eq(pg.alumni.recordVersion, current.recordVersion))).returning()
+              if (!updated || updated.recordVersion !== proposalRecordVersion || updated.lastMutationRequestKey !== itemMutationKey) {
+                throw new Error("Import version ownership was lost for an alumnus.")
+              }
+              await guard(current.id, `import_update_ownership:${row.key}`)
+              await guard(current.id, `import_update:${row.key}`)
+              for (const item of plan.history) await tx.insert(pg.fieldChangeHistory).values({ alumnusId: current.id, field: item.field,
+                oldValue: item.oldValue, newValue: item.newValue, source: `Institutional import · ${row.record.source_system}`,
+                providerAction: "Reviewed alumni import", initiatedBy: context.displayName, mutationRequestKey: itemMutationKey })
+              for (const item of plan.proposals) await tx.insert(pg.alumniProfileChangeProposals).values({ alumnusId: current.id, field: item.field,
+                oldValue: item.oldValue, proposedValue: item.proposedValue, source: `Institutional import · ${row.record.source_system || "partial update"}`,
+                expectedRecordVersion: proposalRecordVersion, proposedBy: context.displayName, createdAt: plan.now, mutationRequestKey: itemMutationKey })
+            }
+            await guard(current.id, `import_item_ownership:${row.key}`)
+            await tx.insert(pg.alumniSourceObservations).values({ alumnusId: current.id, mutationRequestKey: identity.requestKey,
+              sourceRowKey: row.key, filename, sourceSystem: text(row.record.source_system), sourceDate: text(row.record.source_date),
+              observedJson: retainedImportObservation(row.record), importedBy: context.displayName }).onConflictDoNothing()
+            await tx.insert(pg.mutationRequestItems).values({ requestKey: identity.requestKey, itemKey: row.key,
+              outcomeJson: JSON.stringify({ imported: 0, updated: plan.history.length ? 1 : 0,
+                unchanged: plan.history.length || plan.proposals.length ? 0 : 1, protectedFields: plan.protectedFields }) })
+          }
+        }
+        const renewed = await tx.update(pg.mutationRequests).set({ leaseExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+          updatedAt: new Date().toISOString() }).where(and(eq(pg.mutationRequests.requestKey, identity.requestKey),
+          eq(pg.mutationRequests.status, "IN_PROGRESS"), eq(pg.mutationRequests.attemptCount, attemptCount))).returning({ requestKey: pg.mutationRequests.requestKey })
+        if (renewed.length !== 1) throw new Error("Import ownership was lost before the next batch.")
+      })
+    }
+    const enqueue = async (work: Work) => {
+      if (queued.length && queuedActions + work.actions > 80) await flush()
+      queued.push(work)
+      queuedActions += work.actions
+      if (queuedActions >= 80) await flush()
+    }
+    if (mode !== "update_only") for (const row of review.rows.filter(item => item.kind === "new")) {
+      if (completed.has(row.key)) continue
+      const record = newAlumnus(row.record, context.displayName)
+      const privacy = [row.record.general_contact_status, row.record.professional_engagement_status,
+        row.record.birthday_engagement_status, row.record.consent_source].some(value => text(value) && text(value) !== "Unknown")
+      await enqueue({ kind: "new", row, actions: 5 + (record.linkedinUrl ? 1 : 0) + (privacy ? 1 : 0) })
+    }
+    for (const row of review.rows.filter(item => item.kind === "existing" && approved.has(item.key))) {
+      if (completed.has(row.key)) continue
+      const current = people.find(person => person.id === row.existing?.id)
+      if (!current) continue
+      let plan: ReturnType<typeof safeUpdates>
+      try { plan = safeUpdates(row.record, current as typeof alumni.$inferSelect, context.displayName) }
+      catch (error) { throw new PostgresImportValidationError(error instanceof Error ? error.message : "Unable to validate an import update.") }
+      await enqueue({ kind: "existing", row, current, plan, actions: 3 + (plan.history.length || plan.proposals.length ? 3 + plan.history.length + plan.proposals.length : 0) })
+    }
+    await flush()
+
+    const outcomes = await db.select({ outcomeJson: pg.mutationRequestItems.outcomeJson }).from(pg.mutationRequestItems)
+      .where(eq(pg.mutationRequestItems.requestKey, identity.requestKey))
+    const totals = outcomes.reduce((sum, item) => {
+      const value = JSON.parse(item.outcomeJson) as { imported?: number; updated?: number; unchanged?: number; protectedFields?: number }
+      sum.imported += value.imported ?? 0; sum.updated += value.updated ?? 0; sum.unchanged += value.unchanged ?? 0; sum.protectedFields += value.protectedFields ?? 0
+      return sum
+    }, { imported: 0, updated: 0, unchanged: originalCounts.unchanged, protectedFields: 0 })
+    const responseBody = { importId: payload.previewId || previewId, mode, ...totals, excluded: originalCounts.rejected,
+      providerCalls: 0, canonicalProviderMutations: 0 }
+    await db.transaction(async tx => {
+      const [owner] = await tx.select().from(pg.mutationRequests).where(eq(pg.mutationRequests.requestKey, identity.requestKey)).for("update").limit(1)
+      if (!owner || owner.status !== "IN_PROGRESS" || owner.attemptCount !== attemptCount || owner.leaseExpiresAt < new Date().toISOString()) {
+        throw new Error("Import ownership was lost before finalization.")
+      }
+      const [first] = await tx.select({ id: sql<number | null>`min(${pg.alumni.id})` }).from(pg.alumni)
+      if (first.id === null) throw new Error("Import finalization requires an alumnus record.")
+      await tx.insert(pg.mutationCommitGuards).values({ requestKey: identity.requestKey, alumnusId: first.id,
+        operation: `import_finalize:attempt:${attemptCount}`, valid: 1 })
+      await tx.insert(pg.importRuns).values({ filename, rowCount: originalCounts.detected, importedBy: context.displayName, mutationRequestKey: identity.requestKey })
+      await tx.insert(pg.activityLog).values({ action: "governed_import", entityType: "alumni", entityId: payload.previewId || previewId,
+        actor: context.displayName, details: `${totals.imported} created; ${totals.updated} safely updated; ${originalCounts.rejected} excluded; ${totals.protectedFields} protected fields preserved`, mutationRequestKey: identity.requestKey })
+      await tx.insert(pg.securityAuditEvents).values({ actorUserId: context.userId, actorIdentity: context.externalIdentity,
+        actorName: context.displayName, actorRole: context.role, action: "alumni_import_executed", entityType: "import",
+        entityId: payload.previewId || previewId, metadataJson: safeAuditMetadata({ filename, mode, rows: originalCounts.detected,
+          imported: totals.imported, updated: totals.updated, excluded: originalCounts.rejected,
+          protectedFields: totals.protectedFields, providerCalls: 0 }), result: "success", source: "application", mutationRequestKey: identity.requestKey })
+      const finished = await tx.update(pg.mutationRequests).set({ status: "COMPLETED", httpStatus: 201,
+        responseJson: JSON.stringify(responseBody), leaseExpiresAt: "", updatedAt: new Date().toISOString() })
+        .where(and(eq(pg.mutationRequests.requestKey, identity.requestKey), eq(pg.mutationRequests.status, "IN_PROGRESS"),
+          eq(pg.mutationRequests.attemptCount, attemptCount))).returning({ requestKey: pg.mutationRequests.requestKey })
+      if (finished.length !== 1) throw new Error("Import ownership was lost before finalization.")
+    })
+    return Response.json(responseBody, { status: 201 })
+  } catch (error) {
+    try { await db.update(pg.mutationRequests).set({ status: "FAILED", leaseExpiresAt: "", updatedAt: new Date().toISOString() })
+      .where(and(eq(pg.mutationRequests.requestKey, identity.requestKey), eq(pg.mutationRequests.status, "IN_PROGRESS"),
+        eq(pg.mutationRequests.attemptCount, attemptCount))) } catch { /* Preserve the original failure. */ }
+    if (error instanceof PostgresImportValidationError) return Response.json({ error: error.message }, { status: 400 })
+    return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const context = await authorizeRequest(request, "OPERATE_PCOM")
@@ -108,6 +318,18 @@ export async function POST(request: Request) {
     if (!Array.isArray(payload.records) || payload.records.length < 1 || payload.records.length > MAX_IMPORT_ROWS) return Response.json({ error: `Import between 1 and ${MAX_IMPORT_ROWS.toLocaleString()} records.` }, { status: 400 })
     const filename = safeFilename(payload.filename)
     if (!/\.(csv|xlsx)$/i.test(filename)) return Response.json({ error: "Choose a .csv or .xlsx alumni file." }, { status: 400 })
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "preview") {
+      const { review, previewId } = await loadPostgresReview(payload.records, mode)
+      return Response.json({ ...review, previewId, mode, providerCalls: 0, canonicalMutations: 0 })
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "execute") {
+      try { return await executePostgresImport(request, context, payload, mode, filename) }
+      catch (error) {
+        if (error instanceof PostgresImportValidationError) return Response.json({ error: error.message }, { status: 400 })
+        if (error instanceof PostgresImportReadError) return postgresDatabaseErrorResponse(error.cause, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
+        return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Unable to process the alumni import." }, { status: 500 })
+      }
+    }
     const executeIdentity = payload.action === "execute"
       ? await mutationIdentity(request, context, "alumni_import_execute", payload.previewId || "missing-preview", payload)
       : null
@@ -246,6 +468,7 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     const denied = accessErrorResponse(error); if (denied) return denied
+    if (error instanceof PostgresImportReadError) return postgresDatabaseErrorResponse(error.cause, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 })
     return Response.json({ error: error instanceof Error ? error.message : "Unable to process the alumni import." }, { status: 400 })
   }
 }

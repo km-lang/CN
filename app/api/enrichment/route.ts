@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { getDb } from "@/db";
+import { selectedDatabaseBackend } from "@/db/backend";
+import { postgresDatabaseErrorResponse } from "@/lib/postgres-http-error";
 import { alumni, alumniPrivacyControls, communicationPreferences, fieldChangeHistory, providerRefreshReviews, providerResponseHistory, providerSettings } from "@/db/schema";
 import { enrich, enrichmentMode, providerConfigured, type ProviderName } from "@/lib/enrichment-providers";
 import { coresignalProvider } from "@/lib/coresignal-adapter";
@@ -136,15 +138,20 @@ async function retainLushaContactResult(input: { claimId: number; reservation: n
 export async function GET(request: Request) {
   try {
     const context = await authorizeRequest(request, "VIEW_PROVIDER_STATUS");
-    const db = getDb();
-    const [usage, history] = await Promise.all([
-      usageSnapshot(),
-      db.select().from(providerResponseHistory).orderBy(desc(providerResponseHistory.createdAt), desc(providerResponseHistory.id)).limit(100),
-    ]);
-    const lushaHistoryIds = history.filter(item => item.provider === "lusha").map(item => item.id);
-    const lushaReviews = context.role === "ADMIN" && lushaHistoryIds.length
-      ? await db.select().from(providerRefreshReviews).where(inArray(providerRefreshReviews.providerResponseId, lushaHistoryIds))
-      : [];
+    const { usage, history, lushaReviews } = selectedDatabaseBackend() === "postgres"
+      ? await (await import("@/lib/postgres-enrichment-read")).postgresEnrichmentRead(context.role)
+      : await (async () => {
+          const db = getDb();
+          const [usage, history] = await Promise.all([
+            usageSnapshot(),
+            db.select().from(providerResponseHistory).orderBy(desc(providerResponseHistory.createdAt), desc(providerResponseHistory.id)).limit(100),
+          ]);
+          const lushaHistoryIds = history.filter(item => item.provider === "lusha").map(item => item.id);
+          const lushaReviews = context.role === "ADMIN" && lushaHistoryIds.length
+            ? await db.select().from(providerRefreshReviews).where(inArray(providerRefreshReviews.providerResponseId, lushaHistoryIds))
+            : [];
+          return { usage, history, lushaReviews };
+        })();
     const reviewByHistory = new Map(lushaReviews.map(review => [review.providerResponseId, review]));
     const contactResume = context.role === "DEVELOPER" ? {} : Object.fromEntries(history
       .filter(item => item.provider === "lusha" && item.alumnusId && item.operation === "Contact Search Preview" && item.status === "success")
@@ -169,6 +176,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 });
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load enrichment activity." }, { status: 500 });
   }
 }
@@ -179,6 +187,10 @@ export async function PATCH(request: Request) {
     const payload = await request.json() as { provider?: ProviderName; monthlyCreditLimit?: number };
     if (!providers.includes(payload.provider as ProviderName) || !Number.isInteger(payload.monthlyCreditLimit) || Number(payload.monthlyCreditLimit) < 0 || Number(payload.monthlyCreditLimit) > 100000) {
       return Response.json({ error: "Choose a provider and a valid monthly credit limit." }, { status: 400 });
+    }
+    if (selectedDatabaseBackend() === "postgres") {
+      const { postgresUpdateEnrichmentLimit } = await import("@/lib/postgres-enrichment-limit");
+      return await postgresUpdateEnrichmentLimit(payload.provider as ProviderName, Number(payload.monthlyCreditLimit), context);
     }
     const db = getDb();
     const provider = payload.provider as ProviderName;
@@ -192,6 +204,7 @@ export async function PATCH(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 });
     return Response.json({ error: error instanceof Error ? error.message : "Unable to save the credit limit." }, { status: 500 });
   }
 }
@@ -201,19 +214,35 @@ export async function POST(request: Request) {
     const payload = await request.json() as { action?: string; alumniIds?: number[]; alumnusId?: number; providers?: ProviderName[]; operation?: string; contactChannel?: "email" | "phone"; contactChannels?: ("email" | "phone")[]; reviewId?: number; historyId?: number; fields?: string[]; confirmed?: boolean; replaceExisting?: boolean; reconciledCredits?: number; reconciliationSource?: string };
     const requiredPermission = ["validate_lusha", "reconcile_usage", "refresh_history", "lusha_approve_identity", "lusha_reject_identity", "lusha_approve_contact", "lusha_reject_contact"].includes(payload.action ?? "") ? "MANAGE_PROVIDER_SETTINGS" : "OPERATE_PCOM";
     const context = await authorizeRequest(request, requiredPermission);
+    if (selectedDatabaseBackend() === "postgres" && ["refresh_history", "reconcile_usage"].includes(payload.action ?? "")) {
+      const { postgresEnrichmentLocalAction } = await import("@/lib/postgres-enrichment-actions");
+      return await postgresEnrichmentLocalAction(payload, context) ?? Response.json({ error: "Unsupported enrichment action." }, { status: 400 });
+    }
+    if (selectedDatabaseBackend() === "postgres" && (payload.action === "lusha_reject_identity" || payload.action === "lusha_reject_contact")) {
+      const { postgresLushaReviewReject } = await import("@/lib/postgres-lusha-review-reject");
+      return await postgresLushaReviewReject(payload.action, payload.reviewId, payload.confirmed, context);
+    }
+    if (selectedDatabaseBackend() === "postgres" && payload.action === "lusha_approve_contact") {
+      const { postgresLushaContactApprove } = await import("@/lib/postgres-lusha-contact-approve");
+      return await postgresLushaContactApprove(payload, context);
+    }
+    // Keep the unresolved D1 concurrent-approval response mismatch isolated to disposable local tests.
+    if (selectedDatabaseBackend() === "postgres" && process.env.CN_PG_LOCAL_TEST_ENABLED === "true" && payload.action === "lusha_approve_identity") {
+      const { postgresLushaIdentityApprove } = await import("@/lib/postgres-lusha-identity-approve");
+      return await postgresLushaIdentityApprove(payload.reviewId, payload.confirmed, context);
+    }
+    if (payload.action === "validate_lusha") {
+      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE and its server-side API key must both be configured." }, { status: 409 });
+      const accountUsage = await getLushaAccountUsage();
+      await writeSecurityAudit(context, { action: "lusha_connection_validated", entityType: "provider", entityId: "lusha", metadata: { endpoint: "account_usage", contactDataRequested: false } });
+      return Response.json({ connected: true, accountUsage });
+    }
     const db = getDb();
     const actor = context.displayName;
 
     if (payload.action === "refresh_history") {
       await writeSecurityAudit(context, { action: "provider_history_refreshed", entityType: "provider_history", metadata: { source: "administration_ui" } });
       return Response.json({ refreshed: true });
-    }
-
-    if (payload.action === "validate_lusha") {
-      if (enrichmentMode("lusha") !== "live" || !providerConfigured("lusha")) return Response.json({ error: "Lusha LIVE and its server-side API key must both be configured." }, { status: 409 });
-      const accountUsage = await getLushaAccountUsage();
-      await writeSecurityAudit(context, { action: "lusha_connection_validated", entityType: "provider", entityId: "lusha", metadata: { endpoint: "account_usage", contactDataRequested: false } });
-      return Response.json({ connected: true, accountUsage });
     }
 
     if (payload.action === "reconcile_usage") {
@@ -602,6 +631,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const denied = accessErrorResponse(error);
     if (denied) return denied;
+    if (selectedDatabaseBackend() === "postgres") return postgresDatabaseErrorResponse(error, true) ?? Response.json({ error: "Database operation failed." }, { status: 500 });
     return Response.json({ error: error instanceof Error ? error.message : "Unable to run enrichment." }, { status: 500 });
   }
 }
