@@ -43,13 +43,28 @@ test("PostgreSQL programme-option foundation uses only a disposable local cluste
     const options = await vite.ssrLoadModule("/db/postgres/programme-options.ts")
 
     await t.test("selection and staging configuration fail closed", () => {
-      assert.equal(backend.selectedDatabaseBackend({}), "d1")
+      // PostgreSQL is the default; D1 requires an explicit CN_DB_BACKEND=d1.
+      assert.equal(backend.selectedDatabaseBackend({}), "postgres")
+      assert.equal(backend.selectedDatabaseBackend({ CN_DB_BACKEND: " " }), "postgres")
       assert.equal(backend.selectedDatabaseBackend({ CN_DB_BACKEND: "postgres" }), "postgres")
-      assert.throws(() => backend.selectedDatabaseBackend({ DATABASE_URL: "postgresql://example" }), /CN_DB_BACKEND is required/)
+      assert.equal(backend.selectedDatabaseBackend({ DATABASE_URL: "postgresql://example" }), "postgres")
+      assert.equal(backend.selectedDatabaseBackend({ CN_DB_BACKEND: "d1" }), "d1")
       assert.throws(() => backend.selectedDatabaseBackend({ CN_DB_BACKEND: "d1", DATABASE_URL: "postgresql://example" }), /must be unset/)
       assert.throws(() => backend.selectedDatabaseBackend({ CN_DB_BACKEND: "other" }), /must be either/)
+      assert.throws(() => backend.requireD1Backend({}), /No fallback/)
       assert.throws(() => backend.requireD1Backend({ CN_DB_BACKEND: "postgres" }), /No fallback/)
+      assert.doesNotThrow(() => backend.requireD1Backend({ CN_DB_BACKEND: "d1" }))
+      assert.throws(() => adapter.postgresRuntimePoolConfig({}), /DATABASE_URL is required/)
       assert.throws(() => adapter.postgresRuntimePoolConfig({ CN_DB_BACKEND: "postgres" }), /DATABASE_URL is required/)
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ CN_DB_BACKEND: "d1" }), /CN_DB_BACKEND=postgres is required/)
+      // Local development cluster gate: development auth, loopback only, never with DATABASE_URL.
+      const localDev = { CN_PG_LOCAL_DEV_ENABLED: "true", NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true" }
+      assert.deepEqual((({ host, port, user, database }) => ({ host, port, user, database }))(adapter.postgresRuntimePoolConfig(localDev)),
+        { host: "127.0.0.1", port: 55432, user: "cn_local_dev", database: "cn_local_dev" })
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ ...localDev, NODE_ENV: "production" }), /Local PostgreSQL development access/)
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ ...localDev, LOCAL_DEV_AUTH_ENABLED: "false" }), /Local PostgreSQL development access/)
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ ...localDev, DATABASE_URL: "postgresql://example" }), /Local PostgreSQL development access/)
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ ...localDev, CN_DB_BACKEND: "d1" }), /CN_DB_BACKEND=postgres is required/)
       assert.throws(() => adapter.postgresRuntimePoolConfig({ CN_DB_BACKEND: "postgres", DATABASE_URL: "postgresql://user:password@old.example/corporate_network?sslmode=require" }), /pooled Neon endpoint/)
       const config = adapter.postgresRuntimePoolConfig({ CN_DB_BACKEND: "postgres", DATABASE_URL: `postgresql://user:password@${adapter.NEW_PROJECT_POOLED_HOST}/corporate_network?sslmode=require` })
       assert.equal(config.max, 5)

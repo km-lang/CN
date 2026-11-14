@@ -61,12 +61,20 @@ export default defineConfig(async ({ command, mode }) => {
     && process.env.LOCAL_DEV_AUTH_ENABLED === "true"
     && (configuredLocalRole === "ADMIN" || configuredLocalRole === "PCOM");
   const localPgSocket = localEnvironment.CN_PG_LOCAL_TEST_SOCKET?.trim() ?? "";
+  const localBackend = localEnvironment.CN_DB_BACKEND?.trim() || "postgres";
   const localPgTest = localDevelopment
-    && localEnvironment.CN_DB_BACKEND === "postgres"
+    && localBackend === "postgres"
     && localEnvironment.CN_PG_LOCAL_TEST_ENABLED === "true"
     && !localEnvironment.DATABASE_URL?.trim()
     && isLocalPostgresTestMarker(localPgSocket)
     && (() => { try { return realpathSync(localPgSocket) === localPgSocket; } catch { return false; } })();
+  // Loopback local-development cluster started by scripts/dev-local-windows.mjs.
+  const localPgDev = localDevelopment
+    && !localPgTest
+    && localBackend === "postgres"
+    && localEnvironment.CN_PG_LOCAL_DEV_ENABLED === "true"
+    && localEnvironment.CN_PG_LOCAL_TEST_ENABLED !== "true"
+    && !localEnvironment.DATABASE_URL?.trim();
   const localCoresignalKey = localEnvironment.CORESIGNAL_API_KEY?.trim() ?? "";
   const localAuthRole = configuredLocalRole;
   const localPersistPath = localDevelopment
@@ -107,8 +115,9 @@ export default defineConfig(async ({ command, mode }) => {
   const localRuntimeVariables: Record<string, string> = localDevelopment
     ? {
         NODE_ENV: "development",
-        CN_DB_BACKEND: localEnvironment.CN_DB_BACKEND?.trim() || "d1",
+        CN_DB_BACKEND: localBackend,
         CN_PG_LOCAL_TEST_ENABLED: localPgTest ? "true" : "false",
+        CN_PG_LOCAL_DEV_ENABLED: localPgDev ? "true" : "false",
         CN_PG_LOCAL_TEST_SOCKET: localPgTest ? localPgSocket : "",
         LOCAL_DEV_AUTH_ENABLED: "true",
         LOCAL_DEV_AUTH_ROLE: localAuthRole,

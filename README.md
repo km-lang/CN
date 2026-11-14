@@ -144,6 +144,11 @@ PostgreSQL migration command should run against the existing Step 2 baseline.
 
 ### PostgreSQL application foundation (Step 3A)
 
+> **Superseded 2026-11-15:** PostgreSQL is now the default. An unset or blank
+> `CN_DB_BACKEND` selects `postgres`; D1 requires an explicit `CN_DB_BACKEND=d1`
+> with no `DATABASE_URL`. See "PostgreSQL default backend" under Implementation status.
+> The Step 3A text below is retained as the historical record.
+
 The existing `db/index.ts` remains the D1 adapter for all public routes.
 `CN_DB_BACKEND` selects `d1` or `postgres` explicitly. An unset value keeps
 the legacy D1 deployment behavior only when no runtime `DATABASE_URL` is
@@ -353,6 +358,80 @@ wrapper still requires an executable `sites-env.sh` and GNU `timeout` in this
 local environment; the direct build above completed successfully.
 
 ## Implementation status
+
+### Stage 3 Windows checkpoint and PostgreSQL default backend (2026-11-15)
+
+**Current local development baseline.** Windows 11 laptop, branch `sabarinadh`
+(HEAD `5c2edbd`, the same file tree as `a4e02a2`). PostgreSQL 17.12 portable
+binaries live in the git-ignored `.sites-runtime/postgresql17/pgsql/bin`. No WSL or
+Docker is required. D1 data, Neon, providers and production were not touched.
+
+**PostgreSQL default backend.** An unset or blank `CN_DB_BACKEND` now selects
+`postgres` (`db/backend.ts`). D1 requires an explicit `CN_DB_BACKEND=d1` with no
+`DATABASE_URL`. Under PostgreSQL, every D1-only branch still fails closed through
+`requireD1Backend()` with no D1 fallback. In practice this means the 23 unmigrated
+named actions and `POST /api/signals` return a sanitized error in the default
+configuration and work only with `CN_DB_BACKEND=d1`. Connections still have to pass
+one of three adapter gates: the new project's pooled Neon `DATABASE_URL`, the
+disposable test marker (`CN_PG_LOCAL_TEST_ENABLED`), or the new local-development
+cluster (`CN_PG_LOCAL_DEV_ENABLED`: development auth, loopback `127.0.0.1:55432`,
+`cn_local_dev`, never with `DATABASE_URL`). `npm run dev:local:windows` now starts
+that cluster (see Safe local start). The Bash `dev:local*` scripts set
+`CN_DB_BACKEND=d1` explicitly because they provision no PostgreSQL cluster.
+**Deployment warning:** `.openai/hosting.json` binds only D1. Deploying this
+source without a `DATABASE_URL` for the new Neon project would make every database
+request fail closed. Real data has not been migrated, so production cutover
+remains **NO-GO**, and nothing was deployed.
+
+**Windows test support.** `tests/support/postgres-test-platform.mjs` selects the
+portable binaries and loopback TCP clusters on Windows; macOS keeps Homebrew and
+Unix sockets. `db/postgres/local-test-marker.ts` is the single marker rule used by
+the adapter and Vite. It accepts the original `/private/tmp/cn-step3c-postgres-*/socket`
+or `%LOCALAPPDATA%\Temp\corporate-network-local-cn-step3c-postgres-*\socket` and
+rejects `.` and `..` segments. `pg_ctl` runs without captured stdio, because on
+Windows the postmaster inherits pipes and `execFile` never returns. The HTTP
+suite's server-startup wait is 120 s; a cold Vite/Cloudflare start measured
+33–35 s on this laptop. That wait covers startup only, and no acceptance
+assertion or per-request timeout changed. The Bright Data human-trial local gate
+now uses the shared `isTemporaryLocalD1Path()` rule, like the other local mock
+gates. It newly rejects `/private/tmp/..` traversal.
+
+**Test isolation incident (resolved).** Wrangler loads `.env` and `.env.local`
+into the local Worker unless `CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false`. On this
+laptop `.env.local` holds provider keys. One acceptance run therefore used them,
+and Admin `validate_signals_entitlement` sent **two**
+`GET https://api.lusha.com/v3/contacts/signals/types` requests (one PostgreSQL, one
+D1). Both were rejected with HTTP 401 (`authentication_error`), and no other
+provider was contacted. The account owner should confirm zero usage in the Lusha
+account log. Both disposable servers now set the switch, and
+`assertNoDotEnvSecrets()` aborts the run before any provider-capable request if
+`.env` secrets are ever loaded again. The positive and negative controls were
+verified. `npm test` preloads `tests/support/d1-test-backend.mjs`, so the existing
+regression suite keeps exercising D1 unless a test selects PostgreSQL.
+
+**Latest evidence on this laptop (2026-11-15).**
+
+| Check | Result |
+| --- | --- |
+| Disposable PostgreSQL/D1 HTTP acceptance | **82/82 passed**, no `.env` secrets loaded, no residual processes |
+| Foundation, core reads, provider claims | 25/25 passed. The 20-way one-use-connection stress subtest timed out once (Windows starts one process per connection) and passed on rerun, so it is recorded as timing-sensitive. |
+| Local-mode gate unit tests | 29/29 passed |
+| TypeScript (`tsc --noEmit`) | Passed |
+| ESLint (project source, `.sites-runtime` excluded) | 1 error: the pre-existing React Compiler memoization error in committed `app/page.tsx:1129`, unchanged and needs UI approval |
+| Production build (direct `vinext build`) | Passed |
+| Full serial regression (`node --import ./tests/support/d1-test-backend.mjs --test --test-concurrency=1 tests/*.test.mjs`) | 979 tests: 958 passed, 5 failed, 16 skipped (opt-in email-composer tests), 0 native crashes, 20 min. The 5 failures were the long-documented UI/source assertions. All 5 checked for UI that commit `a4e02a2` ("ui cleanup in alum directory page") deliberately removed: the regular-Search confirmation, the Coresignal ID-search panel and its CSS, and the page's Search request bodies. `a4e02a2` had updated four other test files but missed these three. They now assert that the retired UI and its provider-request paths stay removed, and all other assertions in those tests are unchanged. The targeted rerun passed 31/31, leaving **no known failing tests**. |
+| Launcher on PostgreSQL | Created cluster, Admin sign-in 302, Directory 200 (fixture alumni), Workspace 200, pages render |
+
+On this laptop `npm run lint`/`npm run build` cannot start the macOS
+`node_modules/.bin` symlink stubs from Git Bash, and PowerShell blocks `npm.ps1`.
+Use `npm.cmd`, or run the same tools through `bash scripts/sites-env.sh -- node
+node_modules/<tool>/…` as recorded above. ESLint needs
+`--max-old-space-size=8192` and `--ignore-pattern .sites-runtime`.
+
+**Coverage is unchanged by this checkpoint:** 57 methods (47 fully routed, 9
+partially, 1 D1-only) and 61/84 named actions selecting PostgreSQL. Stage 3 is
+**PARTIAL**. See [the access inventory](docs/postgres-app-access-inventory.md) for
+remaining actions and the decisions that block them.
 
 ### Step 3F: Admin stability and Provider Credits checkpoint
 
@@ -1151,7 +1230,23 @@ On Windows PowerShell or Command Prompt, with dependencies already installed:
 npm run dev:local:windows
 ```
 
-This uses the existing development-only, session-backed Admin/PCOM authentication,
+**Default backend is PostgreSQL (2026-11-15).** The launcher now starts a local
+PostgreSQL 17 cluster at `.sites-runtime/postgres-local/cluster` (git-ignored,
+loopback `127.0.0.1:55432`, database `cn_local_dev`, local `trust` auth on loopback
+only). On first launch it applies `drizzle-postgres/0000_cynical_dexter_bennett.sql`
+and `scripts/local-development-fixture.postgres.sql` (generated from the D1 fixture by
+`node scripts/generate-postgres-local-fixture.mjs`; same fictional data). Data is kept
+between launches and the cluster is stopped when the launcher exits. If the schema or
+fixture changes, the launcher refuses to start until you run
+`node scripts/dev-local-windows.mjs --reset-postgres`, which discards the local fictional
+data and rebuilds the cluster. Use `--port=NNNN` when port 3000 is busy. It needs the
+portable binaries in `.sites-runtime/postgresql17/pgsql/bin` (or `PG_LOCAL_BIN`).
+Unmigrated D1-only actions return a sanitized error under PostgreSQL; see
+[the access inventory](docs/postgres-app-access-inventory.md).
+
+To use the original disposable D1 instead, set `CN_DB_BACKEND=d1` before launching
+(PowerShell: `$env:CN_DB_BACKEND="d1"; npm run dev:local:windows`). That mode is unchanged:
+it uses the existing development-only, session-backed Admin/PCOM authentication,
 creates a fresh disposable D1 under the Windows temporary directory, applies local
 migrations, and loads the existing synthetic fixtures. It leaves `.env.local`, the
 original `.wrangler/state`, alumni records and provider history untouched. All live

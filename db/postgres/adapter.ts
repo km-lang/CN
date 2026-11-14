@@ -20,6 +20,14 @@ export function postgresRuntimePoolConfig(source: Record<string, string | undefi
     // disposable Step 3C cluster; PostgreSQL itself listens on loopback only.
     return { host: "127.0.0.1", port: 55433, user: "cn_step3c_test", database: "cn_step3c_fixture", max: 5, maxUses: 1, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 5_000 }
   }
+  if (source.CN_PG_LOCAL_DEV_ENABLED === "true") {
+    // Loopback cluster created by scripts/dev-local-windows.mjs with fictional
+    // fixtures. Same pool shape as the validated local test gate.
+    if (source.NODE_ENV !== "development" || source.LOCAL_DEV_AUTH_ENABLED !== "true" || source.DATABASE_URL?.trim()) {
+      throw new Error("Local PostgreSQL development access requires development auth and no DATABASE_URL.")
+    }
+    return { host: "127.0.0.1", port: 55432, user: "cn_local_dev", database: "cn_local_dev", max: 5, maxUses: 1, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 5_000 }
+  }
   const raw = source.DATABASE_URL?.trim()
   if (!raw) throw new Error("DATABASE_URL is required for PostgreSQL runtime access.")
   let target: URL

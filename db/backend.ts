@@ -1,17 +1,17 @@
 export type DatabaseBackend = "d1" | "postgres"
 
-/** Keep the existing D1 deployment working; any explicit selection is strict. */
+/**
+ * PostgreSQL is the default backend. D1 is used only when CN_DB_BACKEND=d1 is
+ * set explicitly. Any explicit selection is strict, and a PostgreSQL
+ * connection still has to pass the adapter's DATABASE_URL or local gates.
+ */
 export function selectedDatabaseBackend(source: Record<string, string | undefined> = process.env): DatabaseBackend {
   const selected = source.CN_DB_BACKEND?.trim()
-  if (!selected) {
-    if (source.DATABASE_URL?.trim()) throw new Error("CN_DB_BACKEND is required when DATABASE_URL is configured.")
-    return "d1"
-  }
+  if (!selected || selected === "postgres") return "postgres"
   if (selected === "d1") {
     if (source.DATABASE_URL?.trim()) throw new Error("DATABASE_URL must be unset when CN_DB_BACKEND=d1.")
     return "d1"
   }
-  if (selected === "postgres") return "postgres"
   throw new Error("CN_DB_BACKEND must be either d1 or postgres.")
 }
 

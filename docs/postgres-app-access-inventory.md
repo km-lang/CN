@@ -40,6 +40,35 @@ This inventory covers all 35 `app/api/**/route.ts` files in the supplied applica
 | `/api/webhooks/coresignal/[subscriptionId]/[token]` | ✓ | ✓ | ✓ | ✓ | ✓ | POST HTTP-tested with D1 parity for HMAC, notice storage, dedupe, quarantine, ordering, rollback and outage |
 | `/api/workspace` | ✓ | — | — | — | ✓ | GET; POST `manual_check`/`manual_add`/`import`; PATCH four actions; HTTP-tested, with import failure-path mismatch |
 
+## Current checkpoint (2026-11-15, Windows laptop)
+
+**PostgreSQL is now the default backend.** An unset `CN_DB_BACKEND` selects
+PostgreSQL, and D1 requires `CN_DB_BACKEND=d1`. Every D1-only branch listed below
+therefore returns a sanitized error in the default configuration (fail closed, no
+D1 fallback) until it is migrated. Method and action coverage is unchanged:
+**47 full / 9 partial / 1 D1-only of 57 methods; 61/84 named actions select
+PostgreSQL**. Disposable PostgreSQL/D1 HTTP acceptance passed **82/82** on Windows
+after the test-isolation fixes recorded in the README. That includes Lusha
+`validate_lusha` (credential-free 409, no provider request) and Bright Data
+`attest_human_trial` (one-time audit key, replay 409, `providerCallMade: false`).
+
+The 23 remaining branches, grouped by what blocks them:
+
+| Blocker | Branches | Next step |
+| --- | --- | --- |
+| None; ordinary local delete | `remove_mock_dataset` | Implement with HTTP/audit parity |
+| Response contract | `preview_mock_cleanup` | Returns SQLite `PRAGMA quick_check`/`foreign_key_check` rows; a PostgreSQL integrity payload needs approval |
+| Shared D1 identity-store defect (`coresignalIdentityStore`: SQLite `INSERT … SELECT` with `changes() = 1` fails to compile) | `link_existing`, `approve`, `apply_updates`, `apply_refresh` (identity change), confirmed Collect association | One decision on intended identity-attachment behaviour unblocks all five |
+| Concurrency decision | `lusha_approve_identity` (D1 200/500 vs PostgreSQL 200/409), `keep_separate` (201/500 vs 201/409), `correct_pre_authorization` (D1 200/200 or 200/404) | Approve the sanitized 409s and define the preauthorization contract |
+| Provider execution and accounting | Bright Data `trigger`/`status`/`retrieve`/`recover_evidence`; live Collect `execute`; Provider Credits `refresh`; Discovery `search`/`regular_search`/`continue_search`; Lusha `search_contact`/`reveal_email`/`reveal_phone`; `refresh_profiles` | Provider-specific claim, reservation, settlement and recovery acceptance with mocks |
+| Signals policy | `POST /api/signals` (whole method) | Approved pre-request claim and ambiguous-outcome policy |
+
+Inactive prototypes kept out of production paths: PostgreSQL
+`correct_pre_authorization` returns 501; `keep_separate` and Lusha identity approval
+run only behind `CN_PG_LOCAL_TEST_ENABLED`; `lib/postgres-collect-review-confirm.ts`
+is unreferenced and deliberately left uncommitted. Legacy workspace bulk import
+still differs (D1 partial write with 400 vs PostgreSQL rollback with 500).
+
 ## Current tracked action routing
 
 The PostgreSQL provider-claim foundation is selected only by isolated mock

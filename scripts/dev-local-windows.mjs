@@ -1,29 +1,45 @@
 import { spawn } from "node:child_process"
-import { randomBytes } from "node:crypto"
-import { mkdtemp, realpath } from "node:fs/promises"
+import { createHash, randomBytes } from "node:crypto"
+import { existsSync } from "node:fs"
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-// Use existing session-backed local auth and fixtures, with a NEW D1 each launch.
-// Never seed .wrangler/state or trust an inherited database path.
+// Local launcher with session-backed local auth and fictional fixtures.
+// Default backend: a local PostgreSQL 17 cluster under .sites-runtime/postgres-local
+// (git-ignored, loopback-only, kept between launches; --reset-postgres recreates it).
+// CN_DB_BACKEND=d1 keeps the previous behaviour: a NEW disposable D1 each launch.
+// Never seed .wrangler/state, never use DATABASE_URL and never contact a provider.
 const root = fileURLToPath(new URL("../", import.meta.url))
 const host = "127.0.0.1"
-const port = 3000
+const portArgument = process.argv.find(argument => argument.startsWith("--port="))
+const port = portArgument ? Number(portArgument.slice("--port=".length)) : 3000
+if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("--port must be a whole number from 1024 to 65535.")
 const origin = `http://localhost:${port}`
-await new Promise((resolve, reject) => {
-  const probe = createServer()
-  probe.once("error", reject)
-  probe.listen(port, host, () => probe.close(resolve))
-}).catch(() => {
-  throw new Error(`Port ${port} is in use. Stop the previous local demo before starting another.`)
-})
+const backend = process.env.CN_DB_BACKEND?.trim() || "postgres"
+if (backend !== "postgres" && backend !== "d1") throw new Error("CN_DB_BACKEND must be either postgres or d1.")
+if (process.env.DATABASE_URL?.trim()) throw new Error("Unset DATABASE_URL. The local launcher never connects to a hosted database.")
+const resetPostgres = process.argv.includes("--reset-postgres")
+
+async function portFree(candidate) {
+  return new Promise(resolve => {
+    const probe = createServer()
+    probe.once("error", () => resolve(false))
+    probe.listen(candidate, host, () => probe.close(() => resolve(true)))
+  })
+}
+if (!await portFree(port)) throw new Error(`Port ${port} is in use. Stop the previous local demo before starting another.`)
+
+// Cloudflare local state (and the D1 database in d1 mode) lives in a new temp directory each launch.
 const persistPath = await realpath(await mkdtemp(join(tmpdir(), "corporate-network-local-")))
 const environment = {
   ...process.env,
   CI: "1",
   NODE_ENV: "development",
+  CN_DB_BACKEND: backend,
+  CN_PG_LOCAL_DEV_ENABLED: backend === "postgres" ? "true" : "false",
   LOCAL_DEV_AUTH_ENABLED: "true",
   LOCAL_DEV_AUTH_ROLE: "ADMIN",
   LOCAL_DEV_D1_PERSIST_PATH: persistPath,
@@ -63,6 +79,11 @@ const environment = {
   WRANGLER_LOG_PATH: join(root, ".wrangler", "logs"),
   WRANGLER_SEND_METRICS: "false",
 }
+delete environment.DATABASE_URL
+delete environment.DATABASE_URL_UNPOOLED
+delete environment.CN_PG_LOCAL_TEST_ENABLED
+delete environment.CN_PG_LOCAL_TEST_SOCKET
+
 async function run(entry, args) {
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [join(root, entry), ...args], {
@@ -74,12 +95,87 @@ async function run(entry, args) {
       : reject(new Error(`${entry} exited with code ${code}`)))
   })
 }
-console.log(`Disposable local D1: ${persistPath}`)
-const databaseArgs = ["DB", "--config", "wrangler.local.jsonc", "--local", "--persist-to", persistPath]
-await run("node_modules/wrangler/bin/wrangler.js", ["d1", "migrations", "apply", ...databaseArgs])
-await run("node_modules/wrangler/bin/wrangler.js", ["d1", "execute", ...databaseArgs,
-  "--file", "scripts/local-development-fixture.sql", "--yes"])
+
+// ---- Local PostgreSQL 17 cluster (default backend) ----
+// Must match the CN_PG_LOCAL_DEV_ENABLED gate in db/postgres/adapter.ts.
+const pg = { port: 55432, user: "cn_local_dev", database: "cn_local_dev" }
+const pgBin = process.env.PG_LOCAL_BIN || join(root, ".sites-runtime", "postgresql17", "pgsql", "bin")
+const pgHome = join(root, ".sites-runtime", "postgres-local")
+const pgData = join(pgHome, "cluster")
+const pgMarker = join(pgHome, "schema.sha256")
+const pgExe = name => join(pgBin, process.platform === "win32" ? `${name}.exe` : name)
+const schemaFiles = ["drizzle-postgres/0000_cynical_dexter_bennett.sql", "scripts/local-development-fixture.postgres.sql"]
+
+function pgTool(name, args, { quiet = false } = {}) {
+  // pg_ctl's postmaster inherits stdio on Windows, so it never gets captured pipes.
+  return new Promise((resolve, reject) => {
+    const child = spawn(pgExe(name), args, { stdio: quiet || name === "pg_ctl" ? "ignore" : ["ignore", "ignore", "inherit"], windowsHide: true, env: { ...process.env, LC_ALL: "C", LANG: "C" } })
+    child.once("error", reject)
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${name} exited with code ${code}`)))
+  })
+}
+// Only the launcher that started the cluster stops it; a second launcher that
+// reuses a running cluster must never take it away from the first.
+let startedPostgres = false
+const pgRunning = () => pgTool("pg_ctl", ["status", "-D", pgData], { quiet: true }).then(() => true, () => false)
+async function schemaHash() {
+  const hash = createHash("sha256")
+  for (const file of schemaFiles) hash.update(await readFile(join(root, file)))
+  return hash.digest("hex")
+}
+
+async function preparePostgres() {
+  if (!existsSync(pgExe("initdb"))) throw new Error(`PostgreSQL 17 binaries were not found in ${pgBin}. Set PG_LOCAL_BIN or run with CN_DB_BACKEND=d1.`)
+  const expected = await schemaHash()
+  if (resetPostgres && existsSync(pgData)) {
+    if (await pgRunning()) await pgTool("pg_ctl", ["stop", "-D", pgData, "-m", "fast", "-w"])
+    await rm(pgHome, { recursive: true, force: true })
+    console.log("Local PostgreSQL cluster removed for --reset-postgres.")
+  }
+  if (!existsSync(pgData)) {
+    if (!await portFree(pg.port)) throw new Error(`Port ${pg.port} is already in use by another program; the local PostgreSQL cluster cannot start.`)
+    await mkdir(pgHome, { recursive: true })
+    await pgTool("initdb", ["-A", "trust", "--locale=C", "--encoding=UTF8", "-U", pg.user, "-D", pgData, "--no-instructions"], { quiet: true })
+    await appendFile(join(pgData, "postgresql.conf"), `\nlisten_addresses = '127.0.0.1'\nunix_socket_directories = ''\nport = ${pg.port}\n`)
+    await pgTool("pg_ctl", ["start", "-D", pgData, "-l", join(pgHome, "postgres.log"), "-w"])
+    startedPostgres = true
+    const connection = ["-h", host, "-p", String(pg.port), "-U", pg.user]
+    await pgTool("createdb", [...connection, pg.database])
+    for (const file of schemaFiles) await pgTool("psql", [...connection, "-q", "-d", pg.database, "-v", "ON_ERROR_STOP=1", "-f", join(root, file)], { quiet: true })
+    await writeFile(pgMarker, `${expected}\n`)
+    console.log(`Created local PostgreSQL cluster with fictional fixtures: ${pgData}`)
+    return
+  }
+  const recorded = existsSync(pgMarker) ? (await readFile(pgMarker, "utf8")).trim() : ""
+  if (recorded !== expected) throw new Error("The PostgreSQL schema or local fixture changed since this cluster was created. Restart with --reset-postgres to rebuild it (local fictional data is discarded).")
+  if (!await pgRunning()) {
+    if (!await portFree(pg.port)) throw new Error(`Port ${pg.port} is already in use by another program; the local PostgreSQL cluster cannot start.`)
+    await pgTool("pg_ctl", ["start", "-D", pgData, "-l", join(pgHome, "postgres.log"), "-w"])
+    startedPostgres = true
+  }
+  console.log(`Using local PostgreSQL cluster: ${pgData}`)
+}
+
+async function stopPostgres() {
+  if (backend === "postgres" && startedPostgres && await pgRunning()) await pgTool("pg_ctl", ["stop", "-D", pgData, "-m", "fast", "-w"]).catch(() => {})
+}
+
+if (backend === "postgres") {
+  await preparePostgres()
+  console.log(`Database: local PostgreSQL 127.0.0.1:${pg.port}/${pg.database} (data kept between launches)`)
+} else {
+  console.log(`Disposable local D1: ${persistPath}`)
+  const databaseArgs = ["DB", "--config", "wrangler.local.jsonc", "--local", "--persist-to", persistPath]
+  await run("node_modules/wrangler/bin/wrangler.js", ["d1", "migrations", "apply", ...databaseArgs])
+  await run("node_modules/wrangler/bin/wrangler.js", ["d1", "execute", ...databaseArgs,
+    "--file", "scripts/local-development-fixture.sql", "--yes"])
+}
 console.log(`Admin: ${origin}/login/admin`)
 console.log(`PCOM:  ${origin}/login/pcom`)
 console.log("Development fixtures only. Live providers and mail are disabled. Ctrl+C stops the server.")
-await run("node_modules/vite/bin/vite.js", ["--host", host, "--port", String(port), "--strictPort"])
+process.once("SIGINT", () => { /* the Vite child receives it too; cleanup runs below */ })
+try {
+  await run("node_modules/vite/bin/vite.js", ["--host", host, "--port", String(port), "--strictPort"])
+} finally {
+  await stopPostgres()
+}
