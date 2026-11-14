@@ -2,6 +2,7 @@ import { Pool, type PoolConfig } from "pg"
 import { AsyncLocalStorage } from "node:async_hooks"
 import { drizzle } from "drizzle-orm/node-postgres"
 import { selectedDatabaseBackend } from "../backend"
+import { isLocalPostgresTestMarker } from "./local-test-marker"
 import * as schema from "./schema"
 
 export const NEW_PROJECT_DIRECT_HOST = "ep-super-meadow-az4e41mn.c-3.ap-southeast-1.aws.neon.tech"
@@ -11,7 +12,7 @@ export function postgresRuntimePoolConfig(source: Record<string, string | undefi
   if (selectedDatabaseBackend(source) !== "postgres") throw new Error("CN_DB_BACKEND=postgres is required for PostgreSQL runtime access.")
   if (source.CN_PG_LOCAL_TEST_ENABLED === "true") {
     const socket = source.CN_PG_LOCAL_TEST_SOCKET?.trim() ?? ""
-    if (source.NODE_ENV !== "development" || source.LOCAL_DEV_AUTH_ENABLED !== "true" || source.DATABASE_URL?.trim() || !/^\/private\/tmp\/cn-step3c-postgres-[A-Za-z0-9]+\/socket$/.test(socket)) {
+    if (source.NODE_ENV !== "development" || source.LOCAL_DEV_AUTH_ENABLED !== "true" || source.DATABASE_URL?.trim() || !isLocalPostgresTestMarker(socket)) {
       throw new Error("Local PostgreSQL test access requires development auth, an isolated Step 3C socket, and no DATABASE_URL.")
     }
     // The Cloudflare local worker's node:net shim requires a TCP host and port.

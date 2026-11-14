@@ -67,7 +67,7 @@ export function localBrightDataHumanTrialEnabled(values: LocalDevelopmentEnviron
     && values.BRIGHTDATA_HUMAN_TRIAL_ENABLED === "true"
     && values.BRIGHTDATA_MOCK_TRANSPORT !== "true"
     && values.CORESIGNAL_WEBHOOK_MOCK_TRANSPORT === "true"
-    && (path.startsWith("/tmp/") || path.startsWith("/private/tmp/"))
+    && isTemporaryLocalD1Path(path)
     && Boolean(values.BRIGHTDATA_HUMAN_TRIAL_TARGET?.trim())
 }
 

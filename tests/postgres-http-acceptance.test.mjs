@@ -9,12 +9,12 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 import pg from "pg"
+import { clusterSettings, pgCtl, httpTemporaryPrefix, pgExecutable } from "./support/postgres-test-platform.mjs"
 import { unzipSync } from "fflate"
 import { createServer as createViteServer } from "vite"
 
 const run = promisify(execFile)
 const root = fileURLToPath(new URL("..", import.meta.url))
-const pgBin = process.env.PG_TEST_BIN || "/opt/homebrew/opt/postgresql@17/bin"
 const base = "http://127.0.0.1:3103"
 const role = "cn_step3c_test"
 const database = "cn_step3c_fixture"
@@ -406,7 +406,7 @@ let postgresProfessionalVerificationSnapshot
 let postgresIntakePreflightSnapshot
 let postgresIntelligenceMissingSnapshot
 let postgresEnrichmentUsageSnapshot
-const command = (name, args) => run(join(pgBin, name), args, { maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C", LANG: "C" } })
+const command = (name, args) => name === "pg_ctl" ? pgCtl(args) : run(pgExecutable(name), args, { maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C", LANG: "C" } })
 
 async function portAvailable(port) {
   const probe = createTcpServer()
@@ -1344,8 +1344,18 @@ async function professionalVerificationContract(origin, adminCookie, pcomCookie,
     evidenceKeys: Object.keys(reviewed.body.evidence).sort() }
 }
 
+// Server startup only, before any acceptance check. A cold Vite/Cloudflare
+// start measured 33-35 s on the Windows development laptop.
+const appStartupMs = 120_000
+
+// Stop before any request if a developer .env file reached the local Worker:
+// its real provider keys would replace the fictional or blanked test values.
+function assertNoDotEnvSecrets(log) {
+  assert.doesNotMatch(log, /Using secrets defined in \.env/, "Disposable test server loaded developer .env secrets; aborting before any provider-capable request.")
+}
+
 async function waitForApp(child) {
-  const until = Date.now() + 30_000
+  const until = Date.now() + appStartupMs
   while (Date.now() < until) {
     if (child.exitCode !== null) throw new Error(`Local app exited before readiness: ${child.exitCode}`)
     try { if ((await http("/api/directory")).status === 401) return } catch { /* startup */ }
@@ -1355,12 +1365,13 @@ async function waitForApp(child) {
 }
 
 test("actual PostgreSQL HTTP reads and Admin programme transaction use one disposable local database", async t => {
-  try { await access(join(pgBin, "initdb")) } catch { return t.skip("PostgreSQL 17 test binaries are unavailable") }
+  try { await access(pgExecutable("initdb")) } catch { return t.skip("PostgreSQL 17 test binaries are unavailable") }
   await portAvailable(55433)
   await portAvailable(3103)
-  const temporary = await mkdtemp("/private/tmp/cn-step3c-postgres-")
+  const temporary = await mkdtemp(httpTemporaryPrefix("cn-step3c-postgres"))
   const dataDir = join(temporary, "cluster")
   const socketDir = join(temporary, "socket")
+  const cluster = clusterSettings(socketDir, { port: 55433, tcp: true })
   let started = false
   let child
   let pool
@@ -1371,11 +1382,11 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
   try {
     await mkdir(socketDir)
     await command("initdb", ["-A", "trust", "--locale=C", "-U", role, "-D", dataDir, "--no-instructions"])
-    await appendFile(join(dataDir, "postgresql.conf"), `\nlisten_addresses = '127.0.0.1'\nunix_socket_directories = '${socketDir}'\nport = 55433\n`)
+    await appendFile(join(dataDir, "postgresql.conf"), cluster.conf)
     await command("pg_ctl", ["-D", dataDir, "-l", join(temporary, "postgres.log"), "-w", "start"])
     started = true
-    await command("createdb", ["-h", socketDir, "-p", "55433", "-U", role, database])
-    await command("psql", ["-h", socketDir, "-p", "55433", "-U", role, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", join(root, "drizzle-postgres/0000_cynical_dexter_bennett.sql")])
+    await command("createdb", ["-h", cluster.host, "-p", String(cluster.port), "-U", role, database])
+    await command("psql", ["-h", cluster.host, "-p", String(cluster.port), "-U", role, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", join(root, "drizzle-postgres/0000_cynical_dexter_bennett.sql")])
     pool = new pg.Pool({ host: "127.0.0.1", port: 55433, user: role, database, max: 2 })
     await pool.query("INSERT INTO application_users(id,external_identity,display_name,email,role,enabled) VALUES (1,'local-development-admin','Local Development Admin','local.admin@example.test','ADMIN',true),(2,'local-development-pcom','Local Development PCOM','local.pcom@example.test','PCOM',true),(3,'fictional-developer','Fictional Developer','developer@example.test','DEVELOPER',true)")
     await pool.query("INSERT INTO application_identities(id,application_user_id,provider,provider_subject_id,verified_email,email_verified) VALUES (1,1,'chatgpt','local-development-admin','local.admin@example.test',true),(2,2,'chatgpt','local-development-pcom','local.pcom@example.test',true),(3,3,'chatgpt','fictional-developer','developer@example.test',true)")
@@ -1414,7 +1425,7 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
     })
     await new Promise(resolve => intelligenceMock.listen(3105, "127.0.0.1", resolve))
 
-    const environment = { ...process.env, NODE_ENV: "development", CN_DB_BACKEND: "postgres", CN_PG_LOCAL_TEST_ENABLED: "true", CN_PG_LOCAL_TEST_SOCKET: socketDir, LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN", AUTH_SESSION_SECRET: secret, INTELLIGENCE_SERVICE_SECRET: serviceSecret, INTELLIGENCE_SERVICE_URL: "http://127.0.0.1:3105", CORESIGNAL_API_KEY: "", CORESIGNAL_LIVE_ENABLED: "false", CORESIGNAL_SEARCH_ENABLED: "false", CORESIGNAL_COLLECT_ENABLED: "true", CORESIGNAL_COLLECT_ENTITLEMENT: "confirmed", CORESIGNAL_COLLECT_MOCK_TRANSPORT: "true", LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1", CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: "true", CORESIGNAL_WEBHOOK_CALLBACK_SECRET: webhookSecret, LUSHA_LIVE_ENABLED: "false", LUSHA_API_KEY: "", BRIGHTDATA_LIVE_ENABLED: "true", BRIGHTDATA_API_TOKEN: "fictional-never-send", BRIGHTDATA_DATASET_ID: "fictional-trial-dataset", BRIGHTDATA_HUMAN_TRIAL_ENABLED: "true", BRIGHTDATA_HUMAN_TRIAL_TARGET: brightTrialUrl, BRIGHTDATA_MOCK_TRANSPORT: "false", BRIGHTDATA_ACCESS_ENTITLEMENT: "unknown", BRIGHTDATA_APPLICATION_REQUEST_LIMIT: "5", LOCAL_PROVIDER_LIVE_DEMO_ENABLED: "true", LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1", MAIL_MODE: "mock", MAIL_LIVE_ENABLED: "false", MAIL_PROVIDER: "gmail", GMAIL_CLIENT_ID: "", GMAIL_CLIENT_SECRET: "", GMAIL_REFRESH_TOKEN: "", APP_PUBLIC_URL: "http://localhost:3103", APP_BASE_PATH: "/", NEXT_PUBLIC_APP_PUBLIC_URL: "http://localhost:3103", NEXT_PUBLIC_APP_BASE_PATH: "/", WRANGLER_WRITE_LOGS: "false", WRANGLER_SEND_METRICS: "false" }
+    const environment = { ...process.env, NODE_ENV: "development", CN_DB_BACKEND: "postgres", CN_PG_LOCAL_TEST_ENABLED: "true", CN_PG_LOCAL_TEST_SOCKET: socketDir, LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN", AUTH_SESSION_SECRET: secret, INTELLIGENCE_SERVICE_SECRET: serviceSecret, INTELLIGENCE_SERVICE_URL: "http://127.0.0.1:3105", CORESIGNAL_API_KEY: "", CORESIGNAL_LIVE_ENABLED: "false", CORESIGNAL_SEARCH_ENABLED: "false", CORESIGNAL_COLLECT_ENABLED: "true", CORESIGNAL_COLLECT_ENTITLEMENT: "confirmed", CORESIGNAL_COLLECT_MOCK_TRANSPORT: "true", LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1", CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: "true", CORESIGNAL_WEBHOOK_CALLBACK_SECRET: webhookSecret, LUSHA_LIVE_ENABLED: "false", LUSHA_API_KEY: "", BRIGHTDATA_LIVE_ENABLED: "true", BRIGHTDATA_API_TOKEN: "fictional-never-send", BRIGHTDATA_DATASET_ID: "fictional-trial-dataset", BRIGHTDATA_HUMAN_TRIAL_ENABLED: "true", BRIGHTDATA_HUMAN_TRIAL_TARGET: brightTrialUrl, BRIGHTDATA_MOCK_TRANSPORT: "false", BRIGHTDATA_ACCESS_ENTITLEMENT: "unknown", BRIGHTDATA_APPLICATION_REQUEST_LIMIT: "5", LOCAL_PROVIDER_LIVE_DEMO_ENABLED: "true", LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1", MAIL_MODE: "mock", MAIL_LIVE_ENABLED: "false", MAIL_PROVIDER: "gmail", GMAIL_CLIENT_ID: "", GMAIL_CLIENT_SECRET: "", GMAIL_REFRESH_TOKEN: "", APP_PUBLIC_URL: "http://localhost:3103", APP_BASE_PATH: "/", NEXT_PUBLIC_APP_PUBLIC_URL: "http://localhost:3103", NEXT_PUBLIC_APP_BASE_PATH: "/", WRANGLER_WRITE_LOGS: "false", WRANGLER_SEND_METRICS: "false", CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false" }
     delete environment.DATABASE_URL
     delete environment.DATABASE_URL_UNPOOLED
     environment.LOCAL_DEV_D1_PERSIST_PATH = temporary
@@ -1422,6 +1433,7 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
     child.stdout.on("data", data => { childLog = (childLog + data.toString()).slice(-4000) })
     child.stderr.on("data", data => { childLog = (childLog + data.toString()).slice(-4000) })
     await waitForApp(child)
+    assertNoDotEnvSecrets(childLog)
 
     const admin = await http("/auth/local/start?intent=admin")
     const pcom = await http("/auth/local/start?intent=pcom")
@@ -3279,7 +3291,7 @@ test("actual PostgreSQL HTTP reads and Admin programme transaction use one dispo
 test("D1 Admin programme route retains the same HTTP contract on a separate disposable fixture", async () => {
   const origin = "http://127.0.0.1:3104"
   await portAvailable(3104)
-  const temporary = await mkdtemp("/private/tmp/cn-step3c-d1-")
+  const temporary = await mkdtemp(httpTemporaryPrefix("cn-step3c-d1"))
   let child
   let childLog = ""
   try {
@@ -3308,7 +3320,7 @@ test("D1 Admin programme route retains the same HTTP contract on a separate disp
     const webhookOverviewFixturePath = join(temporary, "webhook-overview-fixture.sql")
     await writeFile(webhookOverviewFixturePath, webhookOverviewFixtureSql(15))
     await run(process.execPath, [wrangler, "d1", "execute", ...d1Args, "--file", webhookOverviewFixturePath, "--yes"], { cwd: root, maxBuffer: 8 * 1024 * 1024 })
-    const environment = { ...process.env, NODE_ENV: "development", CN_DB_BACKEND: "d1", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN", LOCAL_DEV_D1_PERSIST_PATH: temporary, AUTH_SESSION_SECRET: secret, INTELLIGENCE_SERVICE_SECRET: serviceSecret, CORESIGNAL_API_KEY: "", CORESIGNAL_LIVE_ENABLED: "false", CORESIGNAL_SEARCH_ENABLED: "false", CORESIGNAL_COLLECT_ENABLED: "true", CORESIGNAL_COLLECT_ENTITLEMENT: "confirmed", CORESIGNAL_COLLECT_MOCK_TRANSPORT: "true", LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1", CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: "true", CORESIGNAL_WEBHOOK_CALLBACK_SECRET: webhookSecret, LUSHA_LIVE_ENABLED: "false", LUSHA_API_KEY: "", BRIGHTDATA_LIVE_ENABLED: "true", BRIGHTDATA_API_TOKEN: "fictional-never-send", BRIGHTDATA_DATASET_ID: "fictional-trial-dataset", BRIGHTDATA_HUMAN_TRIAL_ENABLED: "true", BRIGHTDATA_HUMAN_TRIAL_TARGET: brightTrialUrl, BRIGHTDATA_MOCK_TRANSPORT: "false", BRIGHTDATA_ACCESS_ENTITLEMENT: "unknown", BRIGHTDATA_APPLICATION_REQUEST_LIMIT: "5", LOCAL_PROVIDER_LIVE_DEMO_ENABLED: "true", LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1", MAIL_MODE: "mock", MAIL_LIVE_ENABLED: "false", MAIL_PROVIDER: "gmail", GMAIL_CLIENT_ID: "", GMAIL_CLIENT_SECRET: "", GMAIL_REFRESH_TOKEN: "", WRANGLER_WRITE_LOGS: "false", WRANGLER_SEND_METRICS: "false" }
+    const environment = { ...process.env, NODE_ENV: "development", CN_DB_BACKEND: "d1", LOCAL_DEV_AUTH_ENABLED: "true", LOCAL_DEV_AUTH_ROLE: "ADMIN", LOCAL_DEV_D1_PERSIST_PATH: temporary, AUTH_SESSION_SECRET: secret, INTELLIGENCE_SERVICE_SECRET: serviceSecret, CORESIGNAL_API_KEY: "", CORESIGNAL_LIVE_ENABLED: "false", CORESIGNAL_SEARCH_ENABLED: "false", CORESIGNAL_COLLECT_ENABLED: "true", CORESIGNAL_COLLECT_ENTITLEMENT: "confirmed", CORESIGNAL_COLLECT_MOCK_TRANSPORT: "true", LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1", CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: "true", CORESIGNAL_WEBHOOK_CALLBACK_SECRET: webhookSecret, LUSHA_LIVE_ENABLED: "false", LUSHA_API_KEY: "", BRIGHTDATA_LIVE_ENABLED: "true", BRIGHTDATA_API_TOKEN: "fictional-never-send", BRIGHTDATA_DATASET_ID: "fictional-trial-dataset", BRIGHTDATA_HUMAN_TRIAL_ENABLED: "true", BRIGHTDATA_HUMAN_TRIAL_TARGET: brightTrialUrl, BRIGHTDATA_MOCK_TRANSPORT: "false", BRIGHTDATA_ACCESS_ENTITLEMENT: "unknown", BRIGHTDATA_APPLICATION_REQUEST_LIMIT: "5", LOCAL_PROVIDER_LIVE_DEMO_ENABLED: "true", LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1", MAIL_MODE: "mock", MAIL_LIVE_ENABLED: "false", MAIL_PROVIDER: "gmail", GMAIL_CLIENT_ID: "", GMAIL_CLIENT_SECRET: "", GMAIL_REFRESH_TOKEN: "", WRANGLER_WRITE_LOGS: "false", WRANGLER_SEND_METRICS: "false", CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false" }
     delete environment.DATABASE_URL
     delete environment.DATABASE_URL_UNPOOLED
     delete environment.CN_PG_LOCAL_TEST_ENABLED
@@ -3316,12 +3328,13 @@ test("D1 Admin programme route retains the same HTTP contract on a separate disp
     child = spawn(process.execPath, [join(root, "node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", "3104", "--strictPort"], { cwd: root, env: environment, stdio: ["ignore", "pipe", "pipe"] })
     child.stdout.on("data", data => { childLog = (childLog + data.toString()).slice(-4000) })
     child.stderr.on("data", data => { childLog = (childLog + data.toString()).slice(-4000) })
-    const until = Date.now() + 30_000
+    const until = Date.now() + appStartupMs
     while (Date.now() < until) {
       if (child.exitCode !== null) throw new Error(`D1 app exited: ${child.exitCode}`)
       try { if ((await http("/api/directory", { origin })).status === 401) break } catch { /* startup */ }
       await new Promise(resolve => setTimeout(resolve, 200))
     }
+    assertNoDotEnvSecrets(childLog)
     const admin = await http("/auth/local/start?intent=admin", { origin })
     const pcom = await http("/auth/local/start?intent=pcom", { origin })
     assert.equal(admin.status, 302)

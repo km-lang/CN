@@ -8,35 +8,36 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 import pg from "pg"
+import { clusterSettings, pgCtl, pgExecutable } from "./support/postgres-test-platform.mjs"
 import { createServer } from "vite"
 
 const run = promisify(execFile)
 const root = fileURLToPath(new URL("..", import.meta.url))
-const pgBin = process.env.PG_TEST_BIN || "/opt/homebrew/opt/postgresql@17/bin"
 const role = "cn_step3b_test"
 const database = "cn_step3b_fixture"
-const command = (name, args) => run(join(pgBin, name), args, { maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C", LANG: "C" } })
+const command = (name, args) => name === "pg_ctl" ? pgCtl(args) : run(pgExecutable(name), args, { maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C", LANG: "C" } })
 
 test("core PostgreSQL reads use fictional records in a disposable local cluster", async t => {
-  try { await access(join(pgBin, "initdb")) } catch { return t.skip("PostgreSQL 17 test binaries are unavailable") }
+  try { await access(pgExecutable("initdb")) } catch { return t.skip("PostgreSQL 17 test binaries are unavailable") }
   const originalBootstrapAdminEmails = process.env.BOOTSTRAP_ADMIN_EMAILS
   process.env.BOOTSTRAP_ADMIN_EMAILS = ""
   const temporary = await mkdtemp(join(tmpdir(), "cn-step3b-postgres-"))
   const dataDir = join(temporary, "cluster")
   const socketDir = join(temporary, "socket")
+  const cluster = clusterSettings(socketDir, { port: 5432, windowsPort: 55442 })
   let started = false
   let pool
   let vite
   try {
     await mkdir(socketDir)
     await command("initdb", ["-A", "trust", "--locale=C", "-U", role, "-D", dataDir, "--no-instructions"])
-    await appendFile(join(dataDir, "postgresql.conf"), `\nlisten_addresses = ''\nunix_socket_directories = '${socketDir}'\nport = 5432\n`)
+    await appendFile(join(dataDir, "postgresql.conf"), cluster.conf)
     await command("pg_ctl", ["-D", dataDir, "-l", join(temporary, "postgres.log"), "-w", "start"])
     started = true
-    await command("createdb", ["-h", socketDir, "-U", role, database])
-    await command("psql", ["-h", socketDir, "-U", role, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", join(root, "drizzle-postgres/0000_cynical_dexter_bennett.sql")])
+    await command("createdb", ["-h", cluster.host, "-p", String(cluster.port), "-U", role, database])
+    await command("psql", ["-h", cluster.host, "-p", String(cluster.port), "-U", role, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", join(root, "drizzle-postgres/0000_cynical_dexter_bennett.sql")])
 
-    pool = new pg.Pool({ host: socketDir, port: 5432, user: role, database, max: 3, connectionTimeoutMillis: 1000 })
+    pool = new pg.Pool({ host: cluster.host, port: cluster.port, user: role, database, max: 3, connectionTimeoutMillis: 1000 })
     vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root, "cloudflare:workers": join(root, "tests/fixtures/cloudflare-workers.ts") } }, server: { middlewareMode: true, hmr: false } })
     const adapter = await vite.ssrLoadModule("/db/postgres/adapter.ts")
     const security = await vite.ssrLoadModule("/lib/postgres-security.ts")

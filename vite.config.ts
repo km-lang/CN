@@ -5,6 +5,7 @@ import { sites } from "./build/sites-vite-plugin";
 import { isAbsolute, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { realpathSync as fsRealpathSync } from "node:fs";
+import { isLocalPostgresTestMarker } from "./db/postgres/local-test-marker";
 import { localBrightDataLiveDemoEnabled,localBrightDataMockTransportEnabled, localCoresignalCollectMockTransportEnabled, localCoresignalLiveDemoEnabled } from "./lib/local-development";
 
 // Native realpath expands Windows 8.3 short names (C:\Users\ABCDEF~1) so the
@@ -64,7 +65,7 @@ export default defineConfig(async ({ command, mode }) => {
     && localEnvironment.CN_DB_BACKEND === "postgres"
     && localEnvironment.CN_PG_LOCAL_TEST_ENABLED === "true"
     && !localEnvironment.DATABASE_URL?.trim()
-    && /^\/private\/tmp\/cn-step3c-postgres-[A-Za-z0-9]+\/socket$/.test(localPgSocket)
+    && isLocalPostgresTestMarker(localPgSocket)
     && (() => { try { return realpathSync(localPgSocket) === localPgSocket; } catch { return false; } })();
   const localCoresignalKey = localEnvironment.CORESIGNAL_API_KEY?.trim() ?? "";
   const localAuthRole = configuredLocalRole;

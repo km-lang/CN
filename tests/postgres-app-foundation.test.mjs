@@ -7,34 +7,35 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 import pg from "pg"
+import { clusterSettings, pgCtl, pgExecutable } from "./support/postgres-test-platform.mjs"
 import { createServer } from "vite"
 
 const run = promisify(execFile)
 const root = fileURLToPath(new URL("..", import.meta.url))
-const pgBin = process.env.PG_TEST_BIN || "/opt/homebrew/opt/postgresql@17/bin"
 const testRole = "cn_step3a_test"
 const testDatabase = "cn_step3a_fixture"
 
 async function command(name, args) {
-  return run(join(pgBin, name), args, { maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C", LANG: "C" } })
+  return name === "pg_ctl" ? pgCtl(args) : run(pgExecutable(name), args, { maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C", LANG: "C" } })
 }
 
 test("PostgreSQL programme-option foundation uses only a disposable local cluster", async t => {
-  try { await access(join(pgBin, "initdb")) } catch { return t.skip("PostgreSQL 17 test binaries are unavailable") }
+  try { await access(pgExecutable("initdb")) } catch { return t.skip("PostgreSQL 17 test binaries are unavailable") }
   const temporary = await mkdtemp(join(tmpdir(), "cn-step3a-postgres-"))
   const dataDir = join(temporary, "cluster")
   const socketDir = join(temporary, "socket")
+  const cluster = clusterSettings(socketDir, { port: 5432, windowsPort: 55441 })
   let started = false
   let pool
   let vite
   try {
     await mkdir(socketDir)
     await command("initdb", ["-A", "trust", "--locale=C", "-U", testRole, "-D", dataDir, "--no-instructions"])
-    await appendFile(join(dataDir, "postgresql.conf"), `\nlisten_addresses = ''\nunix_socket_directories = '${socketDir}'\nport = 5432\n`)
+    await appendFile(join(dataDir, "postgresql.conf"), cluster.conf)
     await command("pg_ctl", ["-D", dataDir, "-l", join(temporary, "postgres.log"), "-w", "start"])
     started = true
-    await command("createdb", ["-h", socketDir, "-U", testRole, testDatabase])
-    await command("psql", ["-h", socketDir, "-U", testRole, "-d", testDatabase, "-v", "ON_ERROR_STOP=1", "-f", join(root, "drizzle-postgres/0000_cynical_dexter_bennett.sql")])
+    await command("createdb", ["-h", cluster.host, "-p", String(cluster.port), "-U", testRole, testDatabase])
+    await command("psql", ["-h", cluster.host, "-p", String(cluster.port), "-U", testRole, "-d", testDatabase, "-v", "ON_ERROR_STOP=1", "-f", join(root, "drizzle-postgres/0000_cynical_dexter_bennett.sql")])
 
     vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true, hmr: false } })
     const backend = await vite.ssrLoadModule("/db/backend.ts")
@@ -55,14 +56,33 @@ test("PostgreSQL programme-option foundation uses only a disposable local cluste
       assert.equal(config.connectionTimeoutMillis, 5000)
     })
 
-    pool = new pg.Pool({ host: socketDir, port: 5432, user: testRole, database: testDatabase, max: 2, connectionTimeoutMillis: 1000 })
+    await t.test("local test marker accepts only disposable macOS or Windows Temp clusters", async () => {
+      const { isLocalPostgresTestMarker } = await vite.ssrLoadModule("/db/postgres/local-test-marker.ts")
+      const windowsTemp = "C:\\Users\\Fictional User\\AppData\\Local\\Temp\\"
+      assert.equal(isLocalPostgresTestMarker("/private/tmp/cn-step3c-postgres-Ab12Cd/socket"), true)
+      assert.equal(isLocalPostgresTestMarker(`${windowsTemp}corporate-network-local-cn-step3c-postgres-Ab12Cd\\socket`), true)
+      for (const rejected of ["", "/tmp/cn-step3c-postgres-Ab12Cd/socket", "/private/tmp/cn-step3c-postgres-Ab12Cd/socket/..",
+        `${windowsTemp}cn-step3c-postgres-Ab12Cd\\socket`, `${windowsTemp}corporate-network-local-cn-step3c-postgres-Ab12Cd\\socket\\..`,
+        "C:\\Users\\..\\AppData\\Local\\Temp\\corporate-network-local-cn-step3c-postgres-Ab12Cd\\socket",
+        "D:\\project\\corporate-network-local-cn-step3c-postgres-Ab12Cd\\socket", `${windowsTemp}corporate-network-local-cn-step3c-postgres-Ab12Cd/socket`]) {
+        assert.equal(isLocalPostgresTestMarker(rejected), false, rejected)
+      }
+      const local = { CN_DB_BACKEND: "postgres", CN_PG_LOCAL_TEST_ENABLED: "true", NODE_ENV: "development", LOCAL_DEV_AUTH_ENABLED: "true" }
+      const marker = `${windowsTemp}corporate-network-local-cn-step3c-postgres-Ab12Cd\\socket`
+      assert.equal(adapter.postgresRuntimePoolConfig({ ...local, CN_PG_LOCAL_TEST_SOCKET: marker }).host, "127.0.0.1")
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ ...local, CN_PG_LOCAL_TEST_SOCKET: "D:\\project\\socket" }), /isolated Step 3C socket/)
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ ...local, CN_PG_LOCAL_TEST_SOCKET: marker, NODE_ENV: "production" }), /isolated Step 3C socket/)
+      assert.throws(() => adapter.postgresRuntimePoolConfig({ ...local, CN_PG_LOCAL_TEST_SOCKET: marker, DATABASE_URL: "postgresql://example" }), /isolated Step 3C socket/)
+    })
+
+    pool = new pg.Pool({ host: cluster.host, port: cluster.port, user: testRole, database: testDatabase, max: 2, connectionTimeoutMillis: 1000 })
     const db = adapter.postgresDatabaseFromPool(pool)
     const admin = { userId: null, externalIdentity: "fictional-admin", displayName: "Fictional Admin", role: "ADMIN" }
     const pcom = { ...admin, role: "PCOM" }
 
     await t.test("node-postgres releases one-use clients after 5, 10 and 20 concurrent read transactions", async () => {
       const schema = await vite.ssrLoadModule("/db/postgres/schema.ts")
-      const stressPool = new pg.Pool({ host: socketDir, port: 5432, user: testRole, database: testDatabase, max: 5, maxUses: 1, connectionTimeoutMillis: 5000 })
+      const stressPool = new pg.Pool({ host: cluster.host, port: cluster.port, user: testRole, database: testDatabase, max: 5, maxUses: 1, connectionTimeoutMillis: 5000 })
       const stressDb = adapter.postgresDatabaseFromPool(stressPool)
       try {
         for (const size of [5, 10, 20]) {

@@ -149,6 +149,11 @@ test("local Bright live and mock transports are Admin, development and loopback 
   assert.equal(localDevelopment.localBrightDataMockTransportEnabled({ ...base, BRIGHTDATA_MOCK_TRANSPORT: "true" }), true)
   const trial = { ...base, BRIGHTDATA_HUMAN_TRIAL_ENABLED: "true", BRIGHTDATA_HUMAN_TRIAL_TARGET: "https://www.linkedin.com/in/human-trial-example", LOCAL_DEV_D1_PERSIST_PATH: "/private/tmp/cn-isolated-demo", CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "true", BRIGHTDATA_MOCK_TRANSPORT: "false" }
   assert.equal(localDevelopment.localBrightDataHumanTrialEnabled(trial), true)
+  // Windows: only the per-user Temp corporate-network-local-* directory, as for the other local mock gates.
+  assert.equal(localDevelopment.localBrightDataHumanTrialEnabled({ ...trial, LOCAL_DEV_D1_PERSIST_PATH: "C:\\Users\\Fictional User\\AppData\\Local\\Temp\\corporate-network-local-cn-step3c-postgres-Ab12Cd" }), true)
+  for (const path of ["C:\\Users\\Fictional User\\AppData\\Local\\Temp\\other-project", "D:\\project\\corporate-network-local-x", "C:\\Users\\Fictional User\\AppData\\Local\\Temp\\corporate-network-local-x\\..\\..", "/private/tmp/../original-d1"]) {
+    assert.equal(localDevelopment.localBrightDataHumanTrialEnabled({ ...trial, LOCAL_DEV_D1_PERSIST_PATH: path }), false, path)
+  }
   for (const bad of [{ NODE_ENV: "production" }, { LOCAL_DEV_AUTH_ROLE: "PCOM" }, { LOCAL_PROVIDER_LIVE_DEMO_HOST: "0.0.0.0" }, { LOCAL_DEV_D1_PERSIST_PATH: "/workspace/original-d1" }, { CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: "false" }, { BRIGHTDATA_MOCK_TRANSPORT: "true" }, { BRIGHTDATA_HUMAN_TRIAL_ENABLED: "false" }, { BRIGHTDATA_HUMAN_TRIAL_TARGET: "" }]) {
     assert.equal(localDevelopment.localBrightDataHumanTrialEnabled({ ...trial, ...bad }), false)
   }
