@@ -103,11 +103,13 @@ if (coresignalLive) {
     CORESIGNAL_ES_DSL_PREVIEW_ENTITLEMENT: "confirmed",
     CORESIGNAL_COLLECT_ENABLED: "false",
     CORESIGNAL_COLLECT_ENTITLEMENT: "unknown",
-    CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: process.env.CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?.trim() || "1",
+    // One Preview page returns up to 20 results for the same ~20 credits, so keep the full page by default.
+    CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: process.env.CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?.trim() || "20",
+    CORESIGNAL_EMPLOYEE_DATASET: process.env.CORESIGNAL_EMPLOYEE_DATASET?.trim() === "multi_source" ? "multi_source" : "base",
     CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
   })
   delete environment.CORESIGNAL_API_KEY // taken from .env.local by Vite; never placed on the command line
-  console.warn("LIVE CORESIGNAL ENABLED: each Discover search makes one paid ES-DSL Preview request (about 20 search credits per page by the vendor workbook; the actual debit is unverified). Admin confirmation is required per search; Collect stays off.")
+  console.warn(`LIVE CORESIGNAL ENABLED (${environment.CORESIGNAL_EMPLOYEE_DATASET} dataset, up to ${environment.CORESIGNAL_LIVE_SEARCH_MAX_RESULTS} results per search): each Discover search makes one paid ES-DSL Preview request (about 20 search credits per page by the vendor workbook; the actual debit is unverified). Admin confirmation is required per search; Collect stays off.`)
 }
 
 async function run(entry, args) {

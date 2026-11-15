@@ -1271,8 +1271,37 @@ node scripts/dev-local-windows.mjs --coresignal-live
 
 The flag needs `CORESIGNAL_API_KEY` in `.env.local`. It applies the package's
 `dev:local:coresignal-exact-year-live` recipe: ES-DSL Preview on and the entitlement attested as
-`confirmed` by the account owner; Collect, Lusha, Bright Data and mail off; loopback only; at most
-`CORESIGNAL_LIVE_SEARCH_MAX_RESULTS` (default 1) results per search. Open
+`confirmed` by the account owner; Collect, Lusha, Bright Data and mail off; loopback only. It keeps
+up to `CORESIGNAL_LIVE_SEARCH_MAX_RESULTS` results per search: launcher default 20, the Preview page
+size, which costs the same per page as 1. Earlier local live mode was hard-capped at 1 result in both
+`vite.config.ts` and `coresignalLiveSearchMaximum()`. Searches return real Coresignal records (name,
+LinkedIn URL, current company and title), and the PostgreSQL search path saves them in
+`external_discovery_searches`/`external_discovery_results` with provider history and audit.
+
+Live verification on PostgreSQL (2026-11-15, Base dataset, run at the account owner's request): one
+confirmed Exact-year ES-DSL Preview for IIM Lucknow 2021 returned HTTP 200 with 20 records (1,974 total
+matches). Search #9 stored 19 results, the target the remaining local allowance allowed, each with a
+real `linkedin.com/in/...` URL, current company and title, all pending human review because Preview
+returns no education objects. One provider-history row (success, 1 application unit,
+`reconciliation_required`) and one `coresignal_discovery_run` audit committed with it. An earlier attempt
+with a target of 20 was refused by the local allowance check before any provider request.
+
+Known test-environment issue: when another local dev server (for example the live app) runs from
+the same checkout, the HTTP acceptance suite's first GET subtests can fail with `ECONNRESET`.
+Both servers share Vite's `node_modules/.vite` dependency cache with different runtime configs.
+All functional subtests passed across those runs; a clean run needs no other dev server.
+
+Dataset: `CORESIGNAL_EMPLOYEE_DATASET` selects the Coresignal employee API used for Preview.
+- `base` (default): `/cdapi/v2/employee_base/search/es_dsl/preview`. Live-verified for this account
+  on 2026-10-19 (HTTP 200, 20 of 927 results; `docs/provider-evidence/coresignal-es-dsl-preview-2026-10-19.md`),
+  although Coresignal's documentation index no longer lists it.
+- `multi_source`: the documented Multi-source Employee API
+  (`/cdapi/v2/employee_multi_source/search/es_dsl/preview`, 20 credits per page of up to 20 results).
+  The query is translated to the Multi-source mapping (`is_deleted`, `education.degree`,
+  `experience.position_title`, `experience.active_experience`), and IIM Lucknow is matched by
+  institution id, LinkedIn school URL or exact name. This mode is unverified for this account. Use it
+  if `base` returns an authentication or "invalid request" error. Unit tests cover the endpoint, the
+  translation and the record mapping with a fake transport (`tests/coresignal-multi-source-preview.test.mjs`). Open
 `http://127.0.0.1:3000/login/admin`. Every search and every further page needs an Admin and an
 explicit confirmation. **Each confirmed search makes one paid Preview request**, about 20 search
 credits per page by the vendor workbook; the actual account debit is unverified and should be

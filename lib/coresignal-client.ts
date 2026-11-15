@@ -1,5 +1,5 @@
 import { discoveryExperienceTitleQuery, selectedDiscoverySeniorities, type DiscoveryFilters } from "@/lib/alumni-search"
-import { providerSecret } from "@/lib/provider-runtime"
+import { coresignalEmployeeDataset, providerSecret } from "@/lib/provider-runtime"
 import { coresignalProgrammeQuery, coresignalProgrammeTerms, providerEducationDateTo } from "@/lib/discovery-qualification"
 
 export const CORESIGNAL_API_BASE = "https://api.coresignal.com"
@@ -9,6 +9,51 @@ export const CORESIGNAL_SEARCH_PATH = "/cdapi/v2/employee_base/search/filter/pre
 export const CORESIGNAL_ES_DSL_SEARCH_PATH = "/cdapi/v2/employee_base/search/es_dsl"
 export const CORESIGNAL_ES_DSL_PREVIEW_PATH = "/cdapi/v2/employee_base/search/es_dsl/preview"
 export const CORESIGNAL_COLLECT_PATH = "/cdapi/v2/employee_base/collect"
+// Multi-source Employee API (https://docs.coresignal.com/employee-data/api): 20 credits per Preview
+// page, up to 20 results per page and ?page=N pagination.
+export const CORESIGNAL_MULTI_SOURCE_ES_DSL_PREVIEW_PATH = "/cdapi/v2/employee_multi_source/search/es_dsl/preview"
+export const CORESIGNAL_IIML_INSTITUTION_NAME = "Indian Institute of Management Lucknow"
+
+const MULTI_SOURCE_FIELD_NAMES: Record<string, string> = {
+  is_parent: "is_deleted",
+  "education.program": "education.degree",
+  "experience.title": "experience.position_title",
+  "experience.is_current": "experience.active_experience",
+}
+
+/**
+ * Rewrites a Base Employee ES-DSL query to the documented Multi-source Employee mapping:
+ * is_parent=1 -> is_deleted=0; education.program -> education.degree; experience.title ->
+ * experience.position_title; experience.is_current -> experience.active_experience; the
+ * Base-only experience.deleted filter is dropped. The IIM Lucknow institution filter matches the
+ * institution id OR the LinkedIn school URL OR the exact institution name, because Multi-source
+ * institution ids have not been verified against the Base dataset's id.
+ */
+export function toCoresignalMultiSourceEsDsl(body: unknown): unknown {
+  const rewrite = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(rewrite).filter(item => item !== DROP)
+    if (!node || typeof node !== "object") return node
+    const entries = Object.entries(node as Record<string, unknown>)
+    if (entries.length === 1 && ["term", "match_phrase"].includes(entries[0][0]) && entries[0][1] && typeof entries[0][1] === "object") {
+      const [kind, clause] = entries[0] as [string, Record<string, unknown>]
+      const [[field, value]] = Object.entries(clause)
+      if (field === "experience.deleted") return DROP
+      if (field === "is_parent") return { term: { is_deleted: 0 } }
+      if (field === "education.institution_id" && value === CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID) {
+        return { bool: { minimum_should_match: 1, should: [
+          { term: { "education.institution_id": value } },
+          { term: { "education.institution_url.exact": CORESIGNAL_IIML_INSTITUTION_URL } },
+          { term: { "education.institution_url.exact": `${CORESIGNAL_IIML_INSTITUTION_URL}/` } },
+          { match_phrase: { "education.institution_name": CORESIGNAL_IIML_INSTITUTION_NAME } },
+        ] } }
+      }
+      return { [kind]: { [MULTI_SOURCE_FIELD_NAMES[field] ?? field]: value } }
+    }
+    return Object.fromEntries(entries.map(([key, value]) => [key, rewrite(value)]))
+  }
+  return rewrite(body)
+}
+const DROP = Symbol("drop")
 export const CORESIGNAL_ES_DSL_DEFAULT_ITEMS_PER_PAGE = 1
 export const CORESIGNAL_ES_DSL_MAX_ITEMS_PER_PAGE = 1_000
 export const CORESIGNAL_ES_DSL_PREVIEW_MAX_RESULTS = 20
@@ -484,16 +529,18 @@ export async function searchCoresignalEmployeeIds(
 /** Exactly one bounded Preview request; no retry, pagination, or Collect. */
 export async function previewCoresignalEmployeesExactYear(
   esDslBody: unknown,
-  options: RequestOptions & { operationContext: string; page?: number },
+  options: RequestOptions & { operationContext: string; page?: number; dataset?: "multi_source" | "base" },
 ): Promise<CoresignalPreviewTransportResult> {
   if (!options.operationContext.trim()) throw new CoresignalProviderError("A Coresignal Preview operation context is required.", "invalid_request", 400)
   if (!esDslBody || typeof esDslBody !== "object" || Array.isArray(esDslBody)) throw new CoresignalProviderError("A Coresignal ES-DSL Preview request body is required.", "invalid_request", 400)
   const page = options.page ?? 1
   if (!Number.isInteger(page) || page < 1 || page > CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES) throw new CoresignalProviderError(`Coresignal Preview page must be between 1 and ${CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES}.`, "invalid_request", 400)
-  const providerResponse = await response(page === 1 ? CORESIGNAL_ES_DSL_PREVIEW_PATH : `${CORESIGNAL_ES_DSL_PREVIEW_PATH}?page=${page}`, {
+  const multiSource = (options.dataset ?? coresignalEmployeeDataset()) === "multi_source"
+  const previewPath = multiSource ? CORESIGNAL_MULTI_SOURCE_ES_DSL_PREVIEW_PATH : CORESIGNAL_ES_DSL_PREVIEW_PATH
+  const providerResponse = await response(page === 1 ? previewPath : `${previewPath}?page=${page}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(esDslBody),
+    body: JSON.stringify(multiSource ? toCoresignalMultiSourceEsDsl(esDslBody) : esDslBody),
   }, options)
   let body: unknown
   try { body = await providerResponse.json() as unknown } catch { throw new CoresignalProviderError("Coresignal returned an unreadable Preview response.", "invalid_response", 502) }

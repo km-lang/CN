@@ -143,7 +143,10 @@ export default defineConfig(async ({ command, mode }) => {
         CORESIGNAL_WEBHOOK_MOCK_TRANSPORT: localWebhookMock || localPgWebhookMock ? "true" : "false",
         CORESIGNAL_WEBHOOK_RECEIVE_ENABLED: (localWebhookMock || localPgWebhookReceiver) && localWebhookSecret.length >= 32 && localEnvironment.CORESIGNAL_WEBHOOK_RECEIVE_ENABLED === "true" ? "true" : "false",
         CORESIGNAL_WEBHOOK_CALLBACK_SECRET: localWebhookSecret.length >= 32 ? localWebhookSecret : "",
-        CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "1",
+        // A Preview page costs the same for 1 or 20 results, so live local discovery may keep up to
+        // one full page (20). Every other local configuration stays at 1.
+        CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: localCoresignalDemo && /^(?:[1-9]|1[0-9]|20)$/.test(localEnvironment.CORESIGNAL_LIVE_SEARCH_MAX_RESULTS?.trim() ?? "") ? localEnvironment.CORESIGNAL_LIVE_SEARCH_MAX_RESULTS!.trim() : "1",
+        CORESIGNAL_EMPLOYEE_DATASET: localEnvironment.CORESIGNAL_EMPLOYEE_DATASET?.trim() === "multi_source" ? "multi_source" : "base",
         CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "1",
         LOCAL_PROVIDER_LIVE_DEMO_ENABLED: localBrightDataDemo ? "true" : "false",
         LOCAL_PROVIDER_LIVE_DEMO_HOST: "127.0.0.1",

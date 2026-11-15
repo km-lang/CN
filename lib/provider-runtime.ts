@@ -5,6 +5,7 @@ export type ProviderMode = "mock" | "live"
 
 export type ProviderRuntimeEnvironment = {
   CORESIGNAL_API_KEY?: string
+  CORESIGNAL_EMPLOYEE_DATASET?: string
   CORESIGNAL_LIVE_ENABLED?: string
   CORESIGNAL_SEARCH_ENABLED?: string
   CORESIGNAL_ES_DSL_PREVIEW_ENABLED?: string
@@ -80,8 +81,21 @@ function boundedInteger(value: string | undefined, fallback: number, maximum: nu
 }
 
 export function coresignalLiveSearchMaximum() {
-  if (localCoresignalLiveDemoEnabled(runtimeEnvironment())) return 1
+  // Local live discovery defaults to 1 but may keep up to one full Preview page (20 results),
+  // which costs the same per page as a single result.
+  if (localCoresignalLiveDemoEnabled(runtimeEnvironment())) return boundedInteger(runtimeEnvironment().CORESIGNAL_LIVE_SEARCH_MAX_RESULTS, 1, 20)
   return boundedInteger(runtimeEnvironment().CORESIGNAL_LIVE_SEARCH_MAX_RESULTS, 20, 20)
+}
+
+/**
+ * Coresignal employee dataset for Discovery Preview. Default "base" (Base Employee API,
+ * employee_base): live-verified for this account on 2026-10-19 (HTTP 200, 20 of 927 results; see
+ * docs/provider-evidence/coresignal-es-dsl-preview-2026-10-19.md), although it is no longer in
+ * Coresignal's documentation index. "multi_source" selects the documented Multi-source Employee
+ * API (employee_multi_source), which is unverified for this account.
+ */
+export function coresignalEmployeeDataset(values: ProviderRuntimeEnvironment = runtimeEnvironment()): "multi_source" | "base" {
+  return values.CORESIGNAL_EMPLOYEE_DATASET?.trim() === "multi_source" ? "multi_source" : "base"
 }
 
 export function coresignalLiveRefreshMaximum() {

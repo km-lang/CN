@@ -63,13 +63,19 @@ test("the explicit local Coresignal gate requires every fail-closed condition", 
   assert.equal(localDevelopment.localCoresignalLiveDemoEnabled(demoEnvironment({ NODE_ENV: "production" })), false)
 })
 
-test("runtime enables only Coresignal and enforces one-result local demo limits", () => {
+test("runtime enables only Coresignal and enforces bounded local demo limits", () => {
+  // Discovery may keep up to one full Preview page (20 results cost the same ~20 credits as 1);
+  // the default stays 1 and profile refresh (one Collect per profile) stays capped at 1.
   setRuntimeEnvironment(demoEnvironment({ CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "20", CORESIGNAL_LIVE_REFRESH_MAX_PROFILES: "20" }))
   assert.equal(runtime.providerMode("coresignal"), "live")
   assert.equal(runtime.providerConfigured("coresignal"), true)
   assert.equal(runtime.providerMode("lusha"), "mock")
-  assert.equal(runtime.coresignalLiveSearchMaximum(), 1)
+  assert.equal(runtime.coresignalLiveSearchMaximum(), 20)
   assert.equal(runtime.coresignalLiveRefreshMaximum(), 1)
+  setRuntimeEnvironment(demoEnvironment({ CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "500" }))
+  assert.equal(runtime.coresignalLiveSearchMaximum(), 20)
+  setRuntimeEnvironment(demoEnvironment({ CORESIGNAL_LIVE_SEARCH_MAX_RESULTS: "" }))
+  assert.equal(runtime.coresignalLiveSearchMaximum(), 1)
 
   setRuntimeEnvironment(demoEnvironment({ CORESIGNAL_API_KEY: "" }))
   assert.equal(runtime.providerMode("coresignal"), "mock")
