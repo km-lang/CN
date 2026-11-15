@@ -71,7 +71,7 @@ test("exact-year Preview builder correlates institution/year and current/non-del
   ])
 })
 
-test("unmapped company Preview uses exact company name in one current non-deleted experience row", () => {
+test("unmapped company Preview matches the company name case-insensitively in one current non-deleted experience row", () => {
   const contract = client.coresignalExactYearEsDslPreviewContract({ graduationYear: "2011", companyName: "  Google  " })
   assert.equal(contract.companyConstraintMode, "EXACT_NAME")
   const nested = contract.body.query.bool.filter.filter(item => item.nested).map(item => item.nested)
@@ -79,23 +79,31 @@ test("unmapped company Preview uses exact company name in one current non-delete
     { term: { "education.institution_id": 25919228 } },
     { term: { "education.date_to_year": 2011 } },
   ])
+  // The keyword .exact field is case-sensitive; the analyzed phrase match accepts any casing.
   assert.deepEqual(nested.find(item => item.path === "experience").query.bool.filter, [
-    { term: { "experience.company_name.exact": "Google" } },
+    { bool: { minimum_should_match: 1, should: [{ term: { "experience.company_name.exact": "Google" } }, { match_phrase: { "experience.company_name": "Google" } }] } },
     { term: { "experience.is_current": 1 } },
     { term: { "experience.deleted": 0 } },
   ])
+  const lowercase = client.coresignalExactYearEsDslPreviewContract({ graduationYear: "2011", companyName: "american express" })
+  assert.match(JSON.stringify(lowercase.body), /"match_phrase":\{"experience\.company_name":"american express"\}/)
   assert.throws(() => client.coresignalExactYearEsDslPreviewContract({ graduationYear: 2011, companyId: 97124966, companyName: "Google" }), /either a verified company ID or an exact company name/)
   assert.doesNotMatch(JSON.stringify(contract), /97124966|education_date_to|filter\/preview/)
 })
 
-test("programme predicates use Base education.program with OR semantics in the same education row", () => {
+test("programme predicates rank IIM Lucknow education.program matches with OR semantics but never exclude", () => {
   const contract = client.coresignalDiscoveryEsDslPreviewContract({ graduationYear: "2011", programmes: ["PGP", "MBA", "PGDM", "ABM", "PGP-SM", "IPMX", "Fellow Programme in Management"] })
   const education = contract.body.query.bool.filter.find(item => item.nested?.path === "education").nested.query.bool.filter
-  assert.deepEqual(education.slice(0, 2), [
+  // Hard filters stay the live-verified institution + exact year only.
+  assert.deepEqual(education, [
     { term: { "education.institution_id": client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } },
     { term: { "education.date_to_year": 2011 } },
   ])
-  const programme = education[2].bool
+  assert.equal(contract.body.query.bool.minimum_should_match, undefined)
+  const preference = contract.body.query.bool.should[0].nested
+  assert.equal(preference.path, "education")
+  assert.deepEqual(preference.query.bool.filter, [{ term: { "education.institution_id": client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } }])
+  const programme = preference.query.bool
   assert.equal(programme.minimum_should_match, 1)
   const serialized = JSON.stringify(programme.should)
   assert.match(serialized, /education\.program/)
@@ -107,6 +115,7 @@ test("programme predicates use Base education.program with OR semantics in the s
   assert.match(serialized, /Executive MBA/)
   assert.match(serialized, /Fellow Programme in Management/)
   assert.equal(client.coresignalDiscoveryEsDslPreviewContract({ programmes: [] }).body.query.bool.filter.length, 2)
+  assert.equal(client.coresignalDiscoveryEsDslPreviewContract({ programmes: [] }).body.query.bool.should, undefined)
 })
 
 test("programme categories remain precise and request validation bounds custom labels", () => {
@@ -125,11 +134,11 @@ test("company and selected seniority narrow the same current non-deleted experie
   const contract = client.coresignalDiscoveryEsDslPreviewContract({ companyName: "Google", seniorities: ["VP+", "Director"] })
   const experience = contract.body.query.bool.filter.find(item => item.nested?.path === "experience").nested.query.bool.filter
   assert.deepEqual(experience.filter(item => item.term), [
-    { term: { "experience.company_name.exact": "Google" } },
     { term: { "experience.is_current": 1 } },
     { term: { "experience.deleted": 0 } },
   ])
-  const titles = JSON.stringify(experience.find(item => item.bool).bool.should)
+  assert.deepEqual(experience[0], { bool: { minimum_should_match: 1, should: [{ term: { "experience.company_name.exact": "Google" } }, { match_phrase: { "experience.company_name": "Google" } }] } })
+  const titles = JSON.stringify(experience.find(item => JSON.stringify(item).includes("experience.title")).bool.should)
   assert.match(titles, /experience\.title/)
   assert.match(titles, /vice president/)
   assert.match(titles, /director/)
@@ -181,15 +190,16 @@ test("demo criteria matrix keeps optional dimensions independent and multiselect
     const experience = filters.find(item => item.nested?.path === "experience")?.nested.query.bool.filter
     assert.deepEqual(education[0], { term: { "education.institution_id": client.CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } })
     assert.equal(Boolean(education.find(item => item.term?.["education.date_to_year"])), Boolean(input.graduationYear))
-    assert.equal(Boolean(education.find(item => item.bool?.minimum_should_match === 1)), Boolean(input.programmes?.length))
+    assert.equal(education.some(item => item.bool), false)
+    assert.equal(Boolean(contract.body.query.bool.should?.length), Boolean(input.programmes?.length))
     assert.equal(Boolean(experience), Boolean(input.companyName || input.seniorities?.length))
     if (experience) {
       assert.deepEqual(experience.filter(item => item.term && !item.term["experience.company_name.exact"]), [
         { term: { "experience.is_current": 1 } },
         { term: { "experience.deleted": 0 } },
       ])
-      assert.equal(Boolean(experience.find(item => item.term?.["experience.company_name.exact"])), Boolean(input.companyName))
-      assert.equal(Boolean(experience.find(item => item.bool?.minimum_should_match === 1)), Boolean(input.seniorities?.length))
+      assert.equal(Boolean(experience.find(item => JSON.stringify(item).includes("experience.company_name"))), Boolean(input.companyName))
+      assert.equal(Boolean(experience.find(item => JSON.stringify(item).includes("experience.title"))), Boolean(input.seniorities?.length))
     }
     assert.equal(filters.filter(item => item.nested?.path === "education").length, 1)
     assert.equal(filters.filter(item => item.nested?.path === "experience").length, input.companyName || input.seniorities?.length ? 1 : 0)

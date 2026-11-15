@@ -1286,6 +1286,20 @@ returns no education objects. One provider-history row (success, 1 application u
 `reconciliation_required`) and one `coresignal_discovery_run` audit committed with it. An earlier attempt
 with a target of 20 was refused by the local allowance check before any provider request.
 
+Query fix (2026-11-16): searches #10 and #11 (company "american express", programme PGP, no year)
+were billed but returned 0 records. The company filter was a `term` on the case-sensitive
+keyword `experience.company_name.exact`, and the programme was a hard `education.program` filter.
+Neither predicate had ever been live-verified; only institution id and graduation year had. The
+Preview query now matches the company case-insensitively (exact keyword OR analyzed
+`match_phrase` on `experience.company_name`, re-checked locally) and treats programmes as an
+optional ranking preference (top-level `should`). Hard provider filters remain institution, exact
+year, current non-deleted job, company and seniority titles. Verified live with the same search
+(#12): HTTP 200, 151 total matches, 20 returned, 5 stored (the requested target) at American Express,
+with real LinkedIn URLs. The phrase match can also return companies whose names contain the phrase
+(for example "American Express Global Business Travel"); these stay pending review.
+`CORESIGNAL_SEARCH_ENABLED=false` in `.env.local` is the separate ID-only regular-search gate. It does
+not affect Discover More Alumni (ES-DSL Preview) and needs no change.
+
 Known test-environment issue: when another local dev server (for example the live app) runs from
 the same checkout, the HTTP acceptance suite's first GET subtests can fail with `ECONNRESET`.
 Both servers share Vite's `node_modules/.vite` dependency cache with different runtime configs.

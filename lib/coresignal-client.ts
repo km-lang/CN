@@ -221,13 +221,31 @@ export function coresignalDiscoveryEsDslPreviewContract(options: {
   const page = options.page ?? 1
   if (!Number.isInteger(page) || page < 1 || page > CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES) throw new Error(`Coresignal Preview page must be between 1 and ${CORESIGNAL_ES_DSL_PREVIEW_MAX_PAGES}.`)
   const graduationYear = coresignalEmployeeEsDslGraduationYear(options.graduationYear)
-  const base = coresignalEmployeeEsDslSearchContract({ graduationYear, programmes: options.programmes })
+  // Hard provider filters are limited to the live-verified institution and graduation-year terms.
+  // Programme labels are a ranking PREFERENCE (top-level should): Preview returns no education to
+  // verify them, education.program was never live-verified, and as a hard filter it can exclude
+  // every IIM Lucknow record. Every candidate stays pending human education review.
+  const base = coresignalEmployeeEsDslSearchContract({ graduationYear })
+  const programmeTerms = coresignalProgrammeTerms(options.programmes ?? [])
+  const programmePreference = programmeTerms.length ? [{
+    nested: { path: "education", query: { bool: {
+      filter: [{ term: { "education.institution_id": CORESIGNAL_IIM_LUCKNOW_INSTITUTION_ID } }],
+      minimum_should_match: 1,
+      should: programmeTerms.map(program => ({ match_phrase: { "education.program": program } })),
+    } } },
+  }] : []
   const companyId = options.companyId === undefined ? undefined : coresignalProviderCompanyId(options.companyId)
   const companyName = options.companyName === undefined ? undefined : coresignalExactCompanyName(options.companyName)
   const titleTerms = coresignalSeniorityTitleTerms({ seniorities: options.seniorities ?? [], seniority: options.seniority ?? "All levels" })
   const experienceFilters = [
     ...(companyId === undefined ? [] : [{ term: { "experience.company_id": companyId } }]),
-    ...(companyName === undefined ? [] : [{ term: { "experience.company_name.exact": companyName } }]),
+    // Case-insensitive company: the keyword ".exact" field is case-sensitive, so a typed
+    // "american express" matched nobody. The analyzed phrase match accepts any casing; the
+    // returned current company is still re-checked locally (normalized comparison).
+    ...(companyName === undefined ? [] : [{ bool: { minimum_should_match: 1, should: [
+      { term: { "experience.company_name.exact": companyName } },
+      { match_phrase: { "experience.company_name": companyName } },
+    ] } }]),
     ...(!titleTerms.length ? [] : [{ bool: { minimum_should_match: 1, should: titleTerms.map(title => ({ match_phrase: { "experience.title": title } })) } }]),
     ...((companyId !== undefined || companyName !== undefined || titleTerms.length) ? [
       { term: { "experience.is_current": 1 } },
@@ -240,10 +258,14 @@ export function coresignalDiscoveryEsDslPreviewContract(options: {
     method: "POST" as const,
     path: CORESIGNAL_ES_DSL_PREVIEW_PATH,
     query: { page },
-    body: { query: { bool: { filter: [
-      ...base.body.query.bool.filter,
-      ...(experienceFilters.length ? [{ nested: { path: "experience", query: { bool: { filter: experienceFilters } } } }] : []),
-    ] } } },
+    body: { query: { bool: {
+      filter: [
+        ...base.body.query.bool.filter,
+        ...(experienceFilters.length ? [{ nested: { path: "experience", query: { bool: { filter: experienceFilters } } } }] : []),
+      ],
+      // Optional (no minimum_should_match at this level): ranks selected programmes first, never excludes.
+      ...(programmePreference.length ? { should: programmePreference } : {}),
+    } } },
     maximumResults: CORESIGNAL_ES_DSL_PREVIEW_MAX_RESULTS,
   }
 }
