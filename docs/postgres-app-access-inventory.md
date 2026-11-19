@@ -65,7 +65,7 @@ Selected in this checkpoint under the compatibility decisions approved on 2026-1
 | Discovery `search` | Mock (isolated local demo) and live ES-DSL Preview with D1's gates, budget, company mapping, history and audit; successful runs commit atomically | Mock: stored results, rollback on audit failure, D1 parity of counts and response fields. Live: gates verified up to the provider call with no Coresignal request |
 | Discovery `continue_search` | Live Preview continuation with D1's gates, page checks and accounting | Gate responses verified; the paid continuation is the account owner's first live action |
 
-Live Coresignal discovery is opt-in: `node scripts/dev-local-windows.mjs --coresignal-live` (see README).
+Live Coresignal discovery is the Windows launcher default since 2026-11-19 (`node scripts/dev-local-windows.mjs`); `--coresignal-mock` runs the free demo data (see README).
 
 Still D1-only (11), all provider execution:
 

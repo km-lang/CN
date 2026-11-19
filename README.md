@@ -1261,15 +1261,21 @@ portable binaries in `.sites-runtime/postgresql17/pgsql/bin` (or `PG_LOCAL_BIN`)
 Unmigrated D1-only actions return a sanitized error under PostgreSQL; see
 [the access inventory](docs/postgres-app-access-inventory.md).
 
-**Live Coresignal External Discovery (paid, opt-in, approved 2026-11-15).** By default "Discover More
-Alumni" uses the built-in fictional mock data ("Demo Degree Alumnus", placeholder LinkedIn URL). To
-search real alumni with real LinkedIn profiles on PostgreSQL:
+**Live Coresignal External Discovery is the launcher default (account owner decision, 2026-11-19).**
+Both of these start with live Coresignal; `--coresignal-live` is still accepted and changes nothing:
 
 ```powershell
-node scripts/dev-local-windows.mjs --coresignal-live
+node scripts/dev-local-windows.mjs
+npm.cmd run dev:local:windows
 ```
 
-The flag needs `CORESIGNAL_API_KEY` in `.env.local`. It applies the package's
+For the free fictional demo data ("Demo Degree Alumnus", no provider request) instead:
+
+```powershell
+node scripts/dev-local-windows.mjs --coresignal-mock
+```
+
+Live mode needs `CORESIGNAL_API_KEY` in `.env.local`; without it the launcher stops and suggests `--coresignal-mock`. It applies the package's
 `dev:local:coresignal-exact-year-live` recipe: ES-DSL Preview on and the entitlement attested as
 `confirmed` by the account owner; Collect, Lusha, Bright Data and mail off; loopback only. It keeps
 up to `CORESIGNAL_LIVE_SEARCH_MAX_RESULTS` results per search: launcher default 20, the Preview page

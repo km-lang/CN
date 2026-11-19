@@ -11,7 +11,9 @@ import { fileURLToPath } from "node:url"
 // Default backend: a local PostgreSQL 17 cluster under .sites-runtime/postgres-local
 // (git-ignored, loopback-only, kept between launches; --reset-postgres recreates it).
 // CN_DB_BACKEND=d1 keeps the previous behaviour: a NEW disposable D1 each launch.
-// Never seed .wrangler/state, never use DATABASE_URL and never contact a provider.
+// Coresignal External Discovery runs LIVE by default (paid, Admin-confirmed per search);
+// --coresignal-mock uses the free fictional demo data instead. Never seed .wrangler/state,
+// never use DATABASE_URL, and no provider other than Coresignal Preview is ever enabled.
 const root = fileURLToPath(new URL("../", import.meta.url))
 const host = "127.0.0.1"
 const portArgument = process.argv.find(argument => argument.startsWith("--port="))
@@ -20,7 +22,9 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("--p
 // --coresignal-live opts into REAL, PAID Coresignal External Discovery (ES-DSL Preview only; Collect,
 // Lusha, Bright Data and mail stay off). It mirrors the package's approved
 // dev:local:coresignal-exact-year-live recipe and needs CORESIGNAL_API_KEY in .env.local.
-const coresignalLive = process.argv.includes("--coresignal-live")
+// Live Coresignal is the DEFAULT (account owner's decision, 2026-11-19). --coresignal-mock opts out to
+// the free fictional demo data; --coresignal-live is still accepted and changes nothing.
+const coresignalLive = !process.argv.includes("--coresignal-mock")
 const origin = coresignalLive ? `http://127.0.0.1:${port}` : `http://localhost:${port}`
 const backend = process.env.CN_DB_BACKEND?.trim() || "postgres"
 if (backend !== "postgres" && backend !== "d1") throw new Error("CN_DB_BACKEND must be either postgres or d1.")
@@ -91,7 +95,7 @@ if (coresignalLive) {
   // Only the key's presence is checked; its value is never printed or read here.
   let keyPresent = Boolean(process.env.CORESIGNAL_API_KEY?.trim())
   try { keyPresent ||= /^CORESIGNAL_API_KEY=\s*\S+/m.test(await readFile(join(root, ".env.local"), "utf8")) } catch { /* no .env.local */ }
-  if (!keyPresent) throw new Error("--coresignal-live needs CORESIGNAL_API_KEY in .env.local (your paid Coresignal key).")
+  if (!keyPresent) throw new Error("Live Coresignal (the default) needs CORESIGNAL_API_KEY in .env.local (your paid Coresignal key). Add it, or start with --coresignal-mock for the free demo data.")
   Object.assign(environment, {
     LOCAL_CORESIGNAL_LIVE_DEMO_ENABLED: "true",
     LOCAL_CORESIGNAL_LIVE_DEMO_HOST: "127.0.0.1",
